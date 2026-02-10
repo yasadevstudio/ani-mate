@@ -3,6 +3,7 @@
 // Starts the HTTP server, opens BrowserWindow
 
 const { app, BrowserWindow, dialog } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const net = require('net');
 const { fork } = require('child_process');
@@ -119,11 +120,48 @@ function createWindow(port) {
     });
 }
 
+// Auto-updater setup
+autoUpdater.autoDownload = false;
+autoUpdater.autoInstallOnAppQuit = true;
+
+autoUpdater.on('update-available', (info) => {
+    dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: 'Update Available',
+        message: `ANI-MATE v${info.version} is available. Download now?`,
+        buttons: ['Download', 'Later'],
+        defaultId: 0
+    }).then(({ response }) => {
+        if (response === 0) autoUpdater.downloadUpdate();
+    });
+});
+
+autoUpdater.on('update-downloaded', () => {
+    dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        title: 'Update Ready',
+        message: 'Update downloaded. Restart now to install?',
+        buttons: ['Restart', 'Later'],
+        defaultId: 0
+    }).then(({ response }) => {
+        if (response === 0) autoUpdater.quitAndInstall();
+    });
+});
+
+autoUpdater.on('error', () => {
+    // Silent fail — don't bother user if update check fails
+});
+
 app.whenReady().then(async () => {
     try {
         const port = await findFreePort(7890);
         await startServer(port);
         createWindow(port);
+
+        // Check for updates after window is ready (non-blocking)
+        if (app.isPackaged) {
+            setTimeout(() => autoUpdater.checkForUpdates(), 3000);
+        }
     } catch (err) {
         dialog.showErrorBox('ANI-MATE Startup Error', err.message);
         app.quit();

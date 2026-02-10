@@ -86,6 +86,26 @@ function addToForgeHistory(entry) {
 
 // Download tracking
 const downloadQueue = new Map();
+const DL_MAX_AGE = 30 * 60 * 1000; // 30 minutes
+const DL_MAX_SIZE = 50;
+
+function cleanDownloadQueue() {
+    const now = Date.now();
+    for (const [id, dl] of downloadQueue) {
+        if ((dl.status === 'complete' || dl.status === 'error') && (now - dl.startedAt) > DL_MAX_AGE) {
+            downloadQueue.delete(id);
+        }
+    }
+    // Hard cap: remove oldest entries if over limit
+    if (downloadQueue.size > DL_MAX_SIZE) {
+        const sorted = [...downloadQueue.entries()].sort((a, b) => a[1].startedAt - b[1].startedAt);
+        while (sorted.length > DL_MAX_SIZE) {
+            const [id] = sorted.shift();
+            downloadQueue.delete(id);
+        }
+    }
+}
+
 const DOWNLOAD_DIR = process.env.ANI_MATE_DOWNLOAD_DIR
     || path.join(process.env.HOME || process.env.USERPROFILE || '/tmp', 'Videos', 'ANI-MATE');
 
@@ -715,7 +735,7 @@ const server = http.createServer(async (req, res) => {
                 const results = await getAiringSchedule(date);
                 jsonResponse(res, 200, { results, date: date || new Date().toISOString().slice(0, 10) });
             } catch (err) {
-                jsonResponse(res, 500, { error: `AniList API error: ${err.message}` });
+                jsonResponse(res, 500, { error: 'Failed to fetch airing schedule' });
             }
             return;
         }
@@ -750,6 +770,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (pathname === '/download' && req.method === 'POST') {
+            cleanDownloadQueue();
             const params = safeJsonParse(await readBody(req));
             if (!params || !params.anime_id || !params.episode) {
                 jsonResponse(res, 400, { error: 'Missing anime_id or episode' });
@@ -818,7 +839,8 @@ const server = http.createServer(async (req, res) => {
                     } else {
                         // Direct MP4 download with progress
                         const resp = await fetch(epUrl.url, {
-                            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR }
+                            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
+                            signal: AbortSignal.timeout(300000) // 5 minute timeout
                         });
                         const totalSize = parseInt(resp.headers.get('content-length') || '0');
                         let downloaded = 0;
@@ -876,6 +898,30 @@ const server = http.createServer(async (req, res) => {
             const streamUrl = query.url;
             if (!streamUrl) {
                 jsonResponse(res, 400, { error: 'Missing url parameter' });
+                return;
+            }
+
+            // SSRF protection: only allow known streaming CDN domains
+            try {
+                const proxyHost = new URL(streamUrl).hostname;
+                const ALLOWED_PROXY_DOMAINS = [
+                    'allanime.day', 'allanime.to', 'blog.allanime.pro',
+                    'ep.allanime.pro', 'wb.allanime.pro',
+                    'gogoanime.bid', 'anitaku.pe',
+                    'cache.googlevideo.com',
+                    'biananset.net', 'gofcdn.com', 'vrv.co', 'crunchyroll.com',
+                    'sharepoint.com', 'dropbox.com',
+                    'cdnfile.info', 'cdn.master-file.com',
+                    'betterstream.cc', 'filemoon.sx',
+                    'vidstreaming.io', 'vidplay.online'
+                ];
+                const allowed = ALLOWED_PROXY_DOMAINS.some(d => proxyHost === d || proxyHost.endsWith('.' + d));
+                if (!allowed) {
+                    jsonResponse(res, 403, { error: 'Domain not allowed for proxy' });
+                    return;
+                }
+            } catch {
+                jsonResponse(res, 400, { error: 'Invalid URL' });
                 return;
             }
 
@@ -943,7 +989,7 @@ const server = http.createServer(async (req, res) => {
                     pump().catch(() => res.end());
                 }
             } catch (err) {
-                jsonResponse(res, 502, { error: `Proxy error: ${err.message}` });
+                jsonResponse(res, 502, { error: 'Stream proxy failed' });
             }
             return;
         }
@@ -965,7 +1011,7 @@ const server = http.createServer(async (req, res) => {
 
     } catch (err) {
         console.error(`[ANI-MATE] Error: ${err.message}`);
-        jsonResponse(res, 500, { error: err.message });
+        jsonResponse(res, 500, { error: 'Internal server error' });
     }
 });
 

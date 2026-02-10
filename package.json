@@ -9,6 +9,9 @@
     "start": "electron .",
     "build:win": "electron-builder --win --x64"
   },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  },
   "devDependencies": {
     "electron": "^33.0.0",
     "electron-builder": "^25.0.0"
@@ -29,6 +32,11 @@
     "asarUnpack": [
       "server/**/*"
     ],
+    "publish": {
+      "provider": "github",
+      "owner": "YASADevStudio",
+      "repo": "ani-mate"
+    },
     "win": {
       "target": "nsis",
       "icon": "assets/icon.ico"
