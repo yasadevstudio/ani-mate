@@ -1110,7 +1110,7 @@
                     <div class="player-splash-presents">PRESENTS</div>
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
-                    <div class="player-splash-ver">v0.2.3 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.2.4 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -2034,7 +2034,8 @@
             state.dailyResults.map((r, i) => {
                 const isFav = state.favorites.some(f => f.id === r.id);
                 const coverHtml = r.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${r.cover}" loading="lazy" alt=""></div>` : '';
-                return `<div class="result-card glass" data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="${hoverText}">
+                const dailyHover = r.description ? r.description.replace(/<[^>]*>/g, '').replace(/&/g, '&amp;').replace(/"/g, '&quot;') : r.name.replace(/"/g, '&quot;');
+                return `<div class="result-card glass" data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="${dailyHover}">
                     <div class="result-card-row">
                         <button class="fav-star ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${r.name.replace(/"/g, '&quot;')}" data-fav-eps="${r.episodes}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#9733;' : '&#9734;'}</button>
                         ${coverHtml}
@@ -2246,7 +2247,7 @@
             return;
         }
         container.innerHTML = '<div class="section-label">FAVORITES</div>' +
-            state.favorites.map(r => `<div class="result-card glass" data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="${hoverText}">
+            state.favorites.map(r => `<div class="result-card glass" data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="${r.name.replace(/"/g, '&quot;')}">
                 <div class="result-card-row">
                     <button class="fav-star active" data-fav-id="${r.id}" data-fav-name="${r.name.replace(/"/g, '&quot;')}" data-fav-eps="${r.episodes}" title="Remove from favorites">&#9733;</button>
                     <div class="result-info">
