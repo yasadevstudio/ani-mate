@@ -1040,6 +1040,13 @@
 
         <!-- LEFT PANEL -->
         <div class="left-panel">
+            <div class="tab-bar">
+                <button class="tab-btn active" data-tab="search" id="tab-search" title="Search for anime">SEARCH</button>
+                <button class="tab-btn" data-tab="continue" id="tab-continue" title="Resume watching where you left off">CONTINUE</button>
+                <button class="tab-btn" data-tab="daily" id="tab-daily" title="Today's trending anime">DAILY</button>
+                <button class="tab-btn" data-tab="releases" id="tab-releases" title="Airing schedule and new releases">RELEASES</button>
+                <button class="tab-btn" data-tab="favs" id="tab-favs" title="Your saved favorite anime">FAVS</button>
+            </div>
             <div class="search-box glass">
                 <div class="search-input-wrapper">
                     <input type="text" class="search-input" id="search-input" placeholder="SEARCH ANIME DATABASE..." autocomplete="off" title="Type an anime name and press Enter to search">
@@ -1049,13 +1056,6 @@
                     <button class="mode-btn active" data-mode="sub" id="mode-sub" title="Search for subtitled (Japanese audio) anime">SUB</button>
                     <button class="mode-btn" data-mode="dub" id="mode-dub" title="Search for dubbed (English audio) anime">DUB</button>
                 </div>
-            </div>
-            <div class="tab-bar">
-                <button class="tab-btn active" data-tab="search" id="tab-search" title="Search for anime">SEARCH</button>
-                <button class="tab-btn" data-tab="continue" id="tab-continue" title="Resume watching where you left off">CONTINUE</button>
-                <button class="tab-btn" data-tab="daily" id="tab-daily" title="Today's trending anime">DAILY</button>
-                <button class="tab-btn" data-tab="releases" id="tab-releases" title="Airing schedule and new releases">RELEASES</button>
-                <button class="tab-btn" data-tab="favs" id="tab-favs" title="Your saved favorite anime">FAVS</button>
             </div>
             <div class="results-container" id="results-container">
                 <div class="no-results">Enter a search query to find anime</div>
@@ -1110,7 +1110,7 @@
                     <div class="player-splash-presents">PRESENTS</div>
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
-                    <div class="player-splash-ver">v0.2.0 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.2.3 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -1687,8 +1687,9 @@
             const typeLabel = r.type === 'series' ? 'SERIES' : r.type === 'short' ? 'SHORT' : 'MOVIE';
             const isFav = state.favorites.some(f => f.id === r.id);
             const coverHtml = r.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${r.cover}" loading="lazy" alt=""></div>` : '';
+            const hoverText = r.description ? r.description.replace(/<[^>]*>/g, '').replace(/&/g, '&amp;').replace(/"/g, '&quot;') : r.name.replace(/"/g, '&quot;');
             return `<div class="result-card glass ${state.selectedAnime?.id === r.id ? 'selected' : ''}"
-                 data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="Click to load episodes for ${r.name.replace(/"/g, '&quot;')}">
+                 data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="${hoverText}">
                 <div class="result-card-row">
                     <button class="fav-star ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${r.name.replace(/"/g, '&quot;')}" data-fav-eps="${r.episodes}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#9733;' : '&#9734;'}</button>
                     ${coverHtml}
@@ -1937,11 +1938,19 @@
                 break;
             case 'ArrowRight':
                 e.preventDefault();
-                navigateEpisode(1);
+                if (state.isPlaying) {
+                    document.getElementById('video-player').currentTime += 5;
+                } else {
+                    navigateEpisode(1);
+                }
                 break;
             case 'ArrowLeft':
                 e.preventDefault();
-                navigateEpisode(-1);
+                if (state.isPlaying) {
+                    document.getElementById('video-player').currentTime -= 5;
+                } else {
+                    navigateEpisode(-1);
+                }
                 break;
             case ' ':
                 if (state.isPlaying) {
@@ -2025,7 +2034,7 @@
             state.dailyResults.map((r, i) => {
                 const isFav = state.favorites.some(f => f.id === r.id);
                 const coverHtml = r.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${r.cover}" loading="lazy" alt=""></div>` : '';
-                return `<div class="result-card glass" data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="Click to load episodes for ${r.name.replace(/"/g, '&quot;')}">
+                return `<div class="result-card glass" data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="${hoverText}">
                     <div class="result-card-row">
                         <button class="fav-star ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${r.name.replace(/"/g, '&quot;')}" data-fav-eps="${r.episodes}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#9733;' : '&#9734;'}</button>
                         ${coverHtml}
@@ -2237,7 +2246,7 @@
             return;
         }
         container.innerHTML = '<div class="section-label">FAVORITES</div>' +
-            state.favorites.map(r => `<div class="result-card glass" data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="Click to load episodes for ${r.name.replace(/"/g, '&quot;')}">
+            state.favorites.map(r => `<div class="result-card glass" data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="${hoverText}">
                 <div class="result-card-row">
                     <button class="fav-star active" data-fav-id="${r.id}" data-fav-name="${r.name.replace(/"/g, '&quot;')}" data-fav-eps="${r.episodes}" title="Remove from favorites">&#9733;</button>
                     <div class="result-info">

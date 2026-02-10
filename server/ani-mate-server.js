@@ -223,7 +223,7 @@ async function getAniListCovers(titles) {
         return (Date.now() - coverCache[t].at) > ttl;
     });
     if (needed.length === 0) {
-        return titles.reduce((acc, t) => { acc[t] = coverCache[t]?.url || null; return acc; }, {});
+        return titles.reduce((acc, t) => { acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null }; return acc; }, {});
     }
 
     // Batch query AniList (5 at a time to avoid rate limits)
@@ -232,7 +232,7 @@ async function getAniListCovers(titles) {
         try {
             // Build individual queries
             const fragments = batch.map((title, idx) => {
-                return `q${idx}: Page(perPage: 1) { media(search: "${title.replace(/"/g, '\\"')}", type: ANIME) { title { english romaji } coverImage { medium } } }`;
+                return `q${idx}: Page(perPage: 1) { media(search: "${title.replace(/"/g, '\\"')}", type: ANIME) { title { english romaji } coverImage { medium } description(asHtml: false) } }`;
             }).join('\n');
 
             const gql = `query { ${fragments} }`;
@@ -247,7 +247,8 @@ async function getAniListCovers(titles) {
             batch.forEach((title, idx) => {
                 const media = json?.data?.[`q${idx}`]?.media?.[0];
                 const coverUrl = media?.coverImage?.medium || null;
-                coverCache[title] = { url: coverUrl, at: Date.now() };
+                const desc = media?.description || null;
+                coverCache[title] = { url: coverUrl, description: desc, at: Date.now() };
             });
         } catch {
             // On failure, cache null so we don't retry immediately
@@ -257,7 +258,7 @@ async function getAniListCovers(titles) {
         }
     }
 
-    return titles.reduce((acc, t) => { acc[t] = coverCache[t]?.url || null; return acc; }, {});
+    return titles.reduce((acc, t) => { acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null }; return acc; }, {});
 }
 
 // Direct API calls to AllAnime (same as ani-cli but from Node)
@@ -580,9 +581,11 @@ const server = http.createServer(async (req, res) => {
             // Attach cover images from AniList (top 15 results)
             try {
                 const topTitles = results.slice(0, 15).map(r => r.name);
-                const covers = await getAniListCovers(topTitles);
+                const anilistData = await getAniListCovers(topTitles);
                 for (const r of results) {
-                    r.cover = covers[r.name] || null;
+                    const info = anilistData[r.name];
+                    r.cover = info?.cover || null;
+                    r.description = info?.description || null;
                 }
             } catch { /* non-critical */ }
 
@@ -719,9 +722,11 @@ const server = http.createServer(async (req, res) => {
             // Attach cover images
             try {
                 const titles = results.slice(0, 15).map(r => r.name);
-                const covers = await getAniListCovers(titles);
+                const anilistData = await getAniListCovers(titles);
                 for (const r of results) {
-                    r.cover = covers[r.name] || null;
+                    const info = anilistData[r.name];
+                    r.cover = info?.cover || null;
+                    r.description = info?.description || null;
                 }
             } catch { /* non-critical */ }
 
