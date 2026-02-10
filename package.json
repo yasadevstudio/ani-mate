@@ -1,0 +1,55 @@
+{
+  "name": "ani-mate",
+  "version": "0.2.0",
+  "description": "ANI-MATE - Free Anime For All",
+  "main": "main.js",
+  "author": "YASA Development Studio",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build:win": "electron-builder --win --x64"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.yasa.ani-mate",
+    "productName": "ANI-MATE",
+    "copyright": "Copyright 2026 YASA Development Studio",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "server/**/*",
+      "ui/**/*"
+    ],
+    "asarUnpack": [
+      "server/**/*"
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "YASADevStudio",
+      "repo": "ani-mate"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ANI-MATE",
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "runAfterFinish": true
+    }
+  }
+}
