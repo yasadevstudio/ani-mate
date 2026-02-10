@@ -4,7 +4,7 @@
 
 **Free Anime For All**
 
-A cyberpunk-themed desktop app for searching, streaming, and downloading anime. No external player needed.
+A desktop app for searching, streaming, and downloading anime. No external player needed.
 
 ![ANI-MATE](assets/icon.png)
 
@@ -25,7 +25,7 @@ Download `ANI-MATE Setup 0.2.0.exe`, run it, and you're good to go.
 - Favorites list
 - Daily trending and airing schedule
 - Download episodes (mp4 direct, m3u8 with ffmpeg)
-- Cyberpunk UI with animated splash intro
+- Animated splash intro
 
 ## Keyboard Shortcuts
 

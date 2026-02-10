@@ -1,6 +1,6 @@
 // YASA PRESENTS
 // ani-mate-server.js - ANI-MATE Backend Server
-// Cyberpunk anime streaming interface - REST API
+// Anime streaming interface - REST API
 
 const http = require('http');
 const { spawn } = require('child_process');
