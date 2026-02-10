@@ -265,14 +265,20 @@ async function getAniListCovers(titles) {
 const infoCache = {};
 const INFO_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
+// Title corrections for AllAnime names that don't match AniList/MAL
+const TITLE_MAP = {
+    '1P': 'One Piece',
+};
+
 async function getAnimeInfo(title) {
+    const searchTitle = TITLE_MAP[title] || title;
     if (infoCache[title] && (Date.now() - infoCache[title].at) < INFO_CACHE_TTL) {
         return infoCache[title];
     }
 
     // Try AniList first
     try {
-        const gql = `query { Page(perPage: 1) { media(search: "${title.replace(/"/g, '\\"')}", type: ANIME) { description(asHtml: false) coverImage { large } genres averageScore } } }`;
+        const gql = `query { Page(perPage: 1) { media(search: "${searchTitle.replace(/"/g, '\\"')}", type: ANIME) { description(asHtml: false) coverImage { large } genres averageScore } } }`;
         const resp = await fetch('https://graphql.anilist.co', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -290,7 +296,7 @@ async function getAnimeInfo(title) {
 
     // Jikan/MAL fallback
     try {
-        const resp = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(title)}&limit=1`, {
+        const resp = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(searchTitle)}&limit=1`, {
             signal: AbortSignal.timeout(5000)
         });
         const json = await resp.json();
@@ -312,7 +318,7 @@ async function searchAnime(query, mode = 'sub') {
     const searchGql = `query($search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } } }`;
 
     const variables = JSON.stringify({
-        search: { allowAdult: false, allowUnknown: false, query },
+        search: { allowAdult: true, allowUnknown: false, query },
         limit: 40,
         page: 1,
         translationType: mode,

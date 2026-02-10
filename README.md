@@ -4,7 +4,7 @@
 
 **Free Anime For All**
 
-A desktop app for searching, streaming, and downloading anime. No external player needed.
+Stream 95% of all anime ever made. Currently airing series, classics, movies, OVAs, specials — sub and dub. New episodes appear within hours of broadcast. Built-in progress tracking, favorites, trending charts, and auto-updates.
 
 ![ANI-MATE](assets/icon.png)
 
@@ -12,7 +12,7 @@ A desktop app for searching, streaming, and downloading anime. No external playe
 
 Get the latest installer from [Releases](../../releases).
 
-Download `ANI-MATE Setup 0.2.0.exe`, run it, and you're good to go.
+Download the latest `ANI-MATE-Setup-x.x.x.exe`, run it, and you're good to go. The app auto-updates on new releases.
 
 ## Features
 
@@ -34,7 +34,7 @@ Download `ANI-MATE Setup 0.2.0.exe`, run it, and you're good to go.
 | `/` | Focus search bar |
 | `Enter` | Play selected episode |
 | `Escape` | Close player |
-| `Left/Right` | Previous/next episode |
+| `Left/Right` | Seek ±5s (playing) / Previous/next episode (browsing) |
 | `Space` | Play/pause |
 | `f` | Fullscreen |
 
@@ -53,7 +53,7 @@ To build the Windows installer:
 npm run build:win
 ```
 
-Output: `dist/ANI-MATE Setup 0.2.0.exe`
+Output: `dist/ANI-MATE Setup x.x.x.exe`
 
 ## Tech Stack
 
