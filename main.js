@@ -148,8 +148,8 @@ autoUpdater.on('update-downloaded', () => {
     });
 });
 
-autoUpdater.on('error', () => {
-    // Silent fail — don't bother user if update check fails
+autoUpdater.on('error', (err) => {
+    console.error('[AutoUpdater]', err.message || err);
 });
 
 app.whenReady().then(async () => {
