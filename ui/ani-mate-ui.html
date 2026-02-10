@@ -1887,6 +1887,7 @@
         }
         if (match) {
             toast(`Switching to ${match.resolution}...`, 'info');
+            state.pendingResumeTime = video.currentTime;
             showPlayer(match.url);
             document.getElementById('np-detail').textContent =
                 document.getElementById('np-detail').textContent.replace(/\/\/\s*\S+\s*\/\//, `// ${match.resolution.toUpperCase()} //`);

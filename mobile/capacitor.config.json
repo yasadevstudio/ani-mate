@@ -1,0 +1,21 @@
+{
+  "appId": "com.yasa.animate",
+  "appName": "ANI-MATE",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    },
+    "SplashScreen": {
+      "launchAutoHide": false,
+      "backgroundColor": "#000000"
+    },
+    "StatusBar": {
+      "style": "DARK",
+      "backgroundColor": "#000000"
+    }
+  }
+}

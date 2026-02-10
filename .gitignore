@@ -3,3 +3,12 @@ dist/
 *.blockmap
 *.exe
 .wine/
+
+# Android build outputs
+mobile/android/app/build/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/capacitor-*/**/build/
+mobile/android/local.properties
+*.apk
+*.aab

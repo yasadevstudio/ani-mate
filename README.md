@@ -10,24 +10,39 @@ Stream 95% of all anime ever made. Currently airing series, classics, movies, OV
 
 ## Download
 
-Get the latest installer from [Releases](../../releases).
+Get the latest version from [Releases](../../releases).
 
-Download the latest `ANI-MATE-Setup-x.x.x.exe`, run it, and you're good to go. The app auto-updates on new releases.
+| Platform | File | Notes |
+|----------|------|-------|
+| **Windows** | `ANI-MATE-Setup-x.x.x.exe` | Installer with auto-updates |
+| **Android** | `ANI-MATE-x.x.x.apk` | Sideload — enable "Install unknown apps" in settings |
 
 ## Features
 
+### All Platforms
 - Search anime by name (sub/dub)
 - In-app video player with HLS streaming
-- Quality switching during playback
+- Quality switching during playback (resumes from same position)
 - Continue watching with resume from where you left off
 - Episode tracking with watched markers
 - Auto-play next episode
 - Favorites list
 - Daily trending and airing schedule
+- Auto-fallback when a stream source fails
+
+### Windows Only
 - Download episodes (mp4 direct, m3u8 with ffmpeg)
 - Animated splash intro
+- Auto-updates via GitHub releases
 
-## Keyboard Shortcuts
+### Android Only
+- Touch controls (tap play/pause, double-tap seek ±10s)
+- Full player controls (progress bar, skip, prev/next episode)
+- Auto landscape lock during playback
+- Screen stays awake during playback
+- Android back button navigation
+
+## Keyboard Shortcuts (Windows / Bluetooth keyboard)
 
 | Key | Action |
 |-----|--------|
@@ -40,6 +55,8 @@ Download the latest `ANI-MATE-Setup-x.x.x.exe`, run it, and you're good to go. T
 
 ## Build From Source
 
+### Windows (Electron)
+
 ```bash
 git clone https://github.com/YASADevStudio/ani-mate.git
 cd ani-mate
@@ -47,28 +64,39 @@ npm install
 npm start
 ```
 
-To build the Windows installer:
+Build installer: `npm run build:win` → `dist/ANI-MATE Setup x.x.x.exe`
+
+### Android (Capacitor)
 
 ```bash
-npm run build:win
+git clone https://github.com/YASADevStudio/ani-mate.git
+cd ani-mate/mobile
+npm install
+npx cap sync android
+cd android && ./gradlew assembleDebug
 ```
 
-Output: `dist/ANI-MATE Setup x.x.x.exe`
+APK output: `mobile/android/app/build/outputs/apk/debug/app-debug.apk`
+
+Requires: JDK 21, Android SDK (API 36, build-tools 36.0.0)
 
 ## Tech Stack
 
-- **Electron** — Desktop app framework
-- **Node.js** — Backend HTTP server (zero npm runtime dependencies)
-- **hls.js** — HLS video playback
-- **AllAnime API** — Anime search and streaming
-- **AniList API** — Cover art and airing schedule
+| Component | Windows | Android |
+|-----------|---------|---------|
+| Framework | Electron | Capacitor 8 |
+| HTTP/CORS | Node.js proxy server | CapacitorHttp (native HTTP) |
+| Video | hls.js | hls.js + custom loader |
+| Storage | Local filesystem | Capacitor Filesystem |
+| Anime data | AllAnime GraphQL API | AllAnime GraphQL API |
+| Metadata | AniList + Jikan/MAL | AniList + Jikan/MAL |
 
 ## File Locations
 
-| Data | Location |
-|------|----------|
-| App data | `%APPDATA%\ANI-MATE\data\` |
-| Downloads | `Videos\ANI-MATE\` |
+| Data | Windows | Android |
+|------|---------|---------|
+| App data | `%APPDATA%\ANI-MATE\data\` | App internal storage |
+| Downloads | `Videos\ANI-MATE\` | N/A |
 
 ## License
 

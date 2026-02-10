@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#0a0a0f">
+    <title>ANI-MATE</title>
+    <link rel="stylesheet" href="css/ani-mate.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Jura:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <!-- Header -->
+    <header id="app-header">
+        <div class="header-brand">ANI-MATE</div>
+        <div class="header-status">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-text">ONLINE</span>
+        </div>
+    </header>
+
+    <!-- Tab Navigation -->
+    <nav id="tab-bar">
+        <button class="tab-btn active" data-tab="search">SEARCH</button>
+        <button class="tab-btn" data-tab="continue">CONTINUE</button>
+        <button class="tab-btn" data-tab="daily">DAILY</button>
+        <button class="tab-btn" data-tab="releases">RELEASES</button>
+        <button class="tab-btn" data-tab="favs">FAVS</button>
+    </nav>
+
+    <!-- Main Content -->
+    <main id="main-content">
+        <div id="search-box" class="search-box">
+            <input type="search" id="search-input" placeholder="Search anime..." autocomplete="off" autocapitalize="off" enterkeyhint="search">
+            <div class="mode-row">
+                <button class="mode-btn active" data-mode="sub">SUB</button>
+                <button class="mode-btn" data-mode="dub">DUB</button>
+            </div>
+        </div>
+        <div id="results-container"></div>
+    </main>
+
+    <!-- Episode Panel (slides up over main) -->
+    <div id="episode-panel" class="panel">
+        <div class="panel-header">
+            <button id="panel-back" class="icon-btn">&#8592;</button>
+            <div class="panel-title-area">
+                <div id="panel-title" class="panel-title truncate"></div>
+                <div id="panel-meta" class="panel-meta"></div>
+            </div>
+            <button id="panel-fav" class="fav-star-btn">&#9734;</button>
+        </div>
+        <div id="anime-description" class="anime-desc"></div>
+        <div id="range-selector" class="range-selector"></div>
+        <div id="episode-grid" class="episode-grid"></div>
+        <div class="play-bar">
+            <select id="quality-select">
+                <option value="best">BEST</option>
+                <option value="1080">1080p</option>
+                <option value="720">720p</option>
+                <option value="480">480p</option>
+                <option value="360">360p</option>
+                <option value="worst">WORST</option>
+            </select>
+            <label class="autoplay-label">
+                <input type="checkbox" id="autoplay-toggle"> AUTO
+            </label>
+            <button id="play-btn" class="play-btn" disabled>&#9654; PLAY</button>
+        </div>
+    </div>
+
+    <!-- Video Player (fullscreen overlay) -->
+    <div id="player-overlay" class="player-overlay hidden">
+        <div id="player-loading" class="player-loading">
+            <div class="spinner"></div>
+            <div>LOADING STREAM...</div>
+        </div>
+        <video id="video-player" playsinline webkit-playsinline></video>
+        <div id="player-ui" class="player-ui">
+            <div class="player-top">
+                <button id="player-back" class="icon-btn light">&#8592;</button>
+                <div id="player-info" class="truncate"></div>
+            </div>
+            <div class="player-bottom">
+                <div class="progress-row">
+                    <span id="time-current" class="time-label">0:00</span>
+                    <div id="progress-bar" class="progress-bar">
+                        <div id="progress-buffered" class="progress-buffered"></div>
+                        <div id="progress-filled" class="progress-filled"></div>
+                        <div id="progress-thumb" class="progress-thumb"></div>
+                    </div>
+                    <span id="time-total" class="time-label">0:00</span>
+                </div>
+                <div class="controls-row">
+                    <button id="ctrl-prev-ep" class="ctrl-btn" title="Previous episode">&#9198;</button>
+                    <button id="ctrl-rw" class="ctrl-btn" title="Rewind 10s">&#171;</button>
+                    <button id="ctrl-play" class="ctrl-btn ctrl-play" title="Play/Pause">&#9654;</button>
+                    <button id="ctrl-ff" class="ctrl-btn" title="Forward 10s">&#187;</button>
+                    <button id="ctrl-next-ep" class="ctrl-btn" title="Next episode">&#9197;</button>
+                </div>
+            </div>
+        </div>
+        <div class="touch-zone left" id="tz-left"></div>
+        <div class="touch-zone center" id="tz-center"></div>
+        <div class="touch-zone right" id="tz-right"></div>
+        <div id="seek-indicator" class="seek-indicator hidden"></div>
+    </div>
+
+    <!-- Update Banner -->
+    <div id="update-banner" class="update-banner hidden">
+        <span id="update-text">New version available!</span>
+        <a id="update-link" class="update-btn" href="#" target="_blank">UPDATE</a>
+        <button id="update-dismiss" class="update-dismiss">&times;</button>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div id="toast-container"></div>
+
+    <!-- Scripts -->
+    <script src="lib/hls.min.js"></script>
+    <script src="js/hls-loader-fix.js"></script>
+    <script src="js/ani-mate-api.js"></script>
+    <script src="js/ani-mate-storage.js"></script>
+    <script src="js/ani-mate-ui.js"></script>
+</body>
+</html>
