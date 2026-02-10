@@ -553,6 +553,34 @@
             letter-spacing: 1px;
         }
 
+        .anime-description {
+            padding: 6px 12px 10px;
+            font-size: 12px;
+            line-height: 1.5;
+            color: var(--text-dim);
+            max-height: 120px;
+            overflow-y: auto;
+            border-bottom: 1px solid rgba(0, 255, 255, 0.1);
+            margin-bottom: 8px;
+        }
+
+        .anime-description::-webkit-scrollbar { width: 4px; }
+        .anime-description::-webkit-scrollbar-track { background: transparent; }
+        .anime-description::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 2px; }
+
+        .anime-description .anime-genres {
+            margin-top: 4px;
+            font-size: 10px;
+            color: var(--accent-cyan);
+            letter-spacing: 0.5px;
+        }
+
+        .anime-description .anime-score {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 10px;
+            color: var(--accent-gold);
+        }
+
         .range-selector {
             display: flex;
             flex-wrap: wrap;
@@ -1110,7 +1138,7 @@
                     <div class="player-splash-presents">PRESENTS</div>
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
-                    <div class="player-splash-ver">v0.2.4 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.2.5 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -1120,6 +1148,7 @@
                         </div>
                         <div class="selected-anime-count" id="selected-anime-count">--</div>
                     </div>
+                    <div class="anime-description" id="anime-description" style="display:none"></div>
                     <div class="range-selector" id="range-selector" style="display:none"></div>
                     <div class="episode-grid" id="episode-grid"></div>
                 </div>
@@ -1298,6 +1327,25 @@
         document.getElementById('selected-anime-title').textContent = title;
         document.getElementById('selected-anime-count').textContent = `${epCount} EP`;
         updateHeaderStar();
+
+        // Fetch and show anime description
+        const descEl = document.getElementById('anime-description');
+        descEl.style.display = 'none';
+        descEl.innerHTML = '';
+        apiCall(`/info?title=${encodeURIComponent(title)}`).then(info => {
+            if (info.description) {
+                const cleanDesc = info.description.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, '');
+                let html = cleanDesc;
+                if (info.genres && info.genres.length > 0) {
+                    html += `<div class="anime-genres">${info.genres.join(' // ')}</div>`;
+                }
+                if (info.score) {
+                    html += `<span class="anime-score"> ${info.score}%</span>`;
+                }
+                descEl.innerHTML = html;
+                descEl.style.display = 'block';
+            }
+        }).catch(() => {});
 
         const grid = document.getElementById('episode-grid');
         grid.innerHTML = '<div class="loading-indicator">LOADING EPISODES...</div>';

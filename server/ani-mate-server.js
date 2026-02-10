@@ -261,6 +261,52 @@ async function getAniListCovers(titles) {
     return titles.reduce((acc, t) => { acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null }; return acc; }, {});
 }
 
+// Anime info lookup (AniList primary, Jikan/MAL fallback)
+const infoCache = {};
+const INFO_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+
+async function getAnimeInfo(title) {
+    if (infoCache[title] && (Date.now() - infoCache[title].at) < INFO_CACHE_TTL) {
+        return infoCache[title];
+    }
+
+    // Try AniList first
+    try {
+        const gql = `query { Page(perPage: 1) { media(search: "${title.replace(/"/g, '\\"')}", type: ANIME) { description(asHtml: false) coverImage { large } genres averageScore } } }`;
+        const resp = await fetch('https://graphql.anilist.co', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ query: gql }),
+            signal: AbortSignal.timeout(5000)
+        });
+        const json = await resp.json();
+        const media = json?.data?.Page?.media?.[0];
+        if (media?.description) {
+            const result = { description: media.description, cover: media.coverImage?.large || null, genres: media.genres || [], score: media.averageScore, source: 'anilist', at: Date.now() };
+            infoCache[title] = result;
+            return result;
+        }
+    } catch { /* fall through to Jikan */ }
+
+    // Jikan/MAL fallback
+    try {
+        const resp = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(title)}&limit=1`, {
+            signal: AbortSignal.timeout(5000)
+        });
+        const json = await resp.json();
+        const anime = json?.data?.[0];
+        if (anime) {
+            const result = { description: anime.synopsis || null, cover: anime.images?.jpg?.large_image_url || null, genres: (anime.genres || []).map(g => g.name), score: anime.score ? anime.score * 10 : null, source: 'mal', at: Date.now() };
+            infoCache[title] = result;
+            return result;
+        }
+    } catch { /* no fallback */ }
+
+    const empty = { description: null, cover: null, genres: [], score: null, source: null, at: Date.now() };
+    infoCache[title] = empty;
+    return empty;
+}
+
 // Direct API calls to AllAnime (same as ani-cli but from Node)
 async function searchAnime(query, mode = 'sub') {
     const searchGql = `query($search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } } }`;
@@ -570,6 +616,16 @@ const server = http.createServer(async (req, res) => {
         }
 
         // API routes
+        if (pathname === '/info') {
+            if (!query.title) {
+                jsonResponse(res, 400, { error: 'Missing title parameter' });
+                return;
+            }
+            const info = await getAnimeInfo(query.title);
+            jsonResponse(res, 200, info);
+            return;
+        }
+
         if (pathname === '/search') {
             if (!query.q) {
                 jsonResponse(res, 400, { error: 'Missing search query parameter "q"' });
