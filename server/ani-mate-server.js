@@ -771,6 +771,24 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
+        if (pathname === '/history/remove') {
+            const animeId = query.id;
+            if (!animeId) {
+                jsonResponse(res, 400, { error: 'Missing id parameter' });
+                return;
+            }
+            const history = loadForgeHistory();
+            const idx = history.findIndex(h => h.anime_id === animeId);
+            if (idx >= 0) {
+                history.splice(idx, 1);
+                saveForgeHistory(history);
+                jsonResponse(res, 200, { status: 'removed', anime_id: animeId });
+            } else {
+                jsonResponse(res, 404, { error: 'Not found in history' });
+            }
+            return;
+        }
+
         if (pathname === '/continue') {
             const continueList = getContinueList();
             jsonResponse(res, 200, { continue_list: continueList });
