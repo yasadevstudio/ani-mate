@@ -117,6 +117,15 @@ async function saveProgress(animeId, episode, playbackTime) {
     }
 }
 
+async function removeFromHistory(animeId) {
+    const history = await loadHistory();
+    const idx = history.findIndex(h => h.anime_id === animeId);
+    if (idx >= 0) {
+        history.splice(idx, 1);
+        await saveHistory(history);
+    }
+}
+
 async function markWatched(animeId, episode) {
     const history = await loadHistory();
     const idx = history.findIndex(h => h.anime_id === animeId);
@@ -197,6 +206,7 @@ window.Storage = {
     addToHistory,
     saveProgress,
     markWatched,
+    removeFromHistory,
     getContinueList,
     loadFavorites,
     saveFavorites,

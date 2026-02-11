@@ -847,6 +847,22 @@
                 state.pendingResumeTime = parseFloat(card.dataset.resumeTime) || 0;
                 loadEpisodes(card.dataset.id, card.dataset.title, parseInt(card.dataset.eps) || 0);
             });
+            // Long-press to remove from continue watching
+            let lpTimer;
+            card.addEventListener('touchstart', () => {
+                lpTimer = setTimeout(() => {
+                    const id = card.dataset.id;
+                    const title = card.dataset.title;
+                    if (confirm(`Remove "${title}" from history?`)) {
+                        Storage.removeFromHistory(id);
+                        state.continueResults = state.continueResults.filter(r => r.anime_id !== id);
+                        renderContinue();
+                        showToast(`Removed "${title}"`);
+                    }
+                }, 600);
+            });
+            card.addEventListener('touchend', () => clearTimeout(lpTimer));
+            card.addEventListener('touchmove', () => clearTimeout(lpTimer));
         });
     }
 
@@ -1195,14 +1211,29 @@
     window.addEventListener('offline', updateNetworkStatus);
 
     // === INIT ===
-    // === AUTO-UPDATE CHECKER ===
+    // === AUTO-UPDATE SYSTEM (In-App Download + Install) ===
+    const ApkInstaller = window.Capacitor?.Plugins?.ApkInstaller;
+
     async function checkForUpdate() {
         try {
-            const resp = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-                headers: { 'Accept': 'application/vnd.github.v3+json' }
-            });
-            if (!resp.ok) return;
-            const release = await resp.json();
+            // Use CapacitorHttp directly to avoid fetch interception issues
+            const http = window.Capacitor?.Plugins?.CapacitorHttp;
+            let release;
+            if (http) {
+                const resp = await http.get({
+                    url: `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
+                    headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'ANI-MATE-Android' }
+                });
+                if (resp.status !== 200) return;
+                release = typeof resp.data === 'string' ? JSON.parse(resp.data) : resp.data;
+            } else {
+                const resp = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+                    headers: { 'Accept': 'application/vnd.github.v3+json' }
+                });
+                if (!resp.ok) return;
+                release = await resp.json();
+            }
+
             const latest = (release.tag_name || '').replace(/^v/, '');
             if (!latest || !isNewer(latest, APP_VERSION)) return;
 
@@ -1210,21 +1241,11 @@
             const apk = (release.assets || []).find(a => a.name.toLowerCase().includes('mobile') && a.name.endsWith('.apk'));
             if (!apk) return;
 
-            const banner = $('update-banner');
-            const text = $('update-text');
-            const link = $('update-link');
-            const dismiss = $('update-dismiss');
-
-            text.textContent = `ANI-MATE v${latest} available!`;
-            link.href = apk.browser_download_url;
-            banner.classList.remove('hidden');
-
-            dismiss.onclick = () => {
-                banner.classList.add('hidden');
-                // Don't nag again this session
-            };
+            // Show update dialog
+            showUpdateDialog(latest, apk.browser_download_url, release.body || '');
         } catch (e) {
             // Silent fail - no network or API issue, not critical
+            console.warn('Update check failed:', e);
         }
     }
 
@@ -1238,6 +1259,79 @@
             if (rv < lv) return false;
         }
         return false;
+    }
+
+    function showUpdateDialog(version, downloadUrl, changelog) {
+        // Remove existing dialog if any
+        const existing = document.getElementById('update-dialog-overlay');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'update-dialog-overlay';
+        overlay.className = 'update-overlay';
+
+        const cl = changelog.replace(/\n/g, '<br>').substring(0, 300);
+
+        overlay.innerHTML = `
+            <div class="update-dialog">
+                <div class="update-dialog-title">UPDATE AVAILABLE</div>
+                <div class="update-dialog-version">v${APP_VERSION} → v${version}</div>
+                ${cl ? `<div class="update-dialog-changelog">${cl}</div>` : ''}
+                <div class="update-dialog-progress hidden" id="update-progress">
+                    <div class="update-progress-bar"><div class="update-progress-fill" id="update-progress-fill"></div></div>
+                    <div class="update-progress-text" id="update-progress-text">Downloading...</div>
+                </div>
+                <div class="update-dialog-buttons" id="update-buttons">
+                    <button class="update-btn-later" id="update-later">LATER</button>
+                    <button class="update-btn-install" id="update-install">UPDATE NOW</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        document.getElementById('update-later').onclick = () => overlay.remove();
+        document.getElementById('update-install').onclick = () => startUpdate(downloadUrl, overlay);
+    }
+
+    async function startUpdate(url, overlay) {
+        const buttons = document.getElementById('update-buttons');
+        const progress = document.getElementById('update-progress');
+        const progressFill = document.getElementById('update-progress-fill');
+        const progressText = document.getElementById('update-progress-text');
+
+        // Switch to progress view
+        buttons.classList.add('hidden');
+        progress.classList.remove('hidden');
+
+        if (ApkInstaller) {
+            // Listen for progress events
+            const progressListener = await ApkInstaller.addListener('downloadProgress', (data) => {
+                const pct = data.percent || 0;
+                progressFill.style.width = pct + '%';
+                const mb = ((data.downloaded || 0) / 1048576).toFixed(1);
+                const totalMb = ((data.total || 0) / 1048576).toFixed(1);
+                progressText.textContent = `Downloading... ${mb}/${totalMb} MB (${pct}%)`;
+            });
+
+            try {
+                progressText.textContent = 'Downloading update...';
+                await ApkInstaller.downloadAndInstall({ url });
+                progressText.textContent = 'Installing...';
+                // Dialog stays until Android installer takes over
+            } catch (e) {
+                progressText.textContent = 'Update failed: ' + (e.message || 'Unknown error');
+                buttons.classList.remove('hidden');
+                progress.classList.add('hidden');
+                toast('Update failed. Try again later.', 'error');
+            } finally {
+                progressListener?.remove();
+            }
+        } else {
+            // Fallback: open download URL in browser (no native plugin available)
+            progressText.textContent = 'Opening download...';
+            window.open(url, '_system');
+            setTimeout(() => overlay.remove(), 2000);
+        }
     }
 
     async function init() {
