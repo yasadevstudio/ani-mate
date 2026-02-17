@@ -124,18 +124,113 @@ async function searchAnime(query, mode = 'sub') {
     }
     results.sort((a, b) => b.episodes - a.episodes);
 
-    // Attach cover images from AniList (top 15)
+    // Dual-source search: AllAnime (primary/streams) + AniList (fuzzy/romaji)
+    const aniListResults = await searchAniList(query, 15).catch(() => []);
+
+    const existingNames = new Set(results.map(r => r.name.toLowerCase()));
+
+    // Enrich AllAnime results with AniList English titles
+    for (const r of results) {
+        const aniMatch = aniListResults.find(a =>
+            (a.title_romaji && a.title_romaji.toLowerCase() === r.name.toLowerCase()) ||
+            (a.title_english && a.title_english.toLowerCase() === r.name.toLowerCase())
+        );
+        if (aniMatch) {
+            r.title_english = aniMatch.title_english;
+            r.cover = r.cover || aniMatch.cover;
+            r.description = r.description || aniMatch.description;
+        }
+    }
+
+    // Find AniList results NOT already in AllAnime results
+    const aniListOnly = aniListResults.filter(a => {
+        const names = [a.title_english, a.title_romaji].filter(Boolean).map(n => n.toLowerCase());
+        return !names.some(n => existingNames.has(n));
+    });
+
+    // Search AllAnime for AniList-only titles (parallel, max 3)
+    const secondarySearches = aniListOnly.slice(0, 3).map(async (aniResult) => {
+        const searchName = aniResult.title_romaji || aniResult.title_english;
+        if (!searchName) return null;
+        try {
+            const subGql = `query($search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } } }`;
+            const subVars = JSON.stringify({
+                search: { allowAdult: true, allowUnknown: false, query: searchName },
+                limit: 5, page: 1, translationType: mode, countryOrigin: 'ALL'
+            });
+            const subParams = new URLSearchParams({ variables: subVars, query: subGql });
+            const subData = await allanimeGet(`${ALLANIME_API}?${subParams.toString()}`);
+            const subShows = subData?.data?.shows?.edges || [];
+            for (const show of subShows) {
+                const epCount = show.availableEpisodes?.[mode] || 0;
+                if (epCount > 0 && !existingNames.has(show.name.toLowerCase())) {
+                    const type = epCount === 1 ? 'movie' : epCount <= 12 ? 'short' : 'series';
+                    return {
+                        id: show._id, name: show.name, episodes: epCount, type,
+                        cover: aniResult.cover, description: aniResult.description,
+                        title_english: aniResult.title_english
+                    };
+                }
+            }
+        } catch { /* skip */ }
+        return null;
+    });
+
+    const secondaryResults = (await Promise.all(secondarySearches)).filter(Boolean);
+    for (const r of secondaryResults) {
+        if (!existingNames.has(r.name.toLowerCase())) {
+            results.push(r);
+            existingNames.add(r.name.toLowerCase());
+        }
+    }
+
+    // Attach cover images for results still missing covers
     try {
-        const topTitles = results.slice(0, 15).map(r => r.name);
-        const anilistData = await getAniListCovers(topTitles);
-        for (const r of results) {
-            const info = anilistData[r.name];
-            r.cover = info?.cover || null;
-            r.description = info?.description || null;
+        const uncovered = results.filter(r => !r.cover).slice(0, 15).map(r => r.name);
+        if (uncovered.length > 0) {
+            const anilistData = await getAniListCovers(uncovered);
+            for (const r of results) {
+                if (!r.cover) {
+                    const info = anilistData[r.name];
+                    r.cover = info?.cover || null;
+                    r.description = r.description || info?.description || null;
+                }
+            }
         }
     } catch { /* non-critical */ }
 
     return results;
+}
+
+// AniList search — fuzzy matching, romaji/English, catches misspellings
+async function searchAniList(query, limit = 15) {
+    try {
+        const gql = `query ($search: String, $perPage: Int) {
+            Page(page: 1, perPage: $perPage) {
+                media(search: $search, type: ANIME, sort: [SEARCH_MATCH]) {
+                    id title { english romaji } coverImage { medium }
+                    description(asHtml: false) format episodes status
+                }
+            }
+        }`;
+        const resp = await fetch('https://graphql.anilist.co', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ query: gql, variables: { search: query, perPage: limit } }),
+            signal: AbortSignal.timeout(5000)
+        });
+        const json = await resp.json();
+        return (json?.data?.Page?.media || []).map(m => ({
+            anilist_id: m.id,
+            title_english: m.title?.english || null,
+            title_romaji: m.title?.romaji || null,
+            cover: m.coverImage?.medium || null,
+            description: m.description || null,
+            format: m.format,
+            episodes: m.episodes,
+            status: m.status
+        }));
+    } catch { return []; }
 }
 
 // Get episode list for a show
@@ -387,15 +482,18 @@ async function getAniListCovers(titles) {
     for (let i = 0; i < needed.length; i += 5) {
         const batch = needed.slice(i, i + 5);
         try {
-            const fragments = batch.map((title, idx) => {
-                return `q${idx}: Page(perPage: 1) { media(search: "${title.replace(/"/g, '\\"')}", type: ANIME) { title { english romaji } coverImage { medium } description(asHtml: false) } }`;
+            const varDefs = batch.map((_, idx) => `$s${idx}: String`).join(', ');
+            const fragments = batch.map((_, idx) => {
+                return `q${idx}: Page(perPage: 1) { media(search: $s${idx}, type: ANIME) { title { english romaji } coverImage { medium } description(asHtml: false) } }`;
             }).join('\n');
+            const variables = {};
+            batch.forEach((title, idx) => { variables[`s${idx}`] = title; });
 
-            const gql = `query { ${fragments} }`;
+            const gql = `query (${varDefs}) { ${fragments} }`;
             const resp = await fetch('https://graphql.anilist.co', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify({ query: gql }),
+                body: JSON.stringify({ query: gql, variables }),
                 signal: AbortSignal.timeout(5000)
             });
             const json = await resp.json();
@@ -428,11 +526,11 @@ async function getAnimeInfo(title) {
 
     // Try AniList first
     try {
-        const gql = `query { Page(perPage: 1) { media(search: "${searchTitle.replace(/"/g, '\\"')}", type: ANIME) { description(asHtml: false) coverImage { large } genres averageScore } } }`;
+        const gql = `query ($search: String) { Page(perPage: 1) { media(search: $search, type: ANIME) { description(asHtml: false) coverImage { large } genres averageScore } } }`;
         const resp = await fetch('https://graphql.anilist.co', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({ query: gql }),
+            body: JSON.stringify({ query: gql, variables: { search: searchTitle } }),
             signal: AbortSignal.timeout(5000)
         });
         const json = await resp.json();
@@ -466,6 +564,7 @@ async function getAnimeInfo(title) {
 // Export all API functions
 window.API = {
     searchAnime,
+    searchAniList,
     getEpisodeList,
     getEpisodeUrl,
     getDailyPopular,

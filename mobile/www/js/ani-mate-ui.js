@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.2.7';
+    const APP_VERSION = '0.3.0';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -68,6 +68,10 @@
 
     function escAttr(str) {
         return (str || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+    }
+
+    function esc(s) {
+        return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
     function stripHtml(str) {
@@ -153,7 +157,8 @@
                     <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}">${isFav ? '&#9733;' : '&#9734;'}</button>
                     ${coverHtml}
                     <div class="result-info">
-                        <div class="result-title">${r.name}</div>
+                        <div class="result-title">${esc(r.name)}</div>
+                        ${r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase() ? `<div class="result-title-en">${esc(r.title_english)}</div>` : ''}
                         <div class="result-meta"><span class="result-type ${r.type}">${typeLabel}</span>${r.episodes} EP</div>
                     </div>
                 </div>
@@ -178,6 +183,9 @@
 
     // === EPISODES ===
     async function loadEpisodes(animeId, title, epCount) {
+        // Close player if open (don't auto-show video when switching anime)
+        if (state.isPlaying) hidePlayer();
+
         state.selectedAnime = { id: animeId, title, epCount };
         state.selectedEpisode = null;
         state.currentRange = 0;
@@ -189,20 +197,22 @@
         updatePanelFavStar();
         showEpisodePanel();
 
-        // Fetch description (background)
+        // Fetch description with cover image (background)
         const descEl = $('anime-description');
         descEl.style.display = 'none';
         descEl.innerHTML = '';
         API.getAnimeInfo(title).then(info => {
-            if (info && info.description) {
-                let html = stripHtml(info.description);
+            if (info && (info.description || info.cover)) {
+                const cleanDesc = info.description ? stripHtml(info.description) : '';
+                const coverHtml = info.cover ? `<img class="anime-cover-img" src="${esc(info.cover)}" alt="${esc(title)}" loading="lazy">` : '';
+                let textHtml = cleanDesc;
                 if (info.genres && info.genres.length > 0) {
-                    html += `<div class="anime-genres">${info.genres.join(' // ')}</div>`;
+                    textHtml += `<div class="anime-genres">${info.genres.join(' // ')}</div>`;
                 }
                 if (info.score) {
-                    html += `<span class="anime-score"> ${info.score}%</span>`;
+                    textHtml += `<span class="anime-score"> ${info.score}%</span>`;
                 }
-                descEl.innerHTML = html;
+                descEl.innerHTML = `<div class="anime-desc-row">${coverHtml}<div class="anime-desc-text">${textHtml}</div></div>`;
                 descEl.style.display = 'block';
             }
         }).catch(() => {});
@@ -536,22 +546,38 @@
         );
     }
 
-    // Auto-play next episode when current one ends
-    video.addEventListener('ended', () => {
-        if (!state.autoPlay || !state.selectedAnime || !state.episodes.length) return;
+    // Handle episode end — autoplay next or mark watched and queue next
+    video.addEventListener('ended', async () => {
+        if (!state.selectedAnime || !state.episodes.length) return;
+
+        // Mark current episode as watched and clear progress
+        if (state.selectedEpisode) {
+            try { await Storage.markWatched(state.selectedAnime.id, state.selectedEpisode); } catch (e) {}
+        }
+
         const currentIdx = state.episodes.indexOf(state.selectedEpisode);
-        if (currentIdx === -1 || currentIdx >= state.episodes.length - 1) {
+        const hasNext = currentIdx !== -1 && currentIdx < state.episodes.length - 1;
+
+        if (!hasNext) {
             toast('Series complete!', 'info');
+            hidePlayer();
             return;
         }
+
         const nextEp = state.episodes[currentIdx + 1];
         state.selectedEpisode = nextEp;
         state.pendingResumeTime = 0;
         updatePlayButton();
         highlightEpisode(nextEp);
         $('panel-meta').textContent = `EP ${nextEp} // ${state.mode.toUpperCase()}`;
-        toast(`Auto-playing EP ${nextEp}...`, 'info');
-        playEpisode();
+
+        if (state.autoPlay) {
+            toast(`Auto-playing EP ${nextEp}...`, 'info');
+            playEpisode();
+        } else {
+            hidePlayer();
+            toast(`EP ${nextEp} ready — press Play`, 'info');
+        }
     });
 
     // Quality switching during playback (uses cached links)
@@ -830,7 +856,7 @@
                     data-eps="${r.total_episodes || '?'}" data-resume-ep="${resumeEp}" data-resume-time="${resumeTime}">
                     <div class="result-card-row">
                         <div class="result-info">
-                            <div class="result-title">${r.title || r.anime_id}</div>
+                            <div class="result-title">${esc(r.title || r.anime_id)}</div>
                             <div class="result-meta">
                                 <span class="result-type series">${resumeLabel}</span>
                                 ${totalLabel} // ${(r.mode || 'sub').toUpperCase()}
@@ -894,7 +920,7 @@
                         <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}">${isFav ? '&#9733;' : '&#9734;'}</button>
                         ${coverHtml}
                         <div class="result-info">
-                            <div class="result-title">${r.name}</div>
+                            <div class="result-title">${esc(r.name)}</div>
                             <div class="result-meta"><span class="result-type series">#${i + 1}</span>${r.episodes} EP</div>
                         </div>
                     </div>
@@ -951,18 +977,23 @@
         for (const [slot, items] of Object.entries(slots)) {
             if (items.length === 0) continue;
             html += `<div class="section-label">${labels[slot]}</div>`;
+            const nowSec = Math.floor(Date.now() / 1000);
             html += items.map(r => {
                 const airTime = new Date(r.airingAt * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
                 const coverHtml = r.cover
                     ? `<div class="cover-wrap"><img src="${r.cover}" loading="lazy" alt=""></div>`
                     : '';
                 const isFav = state.favorites.some(f => f.name === r.title || f.name === r.title_romaji);
+                const isReleased = r.airingAt <= nowSec;
+                const tagHtml = isReleased
+                    ? '<span class="release-tag released">RELEASED</span>'
+                    : '<span class="release-tag pending">PENDING</span>';
                 return `<div class="result-card release-card" data-release-title="${escAttr(r.title)}" data-release-romaji="${escAttr(r.title_romaji)}">
                     <div class="result-card-row">
                         <button class="fav-star-inline ${isFav ? 'active' : ''}" data-rel-fav-title="${escAttr(r.title)}" data-rel-fav-romaji="${escAttr(r.title_romaji || '')}" data-rel-fav-eps="${r.totalEpisodes || 0}">${isFav ? '&#9733;' : '&#9734;'}</button>
                         ${coverHtml}
                         <div class="result-info">
-                            <div class="result-title">${r.title}</div>
+                            <div class="result-title">${esc(r.title)} ${tagHtml}</div>
                             <div class="result-meta">
                                 <span class="result-type series">${r.format || 'TV'}</span>
                                 EP ${r.episode}${r.totalEpisodes ? '/' + r.totalEpisodes : ''}
@@ -990,6 +1021,21 @@
         });
     }
 
+    function bestTitleMatch(results, targetTitle, targetRomaji) {
+        if (!results || results.length === 0) return null;
+        const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const targets = [norm(targetTitle), norm(targetRomaji)].filter(Boolean);
+        for (const r of results) {
+            const names = [norm(r.name), norm(r.title_english)].filter(Boolean);
+            if (names.some(n => targets.includes(n))) return r;
+        }
+        for (const r of results) {
+            const names = [norm(r.name), norm(r.title_english)].filter(Boolean);
+            if (names.some(rn => targets.some(t => rn.includes(t) || t.includes(rn)))) return r;
+        }
+        return results[0];
+    }
+
     function bindReleaseCards() {
         document.querySelectorAll('.release-card').forEach(card => {
             card.addEventListener('click', async (e) => {
@@ -1004,7 +1050,7 @@
                         results = await API.searchAnime(romaji, state.mode);
                     }
                     if (results.length > 0) {
-                        const match = results[0];
+                        const match = bestTitleMatch(results, title, romaji);
                         loadEpisodes(match.id, match.name, match.episodes);
                     } else {
                         toast('Not found on streaming source', 'error');
@@ -1069,7 +1115,7 @@
                     <div class="result-card-row">
                         <button class="fav-star-inline active" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}">&#9733;</button>
                         <div class="result-info">
-                            <div class="result-title">${r.name}</div>
+                            <div class="result-title">${esc(r.name)}</div>
                             <div class="result-meta">${r.episodes} EP</div>
                         </div>
                     </div>
@@ -1135,11 +1181,11 @@
                 break;
             case 'ArrowRight':
                 e.preventDefault();
-                if (state.isPlaying) video.currentTime += 5;
+                if (state.isPlaying) video.currentTime += 10;
                 break;
             case 'ArrowLeft':
                 e.preventDefault();
-                if (state.isPlaying) video.currentTime -= 5;
+                if (state.isPlaying) video.currentTime -= 10;
                 break;
             case ' ':
                 if (state.isPlaying) {
@@ -1334,6 +1380,73 @@
         }
     }
 
+    // === CHANGELOG ===
+    const CHANGELOG = [
+        'Hybrid search — searches AniList + AllAnime for better discoverability',
+        'Cover images shown in anime description area',
+        'Released/Pending tags on airing schedule',
+        'Auto-translate Japanese names to English when available',
+        'Arrow key skip increased to 10 seconds',
+        'New episode badges on Favorites tab',
+        'Changelog popup on updates',
+        'Fixed player staying open when switching anime',
+        'Fixed continue system after fully watched episodes'
+    ];
+
+    function showChangelog() {
+        const lastVer = localStorage.getItem('ani-mate-last-version');
+        if (lastVer === APP_VERSION) return;
+        const overlay = document.createElement('div');
+        overlay.className = 'changelog-overlay';
+        overlay.innerHTML = `
+            <div class="changelog-modal">
+                <div class="changelog-ver">ANI-MATE v${APP_VERSION}</div>
+                <ul>${CHANGELOG.map(c => `<li>${esc(c)}</li>`).join('')}</ul>
+                <button class="changelog-dismiss">GOT IT</button>
+            </div>`;
+        document.body.appendChild(overlay);
+        overlay.querySelector('.changelog-dismiss').addEventListener('click', () => {
+            localStorage.setItem('ani-mate-last-version', APP_VERSION);
+            overlay.remove();
+        });
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) {
+                localStorage.setItem('ani-mate-last-version', APP_VERSION);
+                overlay.remove();
+            }
+        });
+    }
+
+    // === FAVORITES BADGE (new episode detection) ===
+    async function checkFavoritesUpdates() {
+        if (state.favorites.length === 0) return;
+        try {
+            const ids = state.favorites.filter(f => f.id).map(f => f.id);
+            let hasUpdates = false;
+            for (const fav of state.favorites) {
+                if (!fav.id) continue;
+                const h = state.history.find(h => h.anime_id === fav.id);
+                const watched = h ? (h.watched_episodes || []).length : 0;
+                const available = fav.episodes || 0;
+                if (available > watched) { hasUpdates = true; break; }
+            }
+            const badge = document.querySelector('.fav-badge');
+            if (hasUpdates) {
+                if (!badge) {
+                    const favBtn = document.querySelector('[data-tab="favs"]');
+                    if (favBtn) {
+                        const b = document.createElement('span');
+                        b.className = 'fav-badge';
+                        favBtn.style.position = 'relative';
+                        favBtn.appendChild(b);
+                    }
+                }
+            } else if (badge) {
+                badge.remove();
+            }
+        } catch (e) { /* non-critical */ }
+    }
+
     async function init() {
         // Hide Capacitor splash screen
         try { await SplashScreen?.hide(); } catch (e) {}
@@ -1351,6 +1464,12 @@
 
         // Default view
         resultsContainer.innerHTML = '<div class="no-results">Search for anime above</div>';
+
+        // Show changelog on version update
+        showChangelog();
+
+        // Check for new episodes on favorites (non-blocking)
+        setTimeout(checkFavoritesUpdates, 2000);
 
         // Check for updates (non-blocking, after 3s to not delay startup)
         setTimeout(checkForUpdate, 3000);
