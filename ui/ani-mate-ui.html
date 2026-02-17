@@ -1074,6 +1074,163 @@
             letter-spacing: 4px;
             animation: pulse 1s infinite;
         }
+
+        /* === RELEASED / PENDING TAGS === */
+        .release-tag {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 2px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 9px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+        .release-tag.released {
+            color: var(--success);
+            border: 1px solid rgba(0, 255, 136, 0.4);
+            background: rgba(0, 255, 136, 0.08);
+        }
+        .release-tag.pending {
+            color: var(--accent-magenta);
+            border: 1px solid rgba(255, 0, 255, 0.3);
+            background: rgba(255, 0, 255, 0.06);
+        }
+
+        /* === DESCRIPTION COVER IMAGE === */
+        .anime-desc-row {
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+        }
+        .anime-cover-img {
+            width: 80px;
+            min-width: 80px;
+            border-radius: 3px;
+            border: 1px solid var(--glass-border);
+            object-fit: cover;
+        }
+        .anime-desc-text {
+            flex: 1;
+            min-width: 0;
+        }
+
+        /* === ENGLISH TITLE SUBTITLE === */
+        .result-title-en {
+            font-size: 10px;
+            color: var(--text-dim);
+            font-style: italic;
+            margin-top: 1px;
+            line-height: 1.2;
+        }
+
+        /* === FAVORITES BADGE === */
+        .fav-badge {
+            display: inline-block;
+            min-width: 14px;
+            height: 14px;
+            line-height: 14px;
+            text-align: center;
+            border-radius: 7px;
+            background: var(--accent-magenta);
+            color: #000;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 7px;
+            font-weight: 700;
+            margin-left: 4px;
+            padding: 0 3px;
+            vertical-align: middle;
+        }
+
+        /* === CHANGELOG MODAL === */
+        .changelog-overlay {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.85);
+            z-index: 10000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .changelog-modal {
+            background: rgba(10, 10, 20, 0.98);
+            border: 1px solid var(--accent-gold);
+            border-radius: 6px;
+            padding: 24px 28px;
+            max-width: 460px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 0 40px rgba(255, 221, 0, 0.15);
+        }
+        .changelog-modal h2 {
+            font-family: 'Audiowide', cursive;
+            color: var(--accent-gold);
+            font-size: 20px;
+            margin-bottom: 4px;
+            text-shadow: 0 0 15px rgba(255, 221, 0, 0.3);
+        }
+        .changelog-modal .changelog-ver {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 10px;
+            color: var(--accent-cyan);
+            letter-spacing: 2px;
+            margin-bottom: 16px;
+        }
+        .changelog-modal ul {
+            list-style: none;
+            padding: 0;
+        }
+        .changelog-modal li {
+            padding: 6px 0;
+            border-bottom: 1px solid rgba(0, 255, 255, 0.06);
+            font-size: 13px;
+            color: var(--text-primary);
+            line-height: 1.4;
+        }
+        .changelog-modal li::before {
+            content: '>';
+            color: var(--accent-cyan);
+            margin-right: 8px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 10px;
+        }
+        .changelog-dismiss {
+            margin-top: 16px;
+            padding: 8px 24px;
+            background: linear-gradient(135deg, rgba(255, 221, 0, 0.15), rgba(255, 221, 0, 0.05));
+            border: 1px solid var(--accent-gold);
+            border-radius: 3px;
+            color: var(--accent-gold);
+            font-family: 'Audiowide', cursive;
+            font-size: 11px;
+            letter-spacing: 2px;
+            cursor: pointer;
+            width: 100%;
+            transition: all 0.3s;
+        }
+        .changelog-dismiss:hover {
+            background: linear-gradient(135deg, rgba(255, 221, 0, 0.3), rgba(255, 221, 0, 0.1));
+            box-shadow: 0 0 15px rgba(255, 221, 0, 0.2);
+        }
+
+        /* === MOBILE ROTATION === */
+        @media (max-width: 768px) {
+            .app-container {
+                grid-template-columns: 1fr;
+                grid-template-rows: 40px auto;
+                grid-template-areas: "header" "center";
+            }
+            .left-panel, .right-panel { display: none; }
+        }
+        @media (orientation: landscape) and (max-height: 500px) {
+            .video-player-container {
+                position: fixed !important;
+                top: 0; left: 0; right: 0; bottom: 0;
+                z-index: 9999;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1166,7 +1323,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.2.9 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.3.0 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -1292,6 +1449,9 @@
     }
     animateParticles();
 
+    // === UTILITIES ===
+    const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
     // === TOAST NOTIFICATIONS ===
     function toast(message, type = 'info') {
         const container = document.getElementById('toast-container');
@@ -1342,6 +1502,9 @@
     }
 
     async function loadEpisodes(animeId, title, epCount) {
+        // Close player if open (don't auto-show video when switching anime)
+        if (state.isPlaying) hidePlayer();
+
         state.selectedAnime = { id: animeId, title, epCount };
         state.selectedEpisode = null;
         state.currentRange = 0;
@@ -1359,21 +1522,22 @@
         document.getElementById('selected-anime-count').textContent = `${epCount} EP`;
         updateHeaderStar();
 
-        // Fetch and show anime description
+        // Fetch and show anime description with cover image
         const descEl = document.getElementById('anime-description');
         descEl.style.display = 'none';
         descEl.innerHTML = '';
         apiCall(`/info?title=${encodeURIComponent(title)}`).then(info => {
-            if (info.description) {
-                const cleanDesc = info.description.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, '');
-                let html = cleanDesc;
+            if (info.description || info.cover) {
+                const cleanDesc = info.description ? info.description.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, '') : '';
+                const coverHtml = info.cover ? `<img class="anime-cover-img" src="${esc(info.cover)}" alt="${esc(title)}" loading="lazy">` : '';
+                let textHtml = cleanDesc;
                 if (info.genres && info.genres.length > 0) {
-                    html += `<div class="anime-genres">${info.genres.join(' // ')}</div>`;
+                    textHtml += `<div class="anime-genres">${info.genres.join(' // ')}</div>`;
                 }
                 if (info.score) {
-                    html += `<span class="anime-score"> ${info.score}%</span>`;
+                    textHtml += `<span class="anime-score"> ${info.score}%</span>`;
                 }
-                descEl.innerHTML = html;
+                descEl.innerHTML = `<div class="anime-desc-row">${coverHtml}<div class="anime-desc-text">${textHtml}</div></div>`;
                 descEl.style.display = 'block';
             }
         }).catch(() => {});
@@ -1485,6 +1649,7 @@
         container.style.display = 'block';
         loading.style.display = 'flex';
         state.isPlaying = true;
+        lockLandscape();
 
         // Watch time tracking — mark as watched after 80% or 20 min
         video.removeEventListener('timeupdate', watchTimeHandler);
@@ -1612,6 +1777,7 @@
             state.hlsInstance = null;
         }
         state.isPlaying = false;
+        unlockOrientation();
     }
 
     let playLock = false;
@@ -1765,15 +1931,16 @@
         return items.map(r => {
             const typeLabel = r.type === 'series' ? 'SERIES' : r.type === 'short' ? 'SHORT' : 'MOVIE';
             const isFav = state.favorites.some(f => f.id === r.id);
-            const coverHtml = r.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${r.cover}" loading="lazy" alt=""></div>` : '';
-            const hoverText = r.description ? r.description.replace(/<[^>]*>/g, '').replace(/&/g, '&amp;').replace(/"/g, '&quot;') : r.name.replace(/"/g, '&quot;');
+            const coverHtml = r.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${esc(r.cover)}" loading="lazy" alt=""></div>` : '';
+            const hoverText = r.description ? r.description.replace(/<[^>]*>/g, '').replace(/&/g, '&amp;').replace(/"/g, '&quot;') : esc(r.name);
             return `<div class="result-card glass ${state.selectedAnime?.id === r.id ? 'selected' : ''}"
-                 data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="${hoverText}">
+                 data-id="${r.id}" data-title="${esc(r.name)}" data-eps="${r.episodes}" title="${hoverText}">
                 <div class="result-card-row">
-                    <button class="fav-star ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${r.name.replace(/"/g, '&quot;')}" data-fav-eps="${r.episodes}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#9733;' : '&#9734;'}</button>
+                    <button class="fav-star ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${esc(r.name)}" data-fav-eps="${r.episodes}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#9733;' : '&#9734;'}</button>
                     ${coverHtml}
                     <div class="result-info">
-                        <div class="result-title">${r.name}</div>
+                        <div class="result-title">${esc(r.name)}</div>
+                        ${r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase() ? `<div class="result-title-en">${esc(r.title_english)}</div>` : ''}
                         <div class="result-meta"><span class="result-type ${r.type}">${typeLabel}</span>${r.episodes} EP</div>
                     </div>
                 </div>
@@ -1852,8 +2019,8 @@
 
         list.innerHTML = state.history.map(h => {
             const time = h.timestamp ? new Date(h.timestamp).toLocaleDateString() : '--';
-            return `<div class="history-item glass" data-id="${h.anime_id}" data-title="${(h.title || '').replace(/"/g, '&quot;')}" title="Click to load ${(h.title || h.anime_id).replace(/"/g, '&quot;')} episodes">
-                <div class="history-title">${h.title || h.anime_id}</div>
+            return `<div class="history-item glass" data-id="${h.anime_id}" data-title="${esc(h.title)}" title="Click to load ${esc(h.title || h.anime_id)} episodes">
+                <div class="history-title">${esc(h.title || h.anime_id)}</div>
                 <div class="history-meta">EP <span>${h.episode}</span> // ${(h.mode || 'sub').toUpperCase()} // ${time}</div>
             </div>`;
         }).join('');
@@ -1929,6 +2096,14 @@
         }
     });
 
+    // Prevent video element native controls from handling space bar (causes double-toggle)
+    document.getElementById('video-player').addEventListener('keydown', (e) => {
+        if (e.key === ' ' || e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+    });
+
     document.getElementById('play-btn').addEventListener('click', playEpisode);
 
     document.getElementById('player-back-btn').addEventListener('click', hidePlayer);
@@ -1946,25 +2121,72 @@
         toast(state.autoPlay ? 'Auto-play ON' : 'Auto-play OFF', 'info');
     });
 
-    // Auto-play: when video ends, play next episode
+    // When video ends: auto-play next or clean up state
     document.getElementById('video-player').addEventListener('ended', () => {
-        if (!state.autoPlay || !state.selectedAnime || !state.episodes.length) return;
-        const currentIdx = state.episodes.indexOf(state.selectedEpisode);
-        if (currentIdx === -1 || currentIdx >= state.episodes.length - 1) {
-            toast('No more episodes — series complete!', 'info');
-            return;
+        if (!state.selectedAnime || !state.episodes.length) return;
+
+        // Clear progress save interval
+        if (state.progressSaveInterval) {
+            clearInterval(state.progressSaveInterval);
+            state.progressSaveInterval = null;
         }
-        const nextEp = state.episodes[currentIdx + 1];
-        state.selectedEpisode = nextEp;
-        state.pendingResumeTime = 0;
-        updatePlayButton();
-        document.getElementById('np-detail').textContent =
-            `EP ${nextEp} selected // ${state.mode.toUpperCase()}`;
-        document.querySelectorAll('.episode-btn').forEach(btn => {
-            btn.classList.toggle('playing', btn.dataset.ep === String(nextEp));
-        });
-        toast(`Auto-playing EP ${nextEp}...`, 'info');
-        playEpisode();
+
+        // Mark episode watched if not already
+        if (!state.watchedMarked) {
+            state.watchedMarked = true;
+            fetch(`${API}/mark-watched`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    anime_id: state.selectedAnime.id,
+                    episode: state.selectedEpisode
+                })
+            }).catch(() => {});
+        }
+
+        // Clear playback position so continue list shows next episode
+        fetch(`${API}/save-progress`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                anime_id: state.selectedAnime.id,
+                episode: state.selectedEpisode,
+                playback_time: 0
+            })
+        }).catch(() => {});
+
+        const currentIdx = state.episodes.indexOf(state.selectedEpisode);
+        const hasNext = currentIdx !== -1 && currentIdx < state.episodes.length - 1;
+
+        if (state.autoPlay && hasNext) {
+            const nextEp = state.episodes[currentIdx + 1];
+            state.selectedEpisode = nextEp;
+            state.pendingResumeTime = 0;
+            updatePlayButton();
+            document.getElementById('np-detail').textContent =
+                `EP ${nextEp} selected // ${state.mode.toUpperCase()}`;
+            document.querySelectorAll('.episode-btn').forEach(btn => {
+                btn.classList.toggle('playing', btn.dataset.ep === String(nextEp));
+            });
+            toast(`Auto-playing EP ${nextEp}...`, 'info');
+            playEpisode();
+        } else if (!hasNext) {
+            toast('No more episodes — series complete!', 'info');
+            unlockOrientation();
+        } else {
+            // Autoplay OFF — update UI to show next episode ready
+            const nextEp = state.episodes[currentIdx + 1];
+            state.selectedEpisode = nextEp;
+            state.pendingResumeTime = 0;
+            updatePlayButton();
+            document.getElementById('np-detail').textContent =
+                `EP ${nextEp} ready // ${state.mode.toUpperCase()}`;
+            document.querySelectorAll('.episode-btn').forEach(btn => {
+                btn.classList.toggle('playing', btn.dataset.ep === String(nextEp));
+            });
+            toast(`EP ${nextEp} ready — press Play`, 'info');
+            unlockOrientation();
+        }
     });
 
     document.getElementById('clear-history-btn').addEventListener('click', () => {
@@ -2057,7 +2279,7 @@
             case 'ArrowRight':
                 e.preventDefault();
                 if (state.isPlaying) {
-                    document.getElementById('video-player').currentTime += 5;
+                    document.getElementById('video-player').currentTime += 10;
                 } else {
                     navigateEpisode(1);
                 }
@@ -2065,14 +2287,15 @@
             case 'ArrowLeft':
                 e.preventDefault();
                 if (state.isPlaying) {
-                    document.getElementById('video-player').currentTime -= 5;
+                    document.getElementById('video-player').currentTime -= 10;
                 } else {
                     navigateEpisode(-1);
                 }
                 break;
             case ' ':
+                e.preventDefault();
+                e.stopImmediatePropagation();
                 if (state.isPlaying) {
-                    e.preventDefault();
                     const video = document.getElementById('video-player');
                     video.paused ? video.play() : video.pause();
                 }
@@ -2151,14 +2374,14 @@
         container.innerHTML = '<div class="section-label">TRENDING TODAY</div>' +
             state.dailyResults.map((r, i) => {
                 const isFav = state.favorites.some(f => f.id === r.id);
-                const coverHtml = r.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${r.cover}" loading="lazy" alt=""></div>` : '';
-                const dailyHover = r.description ? r.description.replace(/<[^>]*>/g, '').replace(/&/g, '&amp;').replace(/"/g, '&quot;') : r.name.replace(/"/g, '&quot;');
-                return `<div class="result-card glass" data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="${dailyHover}">
+                const coverHtml = r.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${esc(r.cover)}" loading="lazy" alt=""></div>` : '';
+                const dailyHover = r.description ? r.description.replace(/<[^>]*>/g, '').replace(/&/g, '&amp;').replace(/"/g, '&quot;') : esc(r.name);
+                return `<div class="result-card glass" data-id="${r.id}" data-title="${esc(r.name)}" data-eps="${r.episodes}" title="${dailyHover}">
                     <div class="result-card-row">
-                        <button class="fav-star ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${r.name.replace(/"/g, '&quot;')}" data-fav-eps="${r.episodes}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#9733;' : '&#9734;'}</button>
+                        <button class="fav-star ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${esc(r.name)}" data-fav-eps="${r.episodes}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#9733;' : '&#9734;'}</button>
                         ${coverHtml}
                         <div class="result-info">
-                            <div class="result-title">${r.name}</div>
+                            <div class="result-title">${esc(r.name)}</div>
                             <div class="result-meta"><span class="result-type ${r.type}">#${i + 1}</span>${r.episodes} EP</div>
                         </div>
                     </div>
@@ -2203,10 +2426,10 @@
                     : `NEXT: EP ${r.next_episode}`;
                 const resumeEp = hasResume ? r.resume_episode : r.next_episode;
                 const resumeTime = hasResume ? r.resume_time : 0;
-                return `<div class="result-card glass" data-id="${r.anime_id}" data-title="${(r.title || '').replace(/"/g, '&quot;')}" data-eps="${r.total_episodes || '?'}" data-resume-ep="${resumeEp}" data-resume-time="${resumeTime}" title="Click to resume watching">
+                return `<div class="result-card glass" data-id="${r.anime_id}" data-title="${esc(r.title)}" data-eps="${r.total_episodes || '?'}" data-resume-ep="${resumeEp}" data-resume-time="${resumeTime}" title="Click to resume watching">
                     <div class="result-card-row">
                         <div class="result-info">
-                            <div class="result-title">${r.title || r.anime_id}</div>
+                            <div class="result-title">${esc(r.title || r.anime_id)}</div>
                             <div class="result-meta">
                                 <span class="result-type series">${resumeLabel}</span>
                                 ${totalLabel} // ${(r.mode || 'sub').toUpperCase()}
@@ -2285,19 +2508,25 @@
         for (const [slot, items] of Object.entries(slots)) {
             if (items.length === 0) continue;
             html += `<div class="section-label">${labels[slot]}</div>`;
+            const nowSec = Math.floor(Date.now() / 1000);
             html += items.map(r => {
                 const airTime = new Date(r.airingAt * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
                 const fmt = r.format || 'TV';
+                const isReleased = r.airingAt <= nowSec;
+                const tagHtml = isReleased
+                    ? '<span class="release-tag released">RELEASED</span>'
+                    : '<span class="release-tag pending">PENDING</span>';
                 return `<div class="result-card glass release-card"
-                     data-release-title="${(r.title || '').replace(/"/g, '&quot;')}"
-                     data-release-romaji="${(r.title_romaji || '').replace(/"/g, '&quot;')}"
-                     title="Click to search and watch ${(r.title || '').replace(/"/g, '&quot;')}">
+                     data-release-title="${esc(r.title)}"
+                     data-release-romaji="${esc(r.title_romaji)}"
+                     data-release-anilist-id="${r.anilist_id || ''}"
+                     title="Click to search and watch ${esc(r.title)}">
                     <div class="result-card-row">
                         <div class="release-cover-wrap">
-                            ${r.cover ? `<img class="release-cover" src="${r.cover}" loading="lazy" alt="">` : ''}
+                            ${r.cover ? `<img class="release-cover" src="${esc(r.cover)}" loading="lazy" alt="">` : ''}
                         </div>
                         <div class="result-info">
-                            <div class="result-title">${r.title}</div>
+                            <div class="result-title">${esc(r.title)}${tagHtml}</div>
                             <div class="result-meta">
                                 <span class="result-type series">${fmt}</span>
                                 EP ${r.episode}${r.totalEpisodes ? '/' + r.totalEpisodes : ''}
@@ -2325,6 +2554,21 @@
         });
     }
 
+    function bestTitleMatch(results, targetTitle, targetRomaji) {
+        if (!results || results.length === 0) return null;
+        const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const targets = [norm(targetTitle), norm(targetRomaji)].filter(Boolean);
+        for (const r of results) {
+            const names = [norm(r.name), norm(r.title_english)].filter(Boolean);
+            if (names.some(n => targets.includes(n))) return r;
+        }
+        for (const r of results) {
+            const names = [norm(r.name), norm(r.title_english)].filter(Boolean);
+            if (names.some(rn => targets.some(t => rn.includes(t) || t.includes(rn)))) return r;
+        }
+        return results[0];
+    }
+
     function bindReleaseCards() {
         document.querySelectorAll('.release-card').forEach(card => {
             card.addEventListener('click', async () => {
@@ -2337,7 +2581,7 @@
                         data = await apiCall(`/search?q=${encodeURIComponent(romaji)}&mode=${state.mode}`);
                     }
                     if (data.results && data.results.length > 0) {
-                        const match = data.results[0];
+                        const match = bestTitleMatch(data.results, title, romaji);
                         loadEpisodes(match.id, match.name, match.episodes);
                     } else {
                         toast('Not found on streaming source', 'error');
@@ -2368,11 +2612,11 @@
             return;
         }
         container.innerHTML = '<div class="section-label">FAVORITES</div>' +
-            state.favorites.map(r => `<div class="result-card glass" data-id="${r.id}" data-title="${r.name.replace(/"/g, '&quot;')}" data-eps="${r.episodes}" title="${r.name.replace(/"/g, '&quot;')}">
+            state.favorites.map(r => `<div class="result-card glass" data-id="${r.id}" data-title="${esc(r.name)}" data-eps="${r.episodes}" title="${esc(r.name)}">
                 <div class="result-card-row">
-                    <button class="fav-star active" data-fav-id="${r.id}" data-fav-name="${r.name.replace(/"/g, '&quot;')}" data-fav-eps="${r.episodes}" title="Remove from favorites">&#9733;</button>
+                    <button class="fav-star active" data-fav-id="${r.id}" data-fav-name="${esc(r.name)}" data-fav-eps="${r.episodes}" title="Remove from favorites">&#9733;</button>
                     <div class="result-info">
-                        <div class="result-title">${r.name}</div>
+                        <div class="result-title">${esc(r.name)}</div>
                         <div class="result-meta">${r.episodes} EP</div>
                     </div>
                 </div>
@@ -2456,7 +2700,86 @@
         setInterval(checkStatus, 30000);
     }
 
+    // === CHANGELOG POPUP ===
+    const APP_VERSION = '0.3.0';
+    const CHANGELOG = [
+        'Hybrid search — searches AniList + AllAnime for better discoverability',
+        'Cover images shown in anime description area',
+        'Released/Pending tags on airing schedule',
+        'Auto-translate Japanese names to English when available',
+        'Fixed space bar double-click in fullscreen',
+        'Arrow key skip increased to 10 seconds',
+        'New episode badges on Favorites tab',
+        'Changelog popup on updates',
+        'Fixed player staying open when switching anime',
+        'Fixed continue system after fully watched episodes'
+    ];
+
+    function showChangelog() {
+        const lastSeen = localStorage.getItem('ani-mate-last-version');
+        if (lastSeen === APP_VERSION) return;
+        const overlay = document.createElement('div');
+        overlay.className = 'changelog-overlay';
+        overlay.innerHTML = `<div class="changelog-modal">
+            <h2>ANI-MATE UPDATED</h2>
+            <div class="changelog-ver">v${APP_VERSION}</div>
+            <ul>${CHANGELOG.map(c => `<li>${c}</li>`).join('')}</ul>
+            <button class="changelog-dismiss" id="changelog-dismiss">GOT IT</button>
+        </div>`;
+        document.body.appendChild(overlay);
+        overlay.querySelector('#changelog-dismiss').addEventListener('click', () => {
+            localStorage.setItem('ani-mate-last-version', APP_VERSION);
+            overlay.remove();
+        });
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) {
+                localStorage.setItem('ani-mate-last-version', APP_VERSION);
+                overlay.remove();
+            }
+        });
+    }
+
+    // === FAVORITES NEW EPISODE CHECK ===
+    async function checkFavoritesUpdates() {
+        try {
+            const tabBtn = document.getElementById('tab-favs');
+            const existing = tabBtn.querySelector('.fav-badge');
+            if (existing) existing.remove();
+            const data = await apiCall('/favorites/check');
+            if (data.updates && data.updates.length > 0) {
+                const total = data.updates.reduce((s, u) => s + u.new_count, 0);
+                if (total > 0) {
+                    const badge = document.createElement('span');
+                    badge.className = 'fav-badge';
+                    badge.textContent = total;
+                    badge.title = `${total} new episode${total > 1 ? 's' : ''} available`;
+                    tabBtn.appendChild(badge);
+                }
+                state.favUpdates = data.updates;
+            }
+        } catch { /* silent */ }
+    }
+
+    // === MOBILE SCREEN ORIENTATION ===
+    function lockLandscape() {
+        try {
+            if (screen.orientation && screen.orientation.lock) {
+                screen.orientation.lock('landscape').catch(() => {});
+            }
+        } catch { /* not supported */ }
+    }
+    function unlockOrientation() {
+        try {
+            if (screen.orientation && screen.orientation.unlock) {
+                screen.orientation.unlock();
+            }
+        } catch { /* not supported */ }
+    }
+
     init();
+    showChangelog();
+    // Check favorites for updates 5s after load
+    setTimeout(checkFavoritesUpdates, 5000);
     </script>
 </body>
 </html>
