@@ -404,6 +404,7 @@ async function getDailyPopular(mode = 'sub') {
             const info = anilistData[r.name];
             r.cover = info?.cover || null;
             r.description = info?.description || null;
+            r.title_english = r.title_english || info?.title_english || null;
         }
     } catch { /* non-critical */ }
 
@@ -474,7 +475,7 @@ async function getAniListCovers(titles) {
     });
     if (needed.length === 0) {
         return titles.reduce((acc, t) => {
-            acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null };
+            acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null, title_english: coverCache[t]?.title_english || null };
             return acc;
         }, {});
     }
@@ -502,7 +503,8 @@ async function getAniListCovers(titles) {
                 const media = json?.data?.[`q${idx}`]?.media?.[0];
                 const coverUrl = media?.coverImage?.medium || null;
                 const desc = media?.description || null;
-                coverCache[title] = { url: coverUrl, description: desc, at: Date.now() };
+                const titleEnglish = media?.title?.english || null;
+                coverCache[title] = { url: coverUrl, description: desc, title_english: titleEnglish, at: Date.now() };
             });
         } catch {
             batch.forEach(title => {
@@ -512,7 +514,7 @@ async function getAniListCovers(titles) {
     }
 
     return titles.reduce((acc, t) => {
-        acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null };
+        acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null, title_english: coverCache[t]?.title_english || null };
         return acc;
     }, {});
 }

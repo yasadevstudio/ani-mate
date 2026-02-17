@@ -84,17 +84,18 @@ jobs:
         working-directory: mobile
         run: npx cap sync android
 
-      - name: Create debug keystore for signing
+      - name: Decode signing keystore
         run: |
-          mkdir -p ~/.android
-          keytool -genkey -v -keystore ~/.android/debug.keystore \
-            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass android -keypass android \
-            -dname "CN=Android Debug,O=Android,C=US"
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > /tmp/ani-mate-release.keystore
 
       - name: Build release APK
         working-directory: mobile/android
-        run: ./gradlew assembleRelease
+        run: |
+          ./gradlew assembleRelease \
+            -PRELEASE_STORE_FILE=/tmp/ani-mate-release.keystore \
+            -PRELEASE_STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }} \
+            -PRELEASE_KEY_ALIAS=ani-mate \
+            -PRELEASE_KEY_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4

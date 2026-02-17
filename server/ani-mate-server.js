@@ -224,7 +224,7 @@ async function getAniListCovers(titles) {
         return (Date.now() - coverCache[t].at) > ttl;
     });
     if (needed.length === 0) {
-        return titles.reduce((acc, t) => { acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null }; return acc; }, {});
+        return titles.reduce((acc, t) => { acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null, title_english: coverCache[t]?.title_english || null }; return acc; }, {});
     }
 
     // Batch query AniList (5 at a time to avoid rate limits, parameterized variables)
@@ -251,7 +251,8 @@ async function getAniListCovers(titles) {
                 const media = json?.data?.[`q${idx}`]?.media?.[0];
                 const coverUrl = media?.coverImage?.medium || null;
                 const desc = media?.description || null;
-                coverCache[title] = { url: coverUrl, description: desc, at: Date.now() };
+                const titleEnglish = media?.title?.english || null;
+                coverCache[title] = { url: coverUrl, description: desc, title_english: titleEnglish, at: Date.now() };
             });
         } catch {
             // On failure, cache null so we don't retry immediately
@@ -261,7 +262,7 @@ async function getAniListCovers(titles) {
         }
     }
 
-    return titles.reduce((acc, t) => { acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null }; return acc; }, {});
+    return titles.reduce((acc, t) => { acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null, title_english: coverCache[t]?.title_english || null }; return acc; }, {});
 }
 
 // Anime info lookup (AniList primary, Jikan/MAL fallback)
@@ -902,6 +903,7 @@ const server = http.createServer(async (req, res) => {
                     const info = anilistData[r.name];
                     r.cover = info?.cover || null;
                     r.description = info?.description || null;
+                    r.title_english = r.title_english || info?.title_english || null;
                 }
             } catch { /* non-critical */ }
 
@@ -934,7 +936,9 @@ const server = http.createServer(async (req, res) => {
             }
             const favs = loadFavorites();
             if (!favs.some(f => f.id === item.id)) {
-                favs.unshift({ id: item.id, name: item.name, episodes: item.episodes || 0, added: new Date().toISOString() });
+                const fav = { id: item.id, name: item.name, episodes: item.episodes || 0, added: new Date().toISOString() };
+                if (item.title_english) fav.title_english = item.title_english;
+                favs.unshift(fav);
                 saveFavorites(favs);
             }
             jsonResponse(res, 200, { status: 'added', favorites: favs });
@@ -949,29 +953,55 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        // Check favorites for new episodes (compares watched vs available)
+        // Check favorites for new episodes aired in the last 7 days
         if (pathname === '/favorites/check' && req.method === 'GET') {
             const favs = loadFavorites();
-            const history = loadForgeHistory();
+            if (favs.length === 0) { jsonResponse(res, 200, { updates: [] }); return; }
+
+            // Query AniList for all episodes aired in last 7 days
+            const now = new Date();
+            const weekAgo = Math.floor(now.getTime() / 1000) - (7 * 86400);
+            const nowSec = Math.floor(now.getTime() / 1000);
+            const allRecent = [];
+            let page = 1, hasNext = true;
+            const gql = `query ($page: Int, $gt: Int, $lt: Int) {
+                Page(page: $page, perPage: 50) {
+                    pageInfo { hasNextPage }
+                    airingSchedules(airingAt_greater: $gt, airingAt_lesser: $lt, sort: [TIME]) {
+                        episode airingAt media { id title { romaji english } }
+                    }
+                }
+            }`;
+            try {
+                while (hasNext && page <= 20) {
+                    const resp = await fetch('https://graphql.anilist.co', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                        body: JSON.stringify({ query: gql, variables: { page, gt: weekAgo, lt: nowSec } })
+                    });
+                    const json = await resp.json();
+                    const pg = json?.data?.Page;
+                    if (pg?.airingSchedules) allRecent.push(...pg.airingSchedules);
+                    hasNext = pg?.pageInfo?.hasNextPage || false;
+                    page++;
+                }
+            } catch { /* AniList down — return empty */ }
+
+            // Normalize for matching
+            const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
             const updates = [];
             for (const fav of favs) {
-                const histEntry = history.find(h => h.anime_id === fav.id);
-                const watchedCount = histEntry?.episodes_watched?.length || 0;
-                const currentEps = fav.episodes || 0;
-                // Re-check AllAnime for current episode count
-                try {
-                    const epList = await getEpisodeList(fav.id, 'sub');
-                    const availableCount = epList.length;
-                    if (availableCount > watchedCount && availableCount > 0) {
-                        updates.push({
-                            id: fav.id,
-                            name: fav.name,
-                            available: availableCount,
-                            watched: watchedCount,
-                            new_count: availableCount - watchedCount
-                        });
-                    }
-                } catch { /* skip */ }
+                const favNorm = norm(fav.name);
+                const match = allRecent.find(s => {
+                    const romaji = norm(s.media?.title?.romaji);
+                    const english = norm(s.media?.title?.english);
+                    return (romaji && romaji === favNorm) || (english && english === favNorm) ||
+                           (romaji && (romaji.includes(favNorm) || favNorm.includes(romaji))) ||
+                           (english && (english.includes(favNorm) || favNorm.includes(english)));
+                });
+                if (match) {
+                    updates.push({ id: fav.id, name: fav.name });
+                }
             }
             jsonResponse(res, 200, { updates });
             return;

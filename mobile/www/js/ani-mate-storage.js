@@ -187,7 +187,9 @@ async function saveFavorites(favs) {
 async function addFavorite(item) {
     const favs = await loadFavorites();
     if (!favs.some(f => f.id === item.id)) {
-        favs.unshift({ id: item.id, name: item.name, episodes: item.episodes || 0, added: new Date().toISOString() });
+        const entry = { id: item.id, name: item.name, episodes: item.episodes || 0, added: new Date().toISOString() };
+        if (item.title_english) entry.title_english = item.title_english;
+        favs.unshift(entry);
         await saveFavorites(favs);
     }
     return favs;

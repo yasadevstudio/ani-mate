@@ -35,7 +35,8 @@
         availableLinks: [],
         playerUiVisible: true,
         playerUiTimer: null,
-        playLock: false
+        playLock: false,
+        preferEnglish: true
     };
 
     // === CAPACITOR PLUGINS ===
@@ -152,13 +153,16 @@
             const coverHtml = r.cover
                 ? `<div class="cover-wrap"><img src="${r.cover}" loading="lazy" alt=""></div>`
                 : '';
+            const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
+            const primaryTitle = (state.preferEnglish && hasEn) ? r.title_english : r.name;
+            const secondaryTitle = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : '');
             return `<div class="result-card" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
                 <div class="result-card-row">
-                    <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}">${isFav ? '&#9733;' : '&#9734;'}</button>
+                    <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}">${isFav ? '&#9733;' : '&#9734;'}</button>
                     ${coverHtml}
                     <div class="result-info">
-                        <div class="result-title">${esc(r.name)}</div>
-                        ${r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase() ? `<div class="result-title-en">${esc(r.title_english)}</div>` : ''}
+                        <div class="result-title">${esc(primaryTitle)}</div>
+                        ${secondaryTitle ? `<div class="result-title-en">${esc(secondaryTitle)}</div>` : ''}
                         <div class="result-meta"><span class="result-type ${r.type}">${typeLabel}</span>${r.episodes} EP</div>
                     </div>
                 </div>
@@ -176,7 +180,7 @@
         container.querySelectorAll('.fav-star-inline').forEach(star => {
             star.addEventListener('click', (e) => {
                 e.stopPropagation();
-                toggleFavorite(star.dataset.favId, star.dataset.favName, star.dataset.favEps);
+                toggleFavorite(star.dataset.favId, star.dataset.favName, star.dataset.favEps, star.dataset.favEnglish);
             });
         });
     }
@@ -186,13 +190,18 @@
         // Close player if open (don't auto-show video when switching anime)
         if (state.isPlaying) hidePlayer();
 
-        state.selectedAnime = { id: animeId, title, epCount };
+        // Look up English title from available data
+        const allSources = [...(state.results || []), ...(state.dailyResults || []), ...(state.favorites || [])];
+        const matched = allSources.find(r => r.id === animeId);
+        const titleEnglish = matched?.title_english || '';
+        state.selectedAnime = { id: animeId, title, epCount, titleEnglish };
         state.selectedEpisode = null;
         state.currentRange = 0;
         updatePlayButton();
 
-        // Show episode panel
-        $('panel-title').textContent = title;
+        // Show episode panel with preferred title
+        const displayTitle = (state.preferEnglish && titleEnglish) ? titleEnglish : title;
+        $('panel-title').textContent = displayTitle;
         $('panel-meta').textContent = `${epCount || '?'} episodes // ${state.mode.toUpperCase()}`;
         updatePanelFavStar();
         showEpisodePanel();
@@ -368,9 +377,10 @@
             });
             state.history = await Storage.loadHistory();
 
-            // Update UI
+            // Update UI with preferred title
+            const playTitle = (state.preferEnglish && state.selectedAnime.titleEnglish) ? state.selectedAnime.titleEnglish : state.selectedAnime.title;
             $('player-info').textContent =
-                `${state.selectedAnime.title} // EP ${state.selectedEpisode} // ${(data.resolution || quality).toUpperCase()}`;
+                `${playTitle} // EP ${state.selectedEpisode} // ${(data.resolution || quality).toUpperCase()}`;
             $('panel-meta').textContent =
                 `EP ${state.selectedEpisode} // ${(data.resolution || quality).toUpperCase()} // ${state.mode.toUpperCase()}`;
             highlightEpisode(state.selectedEpisode);
@@ -381,7 +391,7 @@
 
             // Launch player
             showPlayer(data.url);
-            toast(`Playing: ${state.selectedAnime.title} EP ${state.selectedEpisode}`, 'success');
+            toast(`Playing: ${playTitle} EP ${state.selectedEpisode}`, 'success');
         } catch (err) {
             toast(`Playback error: ${err.message}`, 'error');
         } finally {
@@ -553,6 +563,7 @@
         // Mark current episode as watched and clear progress
         if (state.selectedEpisode) {
             try { await Storage.markWatched(state.selectedAnime.id, state.selectedEpisode); } catch (e) {}
+            checkFavoritesUpdates();
         }
 
         const currentIdx = state.episodes.indexOf(state.selectedEpisode);
@@ -852,11 +863,19 @@
                 const resumeEp = hasResume ? r.resume_episode : r.next_episode;
                 const resumeTime = hasResume ? r.resume_time : 0;
 
+                // Look up English title from favorites
+                const favMatch = state.favorites.find(f => f.id === r.anime_id);
+                const contEnglish = favMatch?.title_english || '';
+                const contHasEn = contEnglish && contEnglish.toLowerCase() !== (r.title || '').toLowerCase();
+                const contPrimary = (state.preferEnglish && contHasEn) ? contEnglish : (r.title || r.anime_id);
+                const contSecondary = (state.preferEnglish && contHasEn) ? r.title : (contHasEn ? contEnglish : '');
+
                 return `<div class="result-card" data-id="${r.anime_id}" data-title="${escAttr(r.title)}"
                     data-eps="${r.total_episodes || '?'}" data-resume-ep="${resumeEp}" data-resume-time="${resumeTime}">
                     <div class="result-card-row">
                         <div class="result-info">
-                            <div class="result-title">${esc(r.title || r.anime_id)}</div>
+                            <div class="result-title">${esc(contPrimary)}</div>
+                            ${contSecondary ? `<div class="result-title-en">${esc(contSecondary)}</div>` : ''}
                             <div class="result-meta">
                                 <span class="result-type series">${resumeLabel}</span>
                                 ${totalLabel} // ${(r.mode || 'sub').toUpperCase()}
@@ -915,12 +934,16 @@
                 const coverHtml = r.cover
                     ? `<div class="cover-wrap"><img src="${r.cover}" loading="lazy" alt=""></div>`
                     : '';
+                const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
+                const primary = (state.preferEnglish && hasEn) ? r.title_english : r.name;
+                const secondary = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : '');
                 return `<div class="result-card" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
                     <div class="result-card-row">
-                        <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}">${isFav ? '&#9733;' : '&#9734;'}</button>
+                        <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}">${isFav ? '&#9733;' : '&#9734;'}</button>
                         ${coverHtml}
                         <div class="result-info">
-                            <div class="result-title">${esc(r.name)}</div>
+                            <div class="result-title">${esc(primary)}</div>
+                            ${secondary ? `<div class="result-title-en">${esc(secondary)}</div>` : ''}
                             <div class="result-meta"><span class="result-type series">#${i + 1}</span>${r.episodes} EP</div>
                         </div>
                     </div>
@@ -988,12 +1011,16 @@
                 const tagHtml = isReleased
                     ? '<span class="release-tag released">RELEASED</span>'
                     : '<span class="release-tag pending">PENDING</span>';
+                const relHasEn = r.title && r.title_romaji && r.title.toLowerCase() !== r.title_romaji.toLowerCase();
+                const relPrimary = (state.preferEnglish || !relHasEn) ? r.title : r.title_romaji;
+                const relSecondary = (state.preferEnglish && relHasEn) ? r.title_romaji : (relHasEn ? r.title : '');
                 return `<div class="result-card release-card" data-release-title="${escAttr(r.title)}" data-release-romaji="${escAttr(r.title_romaji)}">
                     <div class="result-card-row">
                         <button class="fav-star-inline ${isFav ? 'active' : ''}" data-rel-fav-title="${escAttr(r.title)}" data-rel-fav-romaji="${escAttr(r.title_romaji || '')}" data-rel-fav-eps="${r.totalEpisodes || 0}">${isFav ? '&#9733;' : '&#9734;'}</button>
                         ${coverHtml}
                         <div class="result-info">
-                            <div class="result-title">${esc(r.title)} ${tagHtml}</div>
+                            <div class="result-title">${esc(relPrimary)} ${tagHtml}</div>
+                            ${relSecondary ? `<div class="result-title-en">${esc(relSecondary)}</div>` : ''}
                             <div class="result-meta">
                                 <span class="result-type series">${r.format || 'TV'}</span>
                                 EP ${r.episode}${r.totalEpisodes ? '/' + r.totalEpisodes : ''}
@@ -1076,6 +1103,7 @@
                     star.innerHTML = '&#9734;';
                     toast('Removed from favorites', 'info');
                     updatePanelFavStar();
+                    checkFavoritesUpdates();
                     return;
                 }
 
@@ -1087,11 +1115,12 @@
                     }
                     if (results.length > 0) {
                         const match = results[0];
-                        state.favorites = await Storage.addFavorite({ id: match.id, name: match.name, episodes: match.episodes || 0 });
+                        state.favorites = await Storage.addFavorite({ id: match.id, name: match.name, episodes: match.episodes || 0, title_english: match.title_english || title });
                         star.classList.add('active');
                         star.innerHTML = '&#9733;';
                         toast('Added to favorites', 'success');
                         updatePanelFavStar();
+                        checkFavoritesUpdates();
                     } else {
                         toast('Not found on streaming source', 'error');
                     }
@@ -1110,29 +1139,33 @@
         }
 
         resultsContainer.innerHTML = '<div class="section-label">FAVORITES</div>' +
-            state.favorites.map(r =>
-                `<div class="result-card" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
+            state.favorites.map(r => {
+                const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
+                const primary = (state.preferEnglish && hasEn) ? r.title_english : r.name;
+                const secondary = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : '');
+                return `<div class="result-card" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
                     <div class="result-card-row">
-                        <button class="fav-star-inline active" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}">&#9733;</button>
+                        <button class="fav-star-inline active" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}">&#9733;</button>
                         <div class="result-info">
-                            <div class="result-title">${esc(r.name)}</div>
+                            <div class="result-title">${esc(primary)}</div>
+                            ${secondary ? `<div class="result-title-en">${esc(secondary)}</div>` : ''}
                             <div class="result-meta">${r.episodes} EP</div>
                         </div>
                     </div>
-                </div>`
-            ).join('');
+                </div>`;
+            }).join('');
 
         bindCards(resultsContainer);
     }
 
-    async function toggleFavorite(id, name, episodes) {
+    async function toggleFavorite(id, name, episodes, titleEnglish) {
         const isFav = state.favorites.some(f => f.id === id);
         try {
             if (isFav) {
                 state.favorites = await Storage.removeFavorite(id);
                 toast('Removed from favorites', 'info');
             } else {
-                state.favorites = await Storage.addFavorite({ id, name, episodes: parseInt(episodes) || 0 });
+                state.favorites = await Storage.addFavorite({ id, name, episodes: parseInt(episodes) || 0, title_english: titleEnglish || '' });
                 toast('Added to favorites', 'success');
             }
         } catch (err) {
@@ -1140,6 +1173,7 @@
         }
 
         updatePanelFavStar();
+        checkFavoritesUpdates();
         // Re-render current tab if it shows stars
         if (state.activeTab === 'favs') renderFavorites();
         else if (state.activeTab === 'daily') renderDaily();
@@ -1235,12 +1269,28 @@
     // Episode panel fav star
     $('panel-fav').addEventListener('click', () => {
         if (state.selectedAnime) {
-            toggleFavorite(state.selectedAnime.id, state.selectedAnime.title, state.selectedAnime.epCount);
+            toggleFavorite(state.selectedAnime.id, state.selectedAnime.title, state.selectedAnime.epCount, state.selectedAnime.titleEnglish);
         }
     });
 
     // Player back
     $('player-back').addEventListener('click', hidePlayer);
+
+    // English title toggle (default ON)
+    const savedEnglish = localStorage.getItem('ani-mate-english-titles') !== 'false';
+    state.preferEnglish = savedEnglish;
+    $('english-title-toggle').checked = savedEnglish;
+    $('english-title-toggle').addEventListener('change', (e) => {
+        state.preferEnglish = e.target.checked;
+        localStorage.setItem('ani-mate-english-titles', e.target.checked);
+        toast(state.preferEnglish ? 'English titles primary' : 'Japanese titles primary', 'info');
+        // Re-render current tab
+        if (state.activeTab === 'daily') renderDaily();
+        else if (state.activeTab === 'releases') renderReleases();
+        else if (state.activeTab === 'search' && state.results.length > 0) renderResults();
+        else if (state.activeTab === 'favs') renderFavorites();
+        else if (state.activeTab === 'continue') renderContinue();
+    });
 
     // Auto-play toggle
     const savedAutoPlay = localStorage.getItem('ani-mate-autoplay') === 'true';
@@ -1417,19 +1467,56 @@
         });
     }
 
-    // === FAVORITES BADGE (new episode detection) ===
+    // === FAVORITES BADGE (new episode in last 7 days detection) ===
     async function checkFavoritesUpdates() {
-        if (state.favorites.length === 0) return;
+        if (state.favorites.length === 0) {
+            const badge = document.querySelector('.fav-badge');
+            if (badge) badge.remove();
+            return;
+        }
         try {
-            const ids = state.favorites.filter(f => f.id).map(f => f.id);
+            // Query AniList for all episodes aired in last 7 days
+            const now = Math.floor(Date.now() / 1000);
+            const weekAgo = now - (7 * 86400);
+            const allRecent = [];
+            let page = 1, hasNext = true;
+            const gql = `query ($page: Int, $gt: Int, $lt: Int) {
+                Page(page: $page, perPage: 50) {
+                    pageInfo { hasNextPage }
+                    airingSchedules(airingAt_greater: $gt, airingAt_lesser: $lt, sort: [TIME]) {
+                        episode airingAt media { id title { romaji english } }
+                    }
+                }
+            }`;
+            while (hasNext && page <= 20) {
+                const resp = await fetch('https://graphql.anilist.co', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify({ query: gql, variables: { page, gt: weekAgo, lt: now } }),
+                    signal: AbortSignal.timeout(8000)
+                });
+                const json = await resp.json();
+                const pg = json?.data?.Page;
+                if (pg?.airingSchedules) allRecent.push(...pg.airingSchedules);
+                hasNext = pg?.pageInfo?.hasNextPage || false;
+                page++;
+            }
+
+            // Check if any favorites match recently aired shows
+            const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
             let hasUpdates = false;
             for (const fav of state.favorites) {
-                if (!fav.id) continue;
-                const h = state.history.find(h => h.anime_id === fav.id);
-                const watched = h ? (h.watched_episodes || []).length : 0;
-                const available = fav.episodes || 0;
-                if (available > watched) { hasUpdates = true; break; }
+                const favNorm = norm(fav.name);
+                const match = allRecent.find(s => {
+                    const romaji = norm(s.media?.title?.romaji);
+                    const english = norm(s.media?.title?.english);
+                    return (romaji && romaji === favNorm) || (english && english === favNorm) ||
+                           (romaji && (romaji.includes(favNorm) || favNorm.includes(romaji))) ||
+                           (english && (english.includes(favNorm) || favNorm.includes(english)));
+                });
+                if (match) { hasUpdates = true; break; }
             }
+
             const badge = document.querySelector('.fav-badge');
             if (hasUpdates) {
                 if (!badge) {

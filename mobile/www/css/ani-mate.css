@@ -286,6 +286,15 @@ body {
     text-overflow: ellipsis;
 }
 
+.result-title-en {
+    font-size: 11px;
+    color: var(--text-dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+}
+
 .result-meta {
     font-size: 11px;
     color: var(--text-dim);
