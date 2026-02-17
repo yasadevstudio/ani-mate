@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.3.0';
+    const APP_VERSION = '0.3.1';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -1432,15 +1432,11 @@
 
     // === CHANGELOG ===
     const CHANGELOG = [
-        'Hybrid search — searches AniList + AllAnime for better discoverability',
-        'Cover images shown in anime description area',
-        'Released/Pending tags on airing schedule',
-        'Auto-translate Japanese names to English when available',
-        'Arrow key skip increased to 10 seconds',
-        'New episode badges on Favorites tab',
-        'Changelog popup on updates',
-        'Fixed player staying open when switching anime',
-        'Fixed continue system after fully watched episodes'
+        'EN/JP toggle — switch between English and Japanese titles everywhere',
+        'Favorites badge now only shows for episodes aired in last 7 days',
+        'Bigger anime cover images in detail view',
+        'Badge refreshes after watching episodes or toggling favorites',
+        'English titles stored in favorites for persistence'
     ];
 
     function showChangelog() {
