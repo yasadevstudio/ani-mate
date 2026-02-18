@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.3.2';
+    const APP_VERSION = '0.3.3';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -1586,9 +1586,8 @@
 
     // === CHANGELOG ===
     const CHANGELOG = [
-        'Franchise grouping — anime seasons, OVAs, and movies grouped under one card',
-        'History and Continue tabs respect EN/JP title toggle',
-        'Description area expands to fit content instead of scrolling'
+        'Fixed right-click context menu on all tabs',
+        'Fixed History and Continue showing Japanese names instead of English'
     ];
 
     function showChangelog() {

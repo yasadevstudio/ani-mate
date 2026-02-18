@@ -1341,7 +1341,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.3.2 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.3.3 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -2361,6 +2361,7 @@
 
     function showCtxMenu(e, animeId, title, source) {
         e.preventDefault();
+        e.stopPropagation();
         ctxTarget = { animeId, title, source };
         ctxMenu.style.left = e.clientX + 'px';
         ctxMenu.style.top = e.clientY + 'px';
@@ -2950,12 +2951,10 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.3.2';
+    const APP_VERSION = '0.3.3';
     const CHANGELOG = [
-        'Franchise grouping — anime seasons, OVAs, and movies grouped under one card',
-        'Right-click context menu now works on all tabs',
-        'History and Continue tabs respect EN/JP title toggle',
-        'Description area expands to fit content instead of scrolling'
+        'Fixed right-click context menu on all tabs',
+        'Fixed History and Continue showing Japanese names instead of English'
     ];
 
     function showChangelog() {
