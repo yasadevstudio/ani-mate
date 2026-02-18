@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.3.3';
+    const APP_VERSION = '0.3.4';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -133,14 +133,16 @@
             }
         }
         const groups = [];
+        const FORMAT_RANK = { TV: 0, TV_SHORT: 1, ONA: 2, MOVIE: 3, OVA: 4, SPECIAL: 5, MUSIC: 6 };
         for (const [fid, members] of Object.entries(franchises)) {
             if (members.length === 1) {
                 ungrouped.push(members[0]);
             } else {
+                // Sort: TV format first (main series), then by episode count desc
                 members.sort((a, b) => {
-                    const aTV = a.type === 'series' ? 0 : 1;
-                    const bTV = b.type === 'series' ? 0 : 1;
-                    if (aTV !== bTV) return aTV - bTV;
+                    const aFmt = FORMAT_RANK[a.anilist_format] ?? 99;
+                    const bFmt = FORMAT_RANK[b.anilist_format] ?? 99;
+                    if (aFmt !== bFmt) return aFmt - bFmt;
                     return (b.episodes || 0) - (a.episodes || 0);
                 });
                 groups.push({ franchise_id: fid, parent: members[0], members });
@@ -1586,8 +1588,9 @@
 
     // === CHANGELOG ===
     const CHANGELOG = [
-        'Fixed right-click context menu on all tabs',
-        'Fixed History and Continue showing Japanese names instead of English'
+        'Fixed franchise grouping — anime now properly grouped by series',
+        'Main series cover and title shown instead of spinoffs/chibi',
+        'Improved name matching for better AniList data enrichment'
     ];
 
     function showChangelog() {

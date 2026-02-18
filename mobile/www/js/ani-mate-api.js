@@ -129,16 +129,21 @@ async function searchAnime(query, mode = 'sub') {
 
     const existingNames = new Set(results.map(r => r.name.toLowerCase()));
 
-    // Enrich AllAnime results with AniList English titles
+    // Normalize name for fuzzy matching (strip punctuation, collapse whitespace)
+    const normName = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+
+    // Enrich AllAnime results with AniList data (fuzzy matching)
     for (const r of results) {
+        const rNorm = normName(r.name);
         const aniMatch = aniListResults.find(a =>
-            (a.title_romaji && a.title_romaji.toLowerCase() === r.name.toLowerCase()) ||
-            (a.title_english && a.title_english.toLowerCase() === r.name.toLowerCase())
+            (a.title_romaji && normName(a.title_romaji) === rNorm) ||
+            (a.title_english && normName(a.title_english) === rNorm)
         );
         if (aniMatch) {
             r.title_english = aniMatch.title_english;
             r.cover = r.cover || aniMatch.cover;
             r.description = r.description || aniMatch.description;
+            r.anilist_format = aniMatch.format;
         }
     }
 
@@ -204,20 +209,33 @@ async function searchAnime(query, mode = 'sub') {
     function ufFind(x) { return ufParent[x] === undefined ? x : (ufParent[x] = ufFind(ufParent[x])); }
     function ufUnion(a, b) { const ra = ufFind(a), rb = ufFind(b); if (ra !== rb) ufParent[Math.max(ra, rb)] = Math.min(ra, rb); }
 
+    // Build comprehensive name→anilist_id map (search results + ALL relations)
     const nameToAniId = {};
+    const aniIdFormat = {};
     for (const a of aniListResults) {
-        if (a.title_romaji) nameToAniId[a.title_romaji.toLowerCase()] = a.anilist_id;
-        if (a.title_english) nameToAniId[a.title_english.toLowerCase()] = a.anilist_id;
+        if (a.title_romaji) nameToAniId[normName(a.title_romaji)] = a.anilist_id;
+        if (a.title_english) nameToAniId[normName(a.title_english)] = a.anilist_id;
+        aniIdFormat[a.anilist_id] = a.format;
+        if (a.relations) {
+            for (const rel of a.relations) {
+                if (rel.title_romaji) nameToAniId[normName(rel.title_romaji)] = rel.id;
+                if (rel.title_english) nameToAniId[normName(rel.title_english)] = rel.id;
+                aniIdFormat[rel.id] = rel.format;
+            }
+        }
     }
     for (const a of aniListResults) {
         if (!a.relations) continue;
         for (const rel of a.relations) ufUnion(a.anilist_id, rel.id);
     }
     for (const r of results) {
-        const aniId = nameToAniId[r.name.toLowerCase()] || (r.title_english && nameToAniId[r.title_english.toLowerCase()]);
+        const rNorm = normName(r.name);
+        const rEnNorm = r.title_english ? normName(r.title_english) : null;
+        const aniId = nameToAniId[rNorm] || (rEnNorm && nameToAniId[rEnNorm]);
         if (aniId) {
             r.anilist_id = aniId;
             r.franchise_id = String(ufFind(aniId));
+            if (!r.anilist_format) r.anilist_format = aniIdFormat[aniId] || null;
         }
     }
 
@@ -254,7 +272,7 @@ async function searchAniList(query, limit = 15) {
             status: m.status,
             relations: (m.relations?.edges || [])
                 .filter(e => ['SEQUEL', 'PREQUEL', 'SIDE_STORY', 'SPIN_OFF', 'ALTERNATIVE', 'PARENT'].includes(e.relationType))
-                .map(e => ({ id: e.node.id, relationType: e.relationType }))
+                .map(e => ({ id: e.node.id, title_romaji: e.node.title?.romaji, title_english: e.node.title?.english, format: e.node.format, episodes: e.node.episodes, relationType: e.relationType }))
         }));
     } catch { return []; }
 }

@@ -695,16 +695,21 @@ const server = http.createServer(async (req, res) => {
             const results = [...allAnimeResults];
             const existingNames = new Set(results.map(r => r.name.toLowerCase()));
 
-            // Enrich AllAnime results with AniList English titles
+            // Normalize name for fuzzy matching (strip punctuation, collapse whitespace)
+            const normName = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+
+            // Enrich AllAnime results with AniList data (fuzzy matching)
             for (const r of results) {
+                const rNorm = normName(r.name);
                 const aniMatch = aniListResults.find(a =>
-                    (a.title_romaji && a.title_romaji.toLowerCase() === r.name.toLowerCase()) ||
-                    (a.title_english && a.title_english.toLowerCase() === r.name.toLowerCase())
+                    (a.title_romaji && normName(a.title_romaji) === rNorm) ||
+                    (a.title_english && normName(a.title_english) === rNorm)
                 );
                 if (aniMatch) {
                     r.title_english = aniMatch.title_english;
                     r.cover = r.cover || aniMatch.cover;
                     r.description = r.description || aniMatch.description;
+                    r.anilist_format = aniMatch.format;
                 }
             }
 
@@ -761,11 +766,21 @@ const server = http.createServer(async (req, res) => {
             function ufFind(x) { return ufParent[x] === undefined ? x : (ufParent[x] = ufFind(ufParent[x])); }
             function ufUnion(a, b) { const ra = ufFind(a), rb = ufFind(b); if (ra !== rb) ufParent[Math.max(ra, rb)] = Math.min(ra, rb); }
 
-            // Build name→anilist_id map for results that matched AniList
+            // Build comprehensive name→anilist_id map (search results + ALL relations)
             const nameToAniId = {};
+            const aniIdFormat = {};
             for (const a of aniListResults) {
-                if (a.title_romaji) nameToAniId[a.title_romaji.toLowerCase()] = a.anilist_id;
-                if (a.title_english) nameToAniId[a.title_english.toLowerCase()] = a.anilist_id;
+                if (a.title_romaji) nameToAniId[normName(a.title_romaji)] = a.anilist_id;
+                if (a.title_english) nameToAniId[normName(a.title_english)] = a.anilist_id;
+                aniIdFormat[a.anilist_id] = a.format;
+                // Also index relation titles so we can match AllAnime results to related anime
+                if (a.relations) {
+                    for (const rel of a.relations) {
+                        if (rel.title_romaji) nameToAniId[normName(rel.title_romaji)] = rel.id;
+                        if (rel.title_english) nameToAniId[normName(rel.title_english)] = rel.id;
+                        aniIdFormat[rel.id] = rel.format;
+                    }
+                }
             }
 
             // Union related AniList IDs
@@ -776,12 +791,15 @@ const server = http.createServer(async (req, res) => {
                 }
             }
 
-            // Assign franchise_id to each result
+            // Assign franchise_id and anilist_format to each result
             for (const r of results) {
-                const aniId = nameToAniId[r.name.toLowerCase()] || (r.title_english && nameToAniId[r.title_english.toLowerCase()]);
+                const rNorm = normName(r.name);
+                const rEnNorm = r.title_english ? normName(r.title_english) : null;
+                const aniId = nameToAniId[rNorm] || (rEnNorm && nameToAniId[rEnNorm]);
                 if (aniId) {
                     r.anilist_id = aniId;
                     r.franchise_id = String(ufFind(aniId));
+                    if (!r.anilist_format) r.anilist_format = aniIdFormat[aniId] || null;
                 }
             }
 
