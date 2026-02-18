@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.3.1';
+    const APP_VERSION = '0.3.2';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -121,17 +121,119 @@
         }
     }
 
+    function groupByFranchise(items) {
+        const franchises = {};
+        const ungrouped = [];
+        for (const r of items) {
+            if (r.franchise_id) {
+                if (!franchises[r.franchise_id]) franchises[r.franchise_id] = [];
+                franchises[r.franchise_id].push(r);
+            } else {
+                ungrouped.push(r);
+            }
+        }
+        const groups = [];
+        for (const [fid, members] of Object.entries(franchises)) {
+            if (members.length === 1) {
+                ungrouped.push(members[0]);
+            } else {
+                members.sort((a, b) => {
+                    const aTV = a.type === 'series' ? 0 : 1;
+                    const bTV = b.type === 'series' ? 0 : 1;
+                    if (aTV !== bTV) return aTV - bTV;
+                    return (b.episodes || 0) - (a.episodes || 0);
+                });
+                groups.push({ franchise_id: fid, parent: members[0], members });
+            }
+        }
+        return { groups, ungrouped };
+    }
+
+    function renderFranchiseCard(group) {
+        const r = group.parent;
+        const isFav = state.favorites.some(f => f.id === r.id);
+        const coverHtml = r.cover ? `<div class="cover-wrap"><img src="${r.cover}" loading="lazy" alt=""></div>` : '';
+        const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
+        const primaryTitle = (state.preferEnglish && hasEn) ? r.title_english : r.name;
+        const count = group.members.length;
+
+        let html = `<div class="franchise-group" data-franchise="${group.franchise_id}">
+            <div class="result-card franchise-parent" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
+                <div class="result-card-row">
+                    <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}">${isFav ? '&#9733;' : '&#9734;'}</button>
+                    ${coverHtml}
+                    <div class="result-info">
+                        <div class="result-title">${esc(primaryTitle)}</div>
+                        <div class="result-meta"><span class="result-type series">FRANCHISE</span>${count} entries <span class="franchise-toggle">&#9660;</span></div>
+                    </div>
+                </div>
+            </div>
+            <div class="franchise-entries" style="display:none;">`;
+
+        for (const m of group.members) {
+            const mFav = state.favorites.some(f => f.id === m.id);
+            const typeLabel = m.type === 'series' ? 'SERIES' : m.type === 'short' ? 'SHORT' : 'MOVIE';
+            const mHasEn = m.title_english && m.title_english.toLowerCase() !== m.name.toLowerCase();
+            const mTitle = (state.preferEnglish && mHasEn) ? m.title_english : m.name;
+            html += `<div class="result-card franchise-entry" data-id="${m.id}" data-title="${escAttr(m.name)}" data-eps="${m.episodes}">
+                <div class="result-card-row">
+                    <button class="fav-star-inline ${mFav ? 'active' : ''}" data-fav-id="${m.id}" data-fav-name="${escAttr(m.name)}" data-fav-eps="${m.episodes}" data-fav-english="${escAttr(m.title_english || '')}" data-fav-franchise="${m.franchise_id || ''}">${mFav ? '&#9733;' : '&#9734;'}</button>
+                    <div class="result-info">
+                        <div class="result-title">${esc(mTitle)}</div>
+                        <div class="result-meta"><span class="result-type ${m.type}">${typeLabel}</span>${m.episodes} EP</div>
+                    </div>
+                </div>
+            </div>`;
+        }
+        html += '</div></div>';
+        return html;
+    }
+
+    function bindFranchiseToggles(container) {
+        container.querySelectorAll('.franchise-parent').forEach(card => {
+            // Tap to expand/collapse on mobile
+            let tapCount = 0, tapTimer;
+            card.addEventListener('click', (e) => {
+                if (e.target.closest('.fav-star-inline')) return;
+                tapCount++;
+                if (tapCount === 1) {
+                    tapTimer = setTimeout(() => {
+                        tapCount = 0;
+                        // Single tap: load the parent anime
+                        loadEpisodes(card.dataset.id, card.dataset.title, parseInt(card.dataset.eps) || 0);
+                    }, 300);
+                } else if (tapCount === 2) {
+                    clearTimeout(tapTimer);
+                    tapCount = 0;
+                    // Double tap: toggle expand
+                    const group = card.closest('.franchise-group');
+                    const entries = group.querySelector('.franchise-entries');
+                    const toggle = card.querySelector('.franchise-toggle');
+                    const isOpen = entries.style.display !== 'none';
+                    entries.style.display = isOpen ? 'none' : 'block';
+                    toggle.innerHTML = isOpen ? '&#9660;' : '&#9650;';
+                }
+            });
+        });
+    }
+
     function renderResults() {
         if (state.results.length === 0) {
             resultsContainer.innerHTML = '<div class="no-results">No results found</div>';
             return;
         }
 
-        const series = state.results.filter(r => r.type === 'series');
-        const shorts = state.results.filter(r => r.type === 'short');
-        const movies = state.results.filter(r => r.type === 'movie');
+        const { groups, ungrouped } = groupByFranchise(state.results);
 
         let html = '';
+        if (groups.length > 0) {
+            for (const g of groups) html += renderFranchiseCard(g);
+        }
+
+        const series = ungrouped.filter(r => r.type === 'series');
+        const shorts = ungrouped.filter(r => r.type === 'short');
+        const movies = ungrouped.filter(r => r.type === 'movie');
+
         if (series.length > 0) {
             html += '<div class="section-label">SERIES</div>' + renderCardGroup(series);
         }
@@ -144,6 +246,7 @@
 
         resultsContainer.innerHTML = html;
         bindCards(resultsContainer);
+        bindFranchiseToggles(resultsContainer);
     }
 
     function renderCardGroup(items) {
@@ -158,7 +261,7 @@
             const secondaryTitle = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : '');
             return `<div class="result-card" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
                 <div class="result-card-row">
-                    <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}">${isFav ? '&#9733;' : '&#9734;'}</button>
+                    <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}">${isFav ? '&#9733;' : '&#9734;'}</button>
                     ${coverHtml}
                     <div class="result-info">
                         <div class="result-title">${esc(primaryTitle)}</div>
@@ -180,7 +283,7 @@
         container.querySelectorAll('.fav-star-inline').forEach(star => {
             star.addEventListener('click', (e) => {
                 e.stopPropagation();
-                toggleFavorite(star.dataset.favId, star.dataset.favName, star.dataset.favEps, star.dataset.favEnglish);
+                toggleFavorite(star.dataset.favId, star.dataset.favName, star.dataset.favEps, star.dataset.favEnglish, star.dataset.favFranchise);
             });
         });
     }
@@ -194,7 +297,8 @@
         const allSources = [...(state.results || []), ...(state.dailyResults || []), ...(state.favorites || [])];
         const matched = allSources.find(r => r.id === animeId);
         const titleEnglish = matched?.title_english || '';
-        state.selectedAnime = { id: animeId, title, epCount, titleEnglish };
+        const franchiseId = matched?.franchise_id || '';
+        state.selectedAnime = { id: animeId, title, epCount, titleEnglish, franchiseId };
         state.selectedEpisode = null;
         state.currentRange = 0;
         updatePlayButton();
@@ -1138,34 +1242,84 @@
             return;
         }
 
-        resultsContainer.innerHTML = '<div class="section-label">FAVORITES</div>' +
-            state.favorites.map(r => {
-                const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
-                const primary = (state.preferEnglish && hasEn) ? r.title_english : r.name;
-                const secondary = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : '');
-                return `<div class="result-card" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
+        // Group favorites by franchise
+        const franchises = {};
+        const ungrouped = [];
+        for (const r of state.favorites) {
+            if (r.franchise_id) {
+                if (!franchises[r.franchise_id]) franchises[r.franchise_id] = [];
+                franchises[r.franchise_id].push(r);
+            } else {
+                ungrouped.push(r);
+            }
+        }
+
+        let html = '<div class="section-label">FAVORITES</div>';
+
+        for (const [fid, members] of Object.entries(franchises)) {
+            if (members.length === 1) { ungrouped.push(members[0]); continue; }
+            const parent = members[0];
+            const hasEn = parent.title_english && parent.title_english.toLowerCase() !== parent.name.toLowerCase();
+            const primary = (state.preferEnglish && hasEn) ? parent.title_english : parent.name;
+
+            html += `<div class="franchise-group" data-franchise="${fid}">
+                <div class="result-card franchise-parent" data-id="${parent.id}" data-title="${escAttr(parent.name)}" data-eps="${parent.episodes}">
                     <div class="result-card-row">
-                        <button class="fav-star-inline active" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}">&#9733;</button>
+                        <button class="fav-star-inline active" data-fav-id="${parent.id}" data-fav-name="${escAttr(parent.name)}" data-fav-eps="${parent.episodes}" data-fav-english="${escAttr(parent.title_english || '')}" data-fav-franchise="${fid}">&#9733;</button>
                         <div class="result-info">
                             <div class="result-title">${esc(primary)}</div>
-                            ${secondary ? `<div class="result-title-en">${esc(secondary)}</div>` : ''}
-                            <div class="result-meta">${r.episodes} EP</div>
+                            <div class="result-meta"><span class="result-type series">FRANCHISE</span>${members.length} entries <span class="franchise-toggle">&#9660;</span></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="franchise-entries" style="display:none;">`;
+            for (const m of members) {
+                const mHasEn = m.title_english && m.title_english.toLowerCase() !== m.name.toLowerCase();
+                const mTitle = (state.preferEnglish && mHasEn) ? m.title_english : m.name;
+                html += `<div class="result-card franchise-entry" data-id="${m.id}" data-title="${escAttr(m.name)}" data-eps="${m.episodes}">
+                    <div class="result-card-row">
+                        <button class="fav-star-inline active" data-fav-id="${m.id}" data-fav-name="${escAttr(m.name)}" data-fav-eps="${m.episodes}" data-fav-english="${escAttr(m.title_english || '')}" data-fav-franchise="${fid}">&#9733;</button>
+                        <div class="result-info">
+                            <div class="result-title">${esc(mTitle)}</div>
+                            <div class="result-meta">${m.episodes} EP</div>
                         </div>
                     </div>
                 </div>`;
-            }).join('');
+            }
+            html += '</div></div>';
+        }
 
+        html += ungrouped.map(r => {
+            const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
+            const primary = (state.preferEnglish && hasEn) ? r.title_english : r.name;
+            const secondary = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : '');
+            return `<div class="result-card" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
+                <div class="result-card-row">
+                    <button class="fav-star-inline active" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}">&#9733;</button>
+                    <div class="result-info">
+                        <div class="result-title">${esc(primary)}</div>
+                        ${secondary ? `<div class="result-title-en">${esc(secondary)}</div>` : ''}
+                        <div class="result-meta">${r.episodes} EP</div>
+                    </div>
+                </div>
+            </div>`;
+        }).join('');
+
+        resultsContainer.innerHTML = html;
         bindCards(resultsContainer);
+        bindFranchiseToggles(resultsContainer);
     }
 
-    async function toggleFavorite(id, name, episodes, titleEnglish) {
+    async function toggleFavorite(id, name, episodes, titleEnglish, franchiseId) {
         const isFav = state.favorites.some(f => f.id === id);
         try {
             if (isFav) {
                 state.favorites = await Storage.removeFavorite(id);
                 toast('Removed from favorites', 'info');
             } else {
-                state.favorites = await Storage.addFavorite({ id, name, episodes: parseInt(episodes) || 0, title_english: titleEnglish || '' });
+                const favData = { id, name, episodes: parseInt(episodes) || 0, title_english: titleEnglish || '' };
+                if (franchiseId) favData.franchise_id = franchiseId;
+                state.favorites = await Storage.addFavorite(favData);
                 toast('Added to favorites', 'success');
             }
         } catch (err) {
@@ -1269,7 +1423,7 @@
     // Episode panel fav star
     $('panel-fav').addEventListener('click', () => {
         if (state.selectedAnime) {
-            toggleFavorite(state.selectedAnime.id, state.selectedAnime.title, state.selectedAnime.epCount, state.selectedAnime.titleEnglish);
+            toggleFavorite(state.selectedAnime.id, state.selectedAnime.title, state.selectedAnime.epCount, state.selectedAnime.titleEnglish, state.selectedAnime.franchiseId || '');
         }
     });
 
@@ -1432,11 +1586,9 @@
 
     // === CHANGELOG ===
     const CHANGELOG = [
-        'EN/JP toggle — switch between English and Japanese titles everywhere',
-        'Favorites badge now only shows for episodes aired in last 7 days',
-        'Bigger anime cover images in detail view',
-        'Badge refreshes after watching episodes or toggling favorites',
-        'English titles stored in favorites for persistence'
+        'Franchise grouping — anime seasons, OVAs, and movies grouped under one card',
+        'History and Continue tabs respect EN/JP title toggle',
+        'Description area expands to fit content instead of scrolling'
     ];
 
     function showChangelog() {

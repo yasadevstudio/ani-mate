@@ -189,6 +189,7 @@ async function addFavorite(item) {
     if (!favs.some(f => f.id === item.id)) {
         const entry = { id: item.id, name: item.name, episodes: item.episodes || 0, added: new Date().toISOString() };
         if (item.title_english) entry.title_english = item.title_english;
+        if (item.franchise_id) entry.franchise_id = item.franchise_id;
         favs.unshift(entry);
         await saveFavorites(favs);
     }

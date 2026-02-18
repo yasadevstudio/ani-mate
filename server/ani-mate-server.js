@@ -51,6 +51,7 @@ function addToForgeHistory(entry) {
         rec.mode = entry.mode || rec.mode || 'sub';
         rec.timestamp = new Date().toISOString();
         rec.title = entry.title || rec.title;
+        if (entry.title_english) rec.title_english = entry.title_english;
         // Track all watched episodes (unless skip_watched — client handles marking)
         if (!Array.isArray(rec.episodes_watched)) rec.episodes_watched = [];
         if (!entry.skip_watched && !rec.episodes_watched.includes(ep)) rec.episodes_watched.push(ep);
@@ -65,7 +66,7 @@ function addToForgeHistory(entry) {
         history.splice(existing, 1);
         history.unshift(rec);
     } else {
-        history.unshift({
+        const newRec = {
             anime_id: entry.anime_id,
             title: entry.title,
             episode: ep,
@@ -76,7 +77,9 @@ function addToForgeHistory(entry) {
             total_episodes: entry.total_episodes || null,
             playback_time: entry.playback_time || 0,
             playback_episode: ep
-        });
+        };
+        if (entry.title_english) newRec.title_english = entry.title_english;
+        history.unshift(newRec);
     }
     // Keep last 100
     if (history.length > 100) history.length = 100;
@@ -366,6 +369,7 @@ async function searchAniList(query, limit = 15) {
                 media(search: $search, type: ANIME, sort: [SEARCH_MATCH]) {
                     id title { english romaji } coverImage { medium }
                     description(asHtml: false) format episodes status
+                    relations { edges { node { id title { romaji english } format episodes } relationType } }
                 }
             }
         }`;
@@ -384,7 +388,10 @@ async function searchAniList(query, limit = 15) {
             description: m.description || null,
             format: m.format,
             episodes: m.episodes,
-            status: m.status
+            status: m.status,
+            relations: (m.relations?.edges || [])
+                .filter(e => ['SEQUEL', 'PREQUEL', 'SIDE_STORY', 'SPIN_OFF', 'ALTERNATIVE', 'PARENT'].includes(e.relationType))
+                .map(e => ({ id: e.node.id, title_romaji: e.node.title?.romaji, title_english: e.node.title?.english, format: e.node.format, episodes: e.node.episodes, relationType: e.relationType }))
         }));
     } catch { return []; }
 }
@@ -568,7 +575,7 @@ function getContinueList() {
             const resumeEpisode = hasResumePosition ? h.playback_episode || h.episode : String(nextEp);
             const resumeTime = hasResumePosition ? h.playback_time : 0;
 
-            return {
+            const item = {
                 anime_id: h.anime_id,
                 title: h.title,
                 episode: h.episode,
@@ -580,6 +587,8 @@ function getContinueList() {
                 mode: h.mode,
                 timestamp: h.timestamp
             };
+            if (h.title_english) item.title_english = h.title_english;
+            return item;
         });
 }
 
@@ -747,6 +756,35 @@ const server = http.createServer(async (req, res) => {
                 }
             } catch { /* non-critical */ }
 
+            // Franchise grouping via AniList relations (union-find)
+            const ufParent = {};
+            function ufFind(x) { return ufParent[x] === undefined ? x : (ufParent[x] = ufFind(ufParent[x])); }
+            function ufUnion(a, b) { const ra = ufFind(a), rb = ufFind(b); if (ra !== rb) ufParent[Math.max(ra, rb)] = Math.min(ra, rb); }
+
+            // Build name→anilist_id map for results that matched AniList
+            const nameToAniId = {};
+            for (const a of aniListResults) {
+                if (a.title_romaji) nameToAniId[a.title_romaji.toLowerCase()] = a.anilist_id;
+                if (a.title_english) nameToAniId[a.title_english.toLowerCase()] = a.anilist_id;
+            }
+
+            // Union related AniList IDs
+            for (const a of aniListResults) {
+                if (!a.relations) continue;
+                for (const rel of a.relations) {
+                    ufUnion(a.anilist_id, rel.id);
+                }
+            }
+
+            // Assign franchise_id to each result
+            for (const r of results) {
+                const aniId = nameToAniId[r.name.toLowerCase()] || (r.title_english && nameToAniId[r.title_english.toLowerCase()]);
+                if (aniId) {
+                    r.anilist_id = aniId;
+                    r.franchise_id = String(ufFind(aniId));
+                }
+            }
+
             jsonResponse(res, 200, { results, query: query.q, mode });
             return;
         }
@@ -784,6 +822,7 @@ const server = http.createServer(async (req, res) => {
             addToForgeHistory({
                 anime_id: params.anime_id,
                 title: params.title || 'Unknown',
+                title_english: params.title_english || null,
                 episode: params.episode,
                 quality,
                 mode,
@@ -938,6 +977,7 @@ const server = http.createServer(async (req, res) => {
             if (!favs.some(f => f.id === item.id)) {
                 const fav = { id: item.id, name: item.name, episodes: item.episodes || 0, added: new Date().toISOString() };
                 if (item.title_english) fav.title_english = item.title_english;
+                if (item.franchise_id) fav.franchise_id = item.franchise_id;
                 favs.unshift(fav);
                 saveFavorites(favs);
             }

@@ -268,6 +268,29 @@
             background: rgba(255, 221, 0, 0.06);
         }
 
+        .franchise-group {
+            margin-bottom: 2px;
+        }
+
+        .franchise-parent .franchise-toggle {
+            font-size: 10px;
+            margin-left: 4px;
+            color: var(--accent-cyan);
+        }
+
+        .franchise-entries {
+            border-left: 2px solid rgba(0, 255, 255, 0.15);
+            margin-left: 12px;
+            padding-left: 0;
+        }
+
+        .franchise-entry {
+            padding-left: 16px;
+            opacity: 0.9;
+        }
+
+        .franchise-entry:hover { opacity: 1; }
+
         .result-title {
             font-family: 'Jura', sans-serif;
             font-size: 13px;
@@ -558,15 +581,9 @@
             font-size: 12px;
             line-height: 1.5;
             color: var(--text-dim);
-            max-height: 120px;
-            overflow-y: auto;
             border-bottom: 1px solid rgba(0, 255, 255, 0.1);
             margin-bottom: 8px;
         }
-
-        .anime-description::-webkit-scrollbar { width: 4px; }
-        .anime-description::-webkit-scrollbar-track { background: transparent; }
-        .anime-description::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 2px; }
 
         .anime-description .anime-genres {
             margin-top: 4px;
@@ -1324,7 +1341,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.3.1 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.3.2 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -1507,11 +1524,12 @@
         // Close player if open (don't auto-show video when switching anime)
         if (state.isPlaying) hidePlayer();
 
-        // Look up English title from current results/favorites
+        // Look up English title and franchise from current results/favorites
         const allSources = [...(state.results || []), ...(state.dailyResults || []), ...(state.favorites || [])];
         const matched = allSources.find(r => r.id === animeId);
         const titleEnglish = matched?.title_english || '';
-        state.selectedAnime = { id: animeId, title, epCount, titleEnglish };
+        const franchiseId = matched?.franchise_id || '';
+        state.selectedAnime = { id: animeId, title, epCount, titleEnglish, franchiseId };
         state.selectedEpisode = null;
         state.currentRange = 0;
         updatePlayButton();
@@ -1805,6 +1823,7 @@
                     anime_id: state.selectedAnime.id,
                     episode: state.selectedEpisode,
                     title: state.selectedAnime.title,
+                    title_english: state.selectedAnime.titleEnglish || null,
                     quality,
                     sub_or_dub: audio,
                     total_episodes: state.selectedAnime.epCount || null
@@ -1904,6 +1923,101 @@
     }
 
     // === RENDER FUNCTIONS ===
+    function groupByFranchise(items) {
+        const franchises = {};
+        const ungrouped = [];
+        for (const r of items) {
+            if (r.franchise_id) {
+                if (!franchises[r.franchise_id]) franchises[r.franchise_id] = [];
+                franchises[r.franchise_id].push(r);
+            } else {
+                ungrouped.push(r);
+            }
+        }
+        // Convert to array: single-item franchises become ungrouped, multi-item become groups
+        const groups = [];
+        for (const [fid, members] of Object.entries(franchises)) {
+            if (members.length === 1) {
+                ungrouped.push(members[0]);
+            } else {
+                // Sort: TV series first by episode count desc, then others
+                members.sort((a, b) => {
+                    const aTV = a.type === 'series' ? 0 : 1;
+                    const bTV = b.type === 'series' ? 0 : 1;
+                    if (aTV !== bTV) return aTV - bTV;
+                    return (b.episodes || 0) - (a.episodes || 0);
+                });
+                groups.push({ franchise_id: fid, parent: members[0], members });
+            }
+        }
+        return { groups, ungrouped };
+    }
+
+    function renderFranchiseCard(group) {
+        const r = group.parent;
+        const isFav = state.favorites.some(f => f.id === r.id);
+        const coverHtml = r.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${esc(r.cover)}" loading="lazy" alt=""></div>` : '';
+        const hoverText = r.description ? r.description.replace(/<[^>]*>/g, '').replace(/&/g, '&amp;').replace(/"/g, '&quot;') : esc(r.name);
+        const hasEnglish = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
+        const primaryTitle = (state.preferEnglish && hasEnglish) ? r.title_english : r.name;
+        const count = group.members.length;
+
+        let html = `<div class="franchise-group" data-franchise="${group.franchise_id}">
+            <div class="result-card glass franchise-parent" data-id="${r.id}" data-title="${esc(r.name)}" data-eps="${r.episodes}" data-franchise="${r.franchise_id || ''}" title="${hoverText}">
+                <div class="result-card-row">
+                    <button class="fav-star ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${esc(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${esc(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#9733;' : '&#9734;'}</button>
+                    ${coverHtml}
+                    <div class="result-info">
+                        <div class="result-title">${esc(primaryTitle)}</div>
+                        <div class="result-meta"><span class="result-type series">FRANCHISE</span>${count} entries <span class="franchise-toggle">&#9660;</span></div>
+                    </div>
+                </div>
+            </div>
+            <div class="franchise-entries" style="display:none;">`;
+
+        for (const m of group.members) {
+            const mFav = state.favorites.some(f => f.id === m.id);
+            const typeLabel = m.type === 'series' ? 'SERIES' : m.type === 'short' ? 'SHORT' : 'MOVIE';
+            const mHasEn = m.title_english && m.title_english.toLowerCase() !== m.name.toLowerCase();
+            const mTitle = (state.preferEnglish && mHasEn) ? m.title_english : m.name;
+            html += `<div class="result-card glass franchise-entry ${state.selectedAnime?.id === m.id ? 'selected' : ''}" data-id="${m.id}" data-title="${esc(m.name)}" data-eps="${m.episodes}" data-franchise="${m.franchise_id || ''}">
+                <div class="result-card-row">
+                    <button class="fav-star ${mFav ? 'active' : ''}" data-fav-id="${m.id}" data-fav-name="${esc(m.name)}" data-fav-eps="${m.episodes}" data-fav-english="${esc(m.title_english || '')}" data-fav-franchise="${m.franchise_id || ''}" title="${mFav ? 'Remove from favorites' : 'Add to favorites'}">${mFav ? '&#9733;' : '&#9734;'}</button>
+                    <div class="result-info">
+                        <div class="result-title">${esc(mTitle)}</div>
+                        <div class="result-meta"><span class="result-type ${m.type}">${typeLabel}</span>${m.episodes} EP</div>
+                    </div>
+                </div>
+            </div>`;
+        }
+        html += '</div></div>';
+        return html;
+    }
+
+    function bindFranchiseToggles(container) {
+        container.querySelectorAll('.franchise-parent').forEach(card => {
+            card.addEventListener('dblclick', (e) => {
+                if (e.target.closest('.fav-star')) return;
+                const group = card.closest('.franchise-group');
+                const entries = group.querySelector('.franchise-entries');
+                const toggle = card.querySelector('.franchise-toggle');
+                const isOpen = entries.style.display !== 'none';
+                entries.style.display = isOpen ? 'none' : 'block';
+                toggle.innerHTML = isOpen ? '&#9660;' : '&#9650;';
+            });
+            // Single click on franchise parent loads the parent anime
+            card.addEventListener('click', (e) => {
+                if (e.target.closest('.fav-star')) return;
+                document.querySelectorAll('.result-card').forEach(c => c.classList.remove('selected'));
+                card.classList.add('selected');
+                loadEpisodes(card.dataset.id, card.dataset.title, parseInt(card.dataset.eps));
+            });
+            card.addEventListener('contextmenu', (e) => {
+                showCtxMenu(e, card.dataset.id, card.dataset.title, state.activeTab === 'favs' ? 'favorites' : 'results');
+            });
+        });
+    }
+
     function renderResults() {
         const container = document.getElementById('results-container');
         if (state.results.length === 0) {
@@ -1911,11 +2025,23 @@
             return;
         }
 
-        const series = state.results.filter(r => r.type === 'series');
-        const shorts = state.results.filter(r => r.type === 'short');
-        const movies = state.results.filter(r => r.type === 'movie');
+        // Group results by franchise
+        const { groups, ungrouped } = groupByFranchise(state.results);
 
         let html = '';
+
+        // Render franchise groups first
+        if (groups.length > 0) {
+            for (const g of groups) {
+                html += renderFranchiseCard(g);
+            }
+        }
+
+        // Render ungrouped by type
+        const series = ungrouped.filter(r => r.type === 'series');
+        const shorts = ungrouped.filter(r => r.type === 'short');
+        const movies = ungrouped.filter(r => r.type === 'movie');
+
         if (series.length > 0) {
             html += '<div class="section-label">SERIES</div>';
             html += renderResultGroup(series);
@@ -1932,6 +2058,7 @@
         container.innerHTML = html;
         bindResultCards(container);
         bindStarButtons(container);
+        bindFranchiseToggles(container);
     }
 
     function renderResultGroup(items) {
@@ -1944,9 +2071,9 @@
             const primaryTitle = (state.preferEnglish && hasEnglish) ? r.title_english : r.name;
             const secondaryTitle = (state.preferEnglish && hasEnglish) ? r.name : (hasEnglish ? r.title_english : null);
             return `<div class="result-card glass ${state.selectedAnime?.id === r.id ? 'selected' : ''}"
-                 data-id="${r.id}" data-title="${esc(r.name)}" data-eps="${r.episodes}" title="${hoverText}">
+                 data-id="${r.id}" data-title="${esc(r.name)}" data-eps="${r.episodes}" data-franchise="${r.franchise_id || ''}" title="${hoverText}">
                 <div class="result-card-row">
-                    <button class="fav-star ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${esc(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${esc(r.title_english || '')}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#9733;' : '&#9734;'}</button>
+                    <button class="fav-star ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${esc(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${esc(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#9733;' : '&#9734;'}</button>
                     ${coverHtml}
                     <div class="result-info">
                         <div class="result-title">${esc(primaryTitle)}</div>
@@ -2029,8 +2156,12 @@
 
         list.innerHTML = state.history.map(h => {
             const time = h.timestamp ? new Date(h.timestamp).toLocaleDateString() : '--';
+            // Look up English title from history record or favorites
+            const enTitle = h.title_english || (state.favorites.find(f => f.id === h.anime_id) || {}).title_english;
+            const hasEn = enTitle && enTitle.toLowerCase() !== (h.title || '').toLowerCase();
+            const displayTitle = (state.preferEnglish && hasEn) ? enTitle : (h.title || h.anime_id);
             return `<div class="history-item glass" data-id="${h.anime_id}" data-title="${esc(h.title)}" title="Click to load ${esc(h.title || h.anime_id)} episodes">
-                <div class="history-title">${esc(h.title || h.anime_id)}</div>
+                <div class="history-title">${esc(displayTitle)}</div>
                 <div class="history-meta">EP <span>${h.episode}</span> // ${(h.mode || 'sub').toUpperCase()} // ${time}</div>
             </div>`;
         }).join('');
@@ -2245,12 +2376,21 @@
         if (!ctxTarget) return;
         ctxMenu.style.display = 'none';
         try {
-            await apiCall(`/history/remove?id=${encodeURIComponent(ctxTarget.animeId)}`);
-            state.history = state.history.filter(h => h.anime_id !== ctxTarget.animeId);
-            renderHistory();
-            if (ctxTarget.source === 'continue') {
-                state.continueResults = state.continueResults.filter(r => r.anime_id !== ctxTarget.animeId);
-                renderContinue();
+            if (ctxTarget.source === 'favorites' || ctxTarget.source === 'results') {
+                // Remove from favorites
+                await apiCall(`/favorites/${encodeURIComponent(ctxTarget.animeId)}`, { method: 'DELETE' });
+                state.favorites = state.favorites.filter(f => f.id !== ctxTarget.animeId);
+                if (state.activeTab === 'favs') renderFavorites();
+                else if (state.results.length > 0) renderResults();
+            } else {
+                // Remove from history (history/continue tabs)
+                await apiCall(`/history/remove?id=${encodeURIComponent(ctxTarget.animeId)}`);
+                state.history = state.history.filter(h => h.anime_id !== ctxTarget.animeId);
+                renderHistory();
+                if (ctxTarget.source === 'continue') {
+                    state.continueResults = state.continueResults.filter(r => r.anime_id !== ctxTarget.animeId);
+                    renderContinue();
+                }
             }
             toast(`Removed "${ctxTarget.title}"`, 'info');
         } catch (err) {
@@ -2457,10 +2597,14 @@
                     : `NEXT: EP ${r.next_episode}`;
                 const resumeEp = hasResume ? r.resume_episode : r.next_episode;
                 const resumeTime = hasResume ? r.resume_time : 0;
+                // EN/JP title swap
+                const enTitle = r.title_english || (state.favorites.find(f => f.id === r.anime_id) || {}).title_english;
+                const hasEn = enTitle && enTitle.toLowerCase() !== (r.title || '').toLowerCase();
+                const displayTitle = (state.preferEnglish && hasEn) ? enTitle : (r.title || r.anime_id);
                 return `<div class="result-card glass" data-id="${r.anime_id}" data-title="${esc(r.title)}" data-eps="${r.total_episodes || '?'}" data-resume-ep="${resumeEp}" data-resume-time="${resumeTime}" title="Click to resume watching">
                     <div class="result-card-row">
                         <div class="result-info">
-                            <div class="result-title">${esc(r.title || r.anime_id)}</div>
+                            <div class="result-title">${esc(displayTitle)}</div>
                             <div class="result-meta">
                                 <span class="result-type series">${resumeLabel}</span>
                                 ${totalLabel} // ${(r.mode || 'sub').toUpperCase()}
@@ -2646,14 +2790,68 @@
             container.innerHTML = '<div class="no-results">No favorites yet. Star an anime to save it.</div>';
             return;
         }
-        container.innerHTML = '<div class="section-label">FAVORITES</div>' +
-            state.favorites.map(r => {
-                const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
-                const primary = (state.preferEnglish && hasEn) ? r.title_english : r.name;
-                const secondary = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : null);
-                return `<div class="result-card glass" data-id="${r.id}" data-title="${esc(r.name)}" data-eps="${r.episodes}" title="${esc(r.name)}">
+
+        // Group favorites by franchise
+        const franchises = {};
+        const ungrouped = [];
+        for (const r of state.favorites) {
+            if (r.franchise_id) {
+                if (!franchises[r.franchise_id]) franchises[r.franchise_id] = [];
+                franchises[r.franchise_id].push(r);
+            } else {
+                ungrouped.push(r);
+            }
+        }
+
+        let html = '<div class="section-label">FAVORITES</div>';
+
+        // Render franchise groups
+        for (const [fid, members] of Object.entries(franchises)) {
+            if (members.length === 1) {
+                ungrouped.push(members[0]);
+                continue;
+            }
+            // Parent = first member (most recently added)
+            const parent = members[0];
+            const hasEn = parent.title_english && parent.title_english.toLowerCase() !== parent.name.toLowerCase();
+            const primary = (state.preferEnglish && hasEn) ? parent.title_english : parent.name;
+
+            html += `<div class="franchise-group" data-franchise="${fid}">
+                <div class="result-card glass franchise-parent" data-id="${parent.id}" data-title="${esc(parent.name)}" data-eps="${parent.episodes}" title="${esc(parent.name)}">
+                    <div class="result-card-row">
+                        <button class="fav-star active" data-fav-id="${parent.id}" data-fav-name="${esc(parent.name)}" data-fav-eps="${parent.episodes}" data-fav-english="${esc(parent.title_english || '')}" data-fav-franchise="${fid}" title="Remove from favorites">&#9733;</button>
+                        <div class="result-info">
+                            <div class="result-title">${esc(primary)}</div>
+                            <div class="result-meta"><span class="result-type series">FRANCHISE</span>${members.length} entries <span class="franchise-toggle">&#9660;</span></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="franchise-entries" style="display:none;">`;
+
+            for (const m of members) {
+                const mHasEn = m.title_english && m.title_english.toLowerCase() !== m.name.toLowerCase();
+                const mTitle = (state.preferEnglish && mHasEn) ? m.title_english : m.name;
+                html += `<div class="result-card glass franchise-entry" data-id="${m.id}" data-title="${esc(m.name)}" data-eps="${m.episodes}">
+                    <div class="result-card-row">
+                        <button class="fav-star active" data-fav-id="${m.id}" data-fav-name="${esc(m.name)}" data-fav-eps="${m.episodes}" data-fav-english="${esc(m.title_english || '')}" data-fav-franchise="${fid}" title="Remove from favorites">&#9733;</button>
+                        <div class="result-info">
+                            <div class="result-title">${esc(mTitle)}</div>
+                            <div class="result-meta">${m.episodes} EP</div>
+                        </div>
+                    </div>
+                </div>`;
+            }
+            html += '</div></div>';
+        }
+
+        // Render ungrouped favorites
+        html += ungrouped.map(r => {
+            const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
+            const primary = (state.preferEnglish && hasEn) ? r.title_english : r.name;
+            const secondary = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : null);
+            return `<div class="result-card glass" data-id="${r.id}" data-title="${esc(r.name)}" data-eps="${r.episodes}" title="${esc(r.name)}">
                 <div class="result-card-row">
-                    <button class="fav-star active" data-fav-id="${r.id}" data-fav-name="${esc(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${esc(r.title_english || '')}" title="Remove from favorites">&#9733;</button>
+                    <button class="fav-star active" data-fav-id="${r.id}" data-fav-name="${esc(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${esc(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}" title="Remove from favorites">&#9733;</button>
                     <div class="result-info">
                         <div class="result-title">${esc(primary)}</div>
                         ${secondary ? `<div class="result-title-en">${esc(secondary)}</div>` : ''}
@@ -2661,12 +2859,15 @@
                     </div>
                 </div>
             </div>`;
-            }).join('');
+        }).join('');
+
+        container.innerHTML = html;
         bindResultCards(container);
         bindStarButtons(container);
+        bindFranchiseToggles(container);
     }
 
-    async function toggleFavorite(id, name, episodes, titleEnglish) {
+    async function toggleFavorite(id, name, episodes, titleEnglish, franchiseId) {
         const isFav = state.favorites.some(f => f.id === id);
         try {
             if (isFav) {
@@ -2676,6 +2877,7 @@
             } else {
                 const payload = { id, name, episodes: parseInt(episodes) || 0 };
                 if (titleEnglish) payload.title_english = titleEnglish;
+                if (franchiseId) payload.franchise_id = franchiseId;
                 const data = await apiCall('/favorites', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -2707,7 +2909,7 @@
 
     document.getElementById('header-fav-star').addEventListener('click', () => {
         if (state.selectedAnime) {
-            toggleFavorite(state.selectedAnime.id, state.selectedAnime.title, state.selectedAnime.epCount, state.selectedAnime.titleEnglish || '');
+            toggleFavorite(state.selectedAnime.id, state.selectedAnime.title, state.selectedAnime.epCount, state.selectedAnime.titleEnglish || '', state.selectedAnime.franchiseId || '');
         }
     });
 
@@ -2720,6 +2922,9 @@
                 card.classList.add('selected');
                 loadEpisodes(card.dataset.id, card.dataset.title, parseInt(card.dataset.eps));
             });
+            card.addEventListener('contextmenu', (e) => {
+                showCtxMenu(e, card.dataset.id, card.dataset.title, state.activeTab === 'favs' ? 'favorites' : 'results');
+            });
         });
     }
 
@@ -2727,7 +2932,7 @@
         container.querySelectorAll('.fav-star').forEach(star => {
             star.addEventListener('click', (e) => {
                 e.stopPropagation();
-                toggleFavorite(star.dataset.favId, star.dataset.favName, star.dataset.favEps, star.dataset.favEnglish || '');
+                toggleFavorite(star.dataset.favId, star.dataset.favName, star.dataset.favEps, star.dataset.favEnglish || '', star.dataset.favFranchise || '');
             });
         });
     }
@@ -2745,13 +2950,12 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.3.1';
+    const APP_VERSION = '0.3.2';
     const CHANGELOG = [
-        'EN/JP toggle — switch between English and Japanese titles everywhere',
-        'Favorites badge now only shows for episodes aired in last 7 days',
-        'Bigger anime cover images in detail view',
-        'Badge refreshes after watching episodes or toggling favorites',
-        'English titles stored in favorites for persistence'
+        'Franchise grouping — anime seasons, OVAs, and movies grouped under one card',
+        'Right-click context menu now works on all tabs',
+        'History and Continue tabs respect EN/JP title toggle',
+        'Description area expands to fit content instead of scrolling'
     ];
 
     function showChangelog() {

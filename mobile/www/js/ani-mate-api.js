@@ -199,6 +199,28 @@ async function searchAnime(query, mode = 'sub') {
         }
     } catch { /* non-critical */ }
 
+    // Franchise grouping via AniList relations (union-find)
+    const ufParent = {};
+    function ufFind(x) { return ufParent[x] === undefined ? x : (ufParent[x] = ufFind(ufParent[x])); }
+    function ufUnion(a, b) { const ra = ufFind(a), rb = ufFind(b); if (ra !== rb) ufParent[Math.max(ra, rb)] = Math.min(ra, rb); }
+
+    const nameToAniId = {};
+    for (const a of aniListResults) {
+        if (a.title_romaji) nameToAniId[a.title_romaji.toLowerCase()] = a.anilist_id;
+        if (a.title_english) nameToAniId[a.title_english.toLowerCase()] = a.anilist_id;
+    }
+    for (const a of aniListResults) {
+        if (!a.relations) continue;
+        for (const rel of a.relations) ufUnion(a.anilist_id, rel.id);
+    }
+    for (const r of results) {
+        const aniId = nameToAniId[r.name.toLowerCase()] || (r.title_english && nameToAniId[r.title_english.toLowerCase()]);
+        if (aniId) {
+            r.anilist_id = aniId;
+            r.franchise_id = String(ufFind(aniId));
+        }
+    }
+
     return results;
 }
 
@@ -210,6 +232,7 @@ async function searchAniList(query, limit = 15) {
                 media(search: $search, type: ANIME, sort: [SEARCH_MATCH]) {
                     id title { english romaji } coverImage { medium }
                     description(asHtml: false) format episodes status
+                    relations { edges { node { id title { romaji english } format episodes } relationType } }
                 }
             }
         }`;
@@ -228,7 +251,10 @@ async function searchAniList(query, limit = 15) {
             description: m.description || null,
             format: m.format,
             episodes: m.episodes,
-            status: m.status
+            status: m.status,
+            relations: (m.relations?.edges || [])
+                .filter(e => ['SEQUEL', 'PREQUEL', 'SIDE_STORY', 'SPIN_OFF', 'ALTERNATIVE', 'PARENT'].includes(e.relationType))
+                .map(e => ({ id: e.node.id, relationType: e.relationType }))
         }));
     } catch { return []; }
 }

@@ -232,6 +232,22 @@ body {
     background: var(--surface-active);
 }
 
+.franchise-group { margin-bottom: 4px; }
+
+.franchise-parent .franchise-toggle {
+    font-size: 10px;
+    margin-left: 4px;
+    color: var(--accent);
+}
+
+.franchise-entries {
+    border-left: 2px solid rgba(0, 255, 255, 0.15);
+    margin-left: 12px;
+}
+
+.franchise-entry { padding-left: 8px; opacity: 0.9; }
+.franchise-entry:active { opacity: 1; }
+
 .result-card-row {
     display: flex;
     align-items: center;
