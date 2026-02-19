@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.3.5';
+    const APP_VERSION = '0.3.6';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -1588,10 +1588,7 @@
 
     // === CHANGELOG ===
     const CHANGELOG = [
-        'Fixed search input not working on PC (changelog overlay blocking keyboard)',
-        'Watch history now properly clears (persisted on server)',
-        'Favorites and Continue tabs now show English titles for older entries',
-        'Releases tab: "RELEASED" → "AIRED" for accuracy (airing ≠ available)'
+        'Fixed keyboard input not working after launch (window focus fix)'
     ];
 
     function showChangelog() {

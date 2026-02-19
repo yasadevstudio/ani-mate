@@ -1341,7 +1341,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.3.5 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.3.6 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -2965,12 +2965,9 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.3.5';
+    const APP_VERSION = '0.3.6';
     const CHANGELOG = [
-        'Fixed search input not working on PC (changelog overlay blocking keyboard)',
-        'Watch history now properly clears (persisted on server)',
-        'Favorites and Continue tabs now show English titles for older entries',
-        'Releases tab: "RELEASED" → "AIRED" for accuracy (airing ≠ available)'
+        'Fixed keyboard input not working after launch (window focus fix)'
     ];
 
     function showChangelog() {

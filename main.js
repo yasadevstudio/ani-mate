@@ -116,6 +116,7 @@ function createWindow(port) {
     mainWindow.once('ready-to-show', () => {
         mainWindow.show();
         mainWindow.focus();
+        mainWindow.webContents.focus();
     });
 
     mainWindow.on('closed', () => {
