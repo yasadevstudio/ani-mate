@@ -942,6 +942,62 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
+        if (pathname === '/history/clear') {
+            saveForgeHistory([]);
+            jsonResponse(res, 200, { status: 'cleared' });
+            return;
+        }
+
+        if (pathname === '/favorites/refresh' && req.method === 'POST') {
+            try {
+                const favs = loadFavorites();
+                const history = loadForgeHistory();
+                // Collect unique titles missing title_english
+                const needsEnrich = new Map();
+                for (const f of favs) {
+                    if (!f.title_english && f.name) {
+                        if (!needsEnrich.has(f.name)) needsEnrich.set(f.name, []);
+                        needsEnrich.get(f.name).push(f);
+                    }
+                }
+                for (const h of history) {
+                    if (!h.title_english && h.title) {
+                        if (!needsEnrich.has(h.title)) needsEnrich.set(h.title, []);
+                        needsEnrich.get(h.title).push(h);
+                    }
+                }
+
+                if (needsEnrich.size > 0) {
+                    let updated = false;
+                    const normName = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+                    for (const [name, entries] of needsEnrich) {
+                        try {
+                            const results = await searchAniList(name, 3);
+                            const nameNorm = normName(name);
+                            const match = results.find(r =>
+                                (r.title_romaji && normName(r.title_romaji) === nameNorm) ||
+                                (r.title_english && normName(r.title_english) === nameNorm)
+                            );
+                            if (match && match.title_english) {
+                                for (const entry of entries) {
+                                    entry.title_english = match.title_english;
+                                }
+                                updated = true;
+                            }
+                        } catch { /* skip failed queries */ }
+                    }
+                    if (updated) {
+                        saveFavorites(favs);
+                        saveForgeHistory(history);
+                    }
+                }
+                jsonResponse(res, 200, { favorites: favs, enriched: needsEnrich.size });
+            } catch (err) {
+                jsonResponse(res, 500, { error: 'Refresh failed' });
+            }
+            return;
+        }
+
         if (pathname === '/continue') {
             const continueList = getContinueList();
             jsonResponse(res, 200, { continue_list: continueList });

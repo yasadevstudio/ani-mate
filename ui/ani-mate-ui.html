@@ -1158,7 +1158,7 @@
         .changelog-overlay {
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0, 0, 0, 0.85);
+            background: rgba(0, 20, 30, 0.92);
             z-index: 10000;
             display: flex;
             align-items: center;
@@ -1341,7 +1341,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.3.4 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.3.5 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -2347,10 +2347,11 @@
         }
     });
 
-    document.getElementById('clear-history-btn').addEventListener('click', () => {
+    document.getElementById('clear-history-btn').addEventListener('click', async () => {
         if (confirm('Clear all watch history?')) {
             state.history = [];
             renderHistory();
+            try { await apiCall('/history/clear'); } catch { /* silent */ }
             toast('History cleared', 'info');
         }
     });
@@ -2690,8 +2691,8 @@
                 const fmt = r.format || 'TV';
                 const isReleased = r.airingAt <= nowSec;
                 const tagHtml = isReleased
-                    ? '<span class="release-tag released">RELEASED</span>'
-                    : '<span class="release-tag pending">PENDING</span>';
+                    ? '<span class="release-tag released">AIRED</span>'
+                    : '<span class="release-tag pending">UPCOMING</span>';
                 const hasRomaji = r.title_romaji && r.title_romaji.toLowerCase() !== r.title.toLowerCase();
                 const relPrimary = state.preferEnglish ? r.title : (hasRomaji ? r.title_romaji : r.title);
                 const relSecondary = state.preferEnglish ? (hasRomaji ? r.title_romaji : null) : (hasRomaji ? r.title : null);
@@ -2948,14 +2949,28 @@
             state.favorites = data.favorites || [];
         } catch { /* silent */ }
         setInterval(checkStatus, 30000);
+        // Background: enrich favorites/history missing English titles
+        refreshEnglishTitles();
+    }
+
+    async function refreshEnglishTitles() {
+        try {
+            const data = await apiCall('/favorites/refresh', { method: 'POST' });
+            if (data.favorites && data.enriched > 0) {
+                state.favorites = data.favorites;
+                if (state.activeTab === 'favs') renderFavorites();
+                if (state.activeTab === 'continue') loadContinue();
+            }
+        } catch { /* silent */ }
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.3.4';
+    const APP_VERSION = '0.3.5';
     const CHANGELOG = [
-        'Fixed franchise grouping — anime now properly grouped by series',
-        'Main series cover and title shown instead of spinoffs/chibi',
-        'Improved name matching for better AniList data enrichment'
+        'Fixed search input not working on PC (changelog overlay blocking keyboard)',
+        'Watch history now properly clears (persisted on server)',
+        'Favorites and Continue tabs now show English titles for older entries',
+        'Releases tab: "RELEASED" → "AIRED" for accuracy (airing ≠ available)'
     ];
 
     function showChangelog() {
@@ -2970,16 +2985,22 @@
             <button class="changelog-dismiss" id="changelog-dismiss">GOT IT</button>
         </div>`;
         document.body.appendChild(overlay);
-        overlay.querySelector('#changelog-dismiss').addEventListener('click', () => {
+        function dismissChangelog() {
             localStorage.setItem('ani-mate-last-version', APP_VERSION);
             overlay.remove();
-        });
-        overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) {
-                localStorage.setItem('ani-mate-last-version', APP_VERSION);
-                overlay.remove();
+            document.removeEventListener('keydown', changelogKeyHandler);
+        }
+        function changelogKeyHandler(e) {
+            if (e.key === 'Escape' || e.key === 'Enter') {
+                e.preventDefault();
+                dismissChangelog();
             }
+        }
+        overlay.querySelector('#changelog-dismiss').addEventListener('click', dismissChangelog);
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) dismissChangelog();
         });
+        document.addEventListener('keydown', changelogKeyHandler);
     }
 
     // === FAVORITES NEW EPISODE CHECK ===

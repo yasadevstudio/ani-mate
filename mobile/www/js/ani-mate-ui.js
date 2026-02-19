@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.3.4';
+    const APP_VERSION = '0.3.5';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -1588,9 +1588,10 @@
 
     // === CHANGELOG ===
     const CHANGELOG = [
-        'Fixed franchise grouping — anime now properly grouped by series',
-        'Main series cover and title shown instead of spinoffs/chibi',
-        'Improved name matching for better AniList data enrichment'
+        'Fixed search input not working on PC (changelog overlay blocking keyboard)',
+        'Watch history now properly clears (persisted on server)',
+        'Favorites and Continue tabs now show English titles for older entries',
+        'Releases tab: "RELEASED" → "AIRED" for accuracy (airing ≠ available)'
     ];
 
     function showChangelog() {

@@ -113,7 +113,10 @@ function createWindow(port) {
     });
 
     mainWindow.loadURL(`http://localhost:${port}`);
-    mainWindow.once('ready-to-show', () => mainWindow.show());
+    mainWindow.once('ready-to-show', () => {
+        mainWindow.show();
+        mainWindow.focus();
+    });
 
     mainWindow.on('closed', () => {
         mainWindow = null;
