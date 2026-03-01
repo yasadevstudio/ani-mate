@@ -414,11 +414,11 @@ async function getAnimeInfo(title) {
 }
 
 // Direct API calls to AllAnime (same as ani-cli but from Node)
-async function searchAnime(query, mode = 'sub') {
+async function searchAnime(query, mode = 'sub', allowAdult = false) {
     const searchGql = `query($search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } } }`;
 
     const variables = JSON.stringify({
-        search: { allowAdult: true, allowUnknown: false, query },
+        search: { allowAdult, allowUnknown: false, query },
         limit: 40,
         page: 1,
         translationType: mode,
@@ -884,10 +884,11 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
             const mode = query.mode || 'sub';
+            const nsfw = query.nsfw === 'true';
 
             // Dual-source search: AllAnime (primary/streams) + AniList (fuzzy/romaji)
             const [allAnimeResults, aniListResults] = await Promise.all([
-                searchAnime(query.q, mode).catch(() => []),
+                searchAnime(query.q, mode, nsfw).catch(() => []),
                 searchAniList(query.q, 15)
             ]);
 
@@ -941,6 +942,7 @@ const server = http.createServer(async (req, res) => {
 
             // Find AniList results NOT already in AllAnime results
             const aniListOnly = aniListResults.filter(a => {
+                if (!nsfw && a.isAdult) return false; // Skip adult AniList results when NSFW off
                 const names = [a.title_english, a.title_romaji].filter(Boolean).map(n => n.toLowerCase());
                 return !names.some(n => existingNames.has(n));
             });
@@ -950,7 +952,7 @@ const server = http.createServer(async (req, res) => {
                 const searchName = aniResult.title_romaji || aniResult.title_english;
                 if (!searchName) return null;
                 try {
-                    const subResults = await searchAnime(searchName, mode);
+                    const subResults = await searchAnime(searchName, mode, nsfw);
                     if (subResults.length > 0) {
                         const match = subResults[0];
                         if (!existingNames.has(match.name.toLowerCase())) {
@@ -1044,7 +1046,13 @@ const server = http.createServer(async (req, res) => {
                 }
             }
 
-            jsonResponse(res, 200, { results, query: query.q, mode });
+            // When NSFW is off, filter out results with Hentai genre
+            const finalResults = nsfw ? results : results.filter(r => {
+                if (r.genres && r.genres.includes('Hentai')) return false;
+                return true;
+            });
+
+            jsonResponse(res, 200, { results: finalResults, query: query.q, mode });
             return;
         }
 

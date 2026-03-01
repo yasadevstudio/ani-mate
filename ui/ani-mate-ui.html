@@ -1343,6 +1343,13 @@
                         <span class="toggle-slider"></span>
                     </label>
                 </div>
+                <div class="autoplay-toggle" title="Show 18+ adult content in search results">
+                    <span class="autoplay-label" style="color:#ff4466">18+</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="nsfw-toggle">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
                 <button class="play-btn" id="play-btn" disabled title="Play selected episode (Enter)">&#9654; PLAY</button>
                 <button class="play-btn" id="dl-btn" disabled title="Download selected episode to ~/Videos/ANI-MATE/" style="font-size:10px;padding:8px 12px;letter-spacing:2px;border-color:var(--accent-cyan);color:var(--accent-cyan);background:linear-gradient(135deg, rgba(0,255,255,0.1), rgba(0,255,255,0.03))">&#8615; DL</button>
             </div>
@@ -1360,7 +1367,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.3.8 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.3.9 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -1413,7 +1420,8 @@
         progressSaveInterval: null,
         pendingResumeTime: 0,
         autoPlay: false,
-        preferEnglish: true
+        preferEnglish: true,
+        nsfw: false
     };
 
     // === NEURAL PARTICLE CANVAS ===
@@ -1530,7 +1538,7 @@
         container.innerHTML = '<div class="loading-indicator">SCANNING DATABASE...</div>';
 
         try {
-            const data = await apiCall(`/search?q=${encodeURIComponent(query)}&mode=${state.mode}`);
+            const data = await apiCall(`/search?q=${encodeURIComponent(query)}&mode=${state.mode}&nsfw=${state.nsfw}`);
             state.results = data.results || [];
             renderResults();
         } catch (err) {
@@ -2308,6 +2316,17 @@
         toast(state.autoPlay ? 'Auto-play ON' : 'Auto-play OFF', 'info');
     });
 
+    // NSFW toggle (persisted to localStorage, default OFF)
+    const savedNsfw = localStorage.getItem('ani-mate-nsfw') === 'true';
+    state.nsfw = savedNsfw;
+    document.getElementById('nsfw-toggle').checked = savedNsfw;
+
+    document.getElementById('nsfw-toggle').addEventListener('change', (e) => {
+        state.nsfw = e.target.checked;
+        localStorage.setItem('ani-mate-nsfw', e.target.checked);
+        toast(state.nsfw ? '18+ content ON' : '18+ content OFF', 'info');
+    });
+
     // When video ends: auto-play next or clean up state
     document.getElementById('video-player').addEventListener('ended', () => {
         if (!state.selectedAnime || !state.episodes.length) return;
@@ -2790,9 +2809,9 @@
                 const romaji = card.dataset.releaseRomaji;
                 toast(`Searching for ${title}...`, 'info');
                 try {
-                    let data = await apiCall(`/search?q=${encodeURIComponent(title)}&mode=${state.mode}`);
+                    let data = await apiCall(`/search?q=${encodeURIComponent(title)}&mode=${state.mode}&nsfw=${state.nsfw}`);
                     if ((!data.results || data.results.length === 0) && romaji && romaji !== title) {
-                        data = await apiCall(`/search?q=${encodeURIComponent(romaji)}&mode=${state.mode}`);
+                        data = await apiCall(`/search?q=${encodeURIComponent(romaji)}&mode=${state.mode}&nsfw=${state.nsfw}`);
                     }
                     if (data.results && data.results.length > 0) {
                         const match = bestTitleMatch(data.results, title, romaji);
@@ -3009,21 +3028,12 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.3.8';
+    const APP_VERSION = '0.3.9';
     const CHANGELOG = [
-        'Daily tab now shows fresh trending anime instead of stale results',
-        'Favorites now display cover art images',
-        'Favorites notification badge clears when you open the tab',
-        'Franchise grouping improved — JJK, One Piece, Demon Slayer and 15+ series always group together',
-        'Fixed false Hentai tags on non-adult anime',
-        '21 abbreviated titles auto-correct (1P→One Piece, AOT, JJK, MHA, etc.)',
-        'Release dates now match your local timezone',
-        'Franchise expand button bigger and works with single click',
-        'Keyboard skip changed from 10s to 5s',
-        'Anime descriptions show banner images when available',
-        'Broken cover images hidden instead of showing error icons',
-        'Fallback streaming — if primary source fails, AnimePahe and HiAnime tried automatically',
-        'Better error messages when episodes are not yet available'
+        '18+ toggle — enable to search adult content, disabled by default',
+        'Adult content (Hentai genre) filtered from results when 18+ is off',
+        'Abbreviated title fix verified working (1P→ONE PIECE, etc.)',
+        'Genres and adult flags properly wired in AniList enrichment'
     ];
 
     function showChangelog() {

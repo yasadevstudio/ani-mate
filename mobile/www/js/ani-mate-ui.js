@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.3.8';
+    const APP_VERSION = '0.3.9';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -36,7 +36,8 @@
         playerUiVisible: true,
         playerUiTimer: null,
         playLock: false,
-        preferEnglish: true
+        preferEnglish: true,
+        nsfw: false
     };
 
     // === CAPACITOR PLUGINS ===
@@ -115,7 +116,7 @@
     async function doSearch(query) {
         resultsContainer.innerHTML = '<div class="loading-indicator">SCANNING DATABASE...</div>';
         try {
-            state.results = await API.searchAnime(query, state.mode);
+            state.results = await API.searchAnime(query, state.mode, state.nsfw);
             renderResults();
         } catch (err) {
             resultsContainer.innerHTML = `<div class="no-results">Error: ${err.message}</div>`;
@@ -1182,9 +1183,9 @@
                 toast(`Searching for ${title}...`, 'info');
 
                 try {
-                    let results = await API.searchAnime(title, state.mode);
+                    let results = await API.searchAnime(title, state.mode, state.nsfw);
                     if (results.length === 0 && romaji && romaji !== title) {
-                        results = await API.searchAnime(romaji, state.mode);
+                        results = await API.searchAnime(romaji, state.mode, state.nsfw);
                     }
                     if (results.length > 0) {
                         const match = bestTitleMatch(results, title, romaji);
@@ -1219,9 +1220,9 @@
 
                 toast('Adding to favorites...', 'info');
                 try {
-                    let results = await API.searchAnime(title, state.mode);
+                    let results = await API.searchAnime(title, state.mode, state.nsfw);
                     if (results.length === 0 && romaji && romaji !== title) {
-                        results = await API.searchAnime(romaji, state.mode);
+                        results = await API.searchAnime(romaji, state.mode, state.nsfw);
                     }
                     if (results.length > 0) {
                         const match = results[0];
@@ -1466,6 +1467,19 @@
         toast(state.autoPlay ? 'Auto-play ON' : 'Auto-play OFF', 'info');
     });
 
+    // NSFW toggle (default OFF)
+    const savedNsfw = localStorage.getItem('ani-mate-nsfw') === 'true';
+    state.nsfw = savedNsfw;
+    const nsfwEl = $('nsfw-toggle');
+    if (nsfwEl) {
+        nsfwEl.checked = savedNsfw;
+        nsfwEl.addEventListener('change', (e) => {
+            state.nsfw = e.target.checked;
+            localStorage.setItem('ani-mate-nsfw', e.target.checked);
+            toast(state.nsfw ? '18+ content ON' : '18+ content OFF', 'info');
+        });
+    }
+
     // Network status events
     window.addEventListener('online', updateNetworkStatus);
     window.addEventListener('offline', updateNetworkStatus);
@@ -1596,18 +1610,10 @@
 
     // === CHANGELOG ===
     const CHANGELOG = [
-        'Daily tab now shows fresh trending anime instead of stale results',
-        'Favorites now display cover art images',
-        'Favorites notification badge clears when you open the tab',
-        'Franchise grouping improved — JJK, One Piece, Demon Slayer and 15+ series always group together',
-        'Fixed false Hentai tags on non-adult anime',
-        '21 abbreviated titles auto-correct (1P→One Piece, AOT, JJK, MHA, etc.)',
-        'Release dates now match your local timezone',
-        'Franchise expand button bigger and works with single click',
-        'Skip changed from 10s to 5s (keyboard and double-tap)',
-        'Anime descriptions show banner images when available',
-        'Broken cover images hidden instead of showing error icons',
-        'Better error messages when episodes are not yet available'
+        '18+ toggle — enable to search adult content, disabled by default',
+        'Adult content (Hentai genre) filtered from results when 18+ is off',
+        'Abbreviated title fix verified working (1P→ONE PIECE, etc.)',
+        'Genres and adult flags properly wired in AniList enrichment'
     ];
 
     function showChangelog() {

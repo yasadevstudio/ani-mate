@@ -116,11 +116,11 @@ async function providerFetch(url) {
 }
 
 // Search anime via AllAnime GraphQL
-async function searchAnime(query, mode = 'sub') {
+async function searchAnime(query, mode = 'sub', allowAdult = false) {
     const searchGql = `query($search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } } }`;
 
     const variables = JSON.stringify({
-        search: { allowAdult: true, allowUnknown: false, query },
+        search: { allowAdult, allowUnknown: false, query },
         limit: 40,
         page: 1,
         translationType: mode,
@@ -194,6 +194,7 @@ async function searchAnime(query, mode = 'sub') {
 
     // Find AniList results NOT already in AllAnime results
     const aniListOnly = aniListResults.filter(a => {
+        if (!allowAdult && a.isAdult) return false; // Skip adult AniList results when NSFW off
         const names = [a.title_english, a.title_romaji].filter(Boolean).map(n => n.toLowerCase());
         return !names.some(n => existingNames.has(n));
     });
@@ -205,7 +206,7 @@ async function searchAnime(query, mode = 'sub') {
         try {
             const subGql = `query($search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } } }`;
             const subVars = JSON.stringify({
-                search: { allowAdult: true, allowUnknown: false, query: searchName },
+                search: { allowAdult, allowUnknown: false, query: searchName },
                 limit: 5, page: 1, translationType: mode, countryOrigin: 'ALL'
             });
             const subParams = new URLSearchParams({ variables: subVars, query: subGql });
@@ -299,6 +300,10 @@ async function searchAnime(query, mode = 'sub') {
         }
     }
 
+    // When NSFW is off, filter out results with Hentai genre
+    if (!allowAdult) {
+        return results.filter(r => !(r.genres && r.genres.includes('Hentai')));
+    }
     return results;
 }
 
