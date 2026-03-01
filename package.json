@@ -1,6 +1,6 @@
 {
   "name": "ani-mate",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "description": "ANI-MATE - Free Anime For All",
   "main": "main.js",
   "author": "YASA Development Studio",
@@ -10,6 +10,7 @@
     "build:win": "electron-builder --win --x64"
   },
   "dependencies": {
+    "@consumet/extensions": "^1.8.8",
     "electron-updater": "^6.3.0"
   },
   "devDependencies": {

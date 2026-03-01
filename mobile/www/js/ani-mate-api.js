@@ -9,6 +9,26 @@ const ALLANIME_API = 'https://api.allanime.day/api';
 // Title corrections for AllAnime names that don't match AniList/MAL
 const TITLE_MAP = {
     '1P': 'One Piece',
+    'OP': 'One Piece',
+    'AOT': 'Attack on Titan',
+    'SNK': 'Shingeki no Kyojin',
+    'JJK': 'Jujutsu Kaisen',
+    'MHA': 'My Hero Academia',
+    'KNY': 'Kimetsu no Yaiba',
+    'SAO': 'Sword Art Online',
+    'HXH': 'Hunter x Hunter',
+    'FMA': 'Fullmetal Alchemist',
+    'FMAB': 'Fullmetal Alchemist Brotherhood',
+    'DS': 'Demon Slayer',
+    'CSM': 'Chainsaw Man',
+    'MP100': 'Mob Psycho 100',
+    'OPM': 'One Punch Man',
+    'DBS': 'Dragon Ball Super',
+    'DBZ': 'Dragon Ball Z',
+    'BC': 'Black Clover',
+    'TOG': 'Tower of God',
+    'SOL': 'Solo Leveling',
+    'SxF': 'Spy x Family',
 };
 
 // Caches (memory-only, cleared on app restart)
@@ -135,12 +155,22 @@ async function searchAnime(query, mode = 'sub') {
     // Enrich AllAnime results with AniList data (fuzzy matching)
     for (const r of results) {
         const rNorm = normName(r.name);
-        const aniMatch = aniListResults.find(a =>
+        let aniMatch = aniListResults.find(a =>
             (a.title_romaji && normName(a.title_romaji) === rNorm) ||
             (a.title_english && normName(a.title_english) === rNorm)
         );
+        // Fallback: check TITLE_MAP alias (e.g. "1P" → "One Piece"), case-insensitive
+        const aliasKey = Object.keys(TITLE_MAP).find(k => k.toLowerCase() === r.name.toLowerCase());
+        if (!aniMatch && aliasKey) {
+            const aliasNorm = normName(TITLE_MAP[aliasKey]);
+            aniMatch = aniListResults.find(a =>
+                (a.title_romaji && normName(a.title_romaji) === aliasNorm) ||
+                (a.title_english && normName(a.title_english) === aliasNorm)
+            );
+            if (aniMatch && !r.title_english) r.title_english = aniMatch.title_english;
+        }
         if (aniMatch) {
-            r.title_english = aniMatch.title_english;
+            if (!r.title_english) r.title_english = aniMatch.title_english;
             r.cover = r.cover || aniMatch.cover;
             r.description = r.description || aniMatch.description;
             r.anilist_format = aniMatch.format;
@@ -228,6 +258,21 @@ async function searchAnime(query, mode = 'sub') {
         if (!a.relations) continue;
         for (const rel of a.relations) ufUnion(a.anilist_id, rel.id);
     }
+
+    // Name-pattern franchise overrides (catches series AniList doesn't link)
+    const FRANCHISE_PATTERNS = [
+        'jujutsu kaisen', 'one piece', 'attack on titan', 'shingeki no kyojin',
+        'demon slayer', 'kimetsu no yaiba', 'my hero academia', 'boku no hero academia',
+        'sword art online', 'naruto', 'dragon ball', 'bleach', 'hunter x hunter',
+        'fullmetal alchemist', 'mob psycho', 're zero', 'overlord', 'konosuba',
+    ];
+    for (const pattern of FRANCHISE_PATTERNS) {
+        const matchingIds = Object.entries(nameToAniId)
+            .filter(([name]) => name.startsWith(pattern) || name === pattern)
+            .map(([, id]) => id);
+        for (let i = 1; i < matchingIds.length; i++) ufUnion(matchingIds[0], matchingIds[i]);
+    }
+
     for (const r of results) {
         const rNorm = normName(r.name);
         const rEnNorm = r.title_english ? normName(r.title_english) : null;
@@ -458,8 +503,15 @@ async function getDailyPopular(mode = 'sub') {
 // AniList airing schedule
 async function getAiringSchedule(dateStr) {
     const now = new Date();
-    const target = dateStr ? new Date(dateStr + 'T00:00:00') : new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const cacheKey = target.toISOString().slice(0, 10);
+    // Parse date as local midnight (dateStr should be YYYY-MM-DD in local time)
+    let target;
+    if (dateStr) {
+        const [y, m, d] = dateStr.split('-').map(Number);
+        target = new Date(y, m - 1, d); // local midnight
+    } else {
+        target = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    }
+    const cacheKey = dateStr || target.toISOString().slice(0, 10);
 
     if (airingCache[cacheKey] && (Date.now() - airingCache[cacheKey].at) < AIRING_CACHE_TTL) {
         return airingCache[cacheKey].data;
@@ -565,14 +617,15 @@ async function getAniListCovers(titles) {
 
 // Anime info lookup (AniList primary, Jikan/MAL fallback)
 async function getAnimeInfo(title) {
-    const searchTitle = TITLE_MAP[title] || title;
+    const titleMapKey = Object.keys(TITLE_MAP).find(k => k.toLowerCase() === title.toLowerCase());
+    const searchTitle = (titleMapKey && TITLE_MAP[titleMapKey]) || title;
     if (infoCache[title] && (Date.now() - infoCache[title].at) < INFO_CACHE_TTL) {
         return infoCache[title];
     }
 
-    // Try AniList first
+    // Try AniList first (fetch 3 results, prefer non-adult match)
     try {
-        const gql = `query ($search: String) { Page(perPage: 1) { media(search: $search, type: ANIME) { description(asHtml: false) coverImage { large } genres averageScore } } }`;
+        const gql = `query ($search: String) { Page(perPage: 3) { media(search: $search, type: ANIME) { description(asHtml: false) coverImage { large } bannerImage genres averageScore isAdult title { romaji english } } } }`;
         const resp = await fetch('https://graphql.anilist.co', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -580,9 +633,14 @@ async function getAnimeInfo(title) {
             signal: AbortSignal.timeout(5000)
         });
         const json = await resp.json();
-        const media = json?.data?.Page?.media?.[0];
+        const mediaList = json?.data?.Page?.media || [];
+        const infoNorm = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+        const searchNorm = infoNorm(searchTitle);
+        const media = mediaList.find(m => !m.isAdult && (infoNorm(m.title?.romaji) === searchNorm || infoNorm(m.title?.english) === searchNorm))
+            || mediaList.find(m => !m.isAdult)
+            || mediaList[0];
         if (media?.description) {
-            const result = { description: media.description, cover: media.coverImage?.large || null, genres: media.genres || [], score: media.averageScore, source: 'anilist', at: Date.now() };
+            const result = { description: media.description, cover: media.coverImage?.large || null, banner: media.bannerImage || null, genres: (media.genres || []).filter(g => media.isAdult || g !== 'Hentai'), score: media.averageScore, source: 'anilist', at: Date.now() };
             infoCache[title] = result;
             return result;
         }
@@ -596,13 +654,13 @@ async function getAnimeInfo(title) {
         const json = await resp.json();
         const anime = json?.data?.[0];
         if (anime) {
-            const result = { description: anime.synopsis || null, cover: anime.images?.jpg?.large_image_url || null, genres: (anime.genres || []).map(g => g.name), score: anime.score ? anime.score * 10 : null, source: 'mal', at: Date.now() };
+            const result = { description: anime.synopsis || null, cover: anime.images?.jpg?.large_image_url || null, banner: null, genres: (anime.genres || []).map(g => g.name), score: anime.score ? anime.score * 10 : null, source: 'mal', at: Date.now() };
             infoCache[title] = result;
             return result;
         }
     } catch { /* no fallback */ }
 
-    const empty = { description: null, cover: null, genres: [], score: null, source: null, at: Date.now() };
+    const empty = { description: null, cover: null, banner: null, genres: [], score: null, source: null, at: Date.now() };
     infoCache[title] = empty;
     return empty;
 }
