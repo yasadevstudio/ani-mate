@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.3.7';
+    const APP_VERSION = '0.3.8';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
