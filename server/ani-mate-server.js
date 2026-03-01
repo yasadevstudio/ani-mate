@@ -462,6 +462,7 @@ async function searchAniList(query, limit = 15) {
                 media(search: $search, type: ANIME, sort: [SEARCH_MATCH]) {
                     id title { english romaji } coverImage { medium }
                     description(asHtml: false) format episodes status
+                    genres isAdult
                     relations { edges { node { id title { romaji english } format episodes } relationType } }
                 }
             }
@@ -482,6 +483,8 @@ async function searchAniList(query, limit = 15) {
             format: m.format,
             episodes: m.episodes,
             status: m.status,
+            genres: m.genres || [],
+            isAdult: m.isAdult || false,
             relations: (m.relations?.edges || [])
                 .filter(e => ['SEQUEL', 'PREQUEL', 'SIDE_STORY', 'SPIN_OFF', 'ALTERNATIVE', 'PARENT'].includes(e.relationType))
                 .map(e => ({ id: e.node.id, title_romaji: e.node.title?.romaji, title_english: e.node.title?.english, format: e.node.format, episodes: e.node.episodes, relationType: e.relationType }))
@@ -906,17 +909,33 @@ const server = http.createServer(async (req, res) => {
                 if (!aniMatch && aliasKey) {
                     const aliasNorm = normName(TITLE_MAP[aliasKey]);
                     aniMatch = aniListResults.find(a =>
+                        !a.isAdult &&
+                        ((a.title_romaji && normName(a.title_romaji) === aliasNorm) ||
+                        (a.title_english && normName(a.title_english) === aliasNorm))
+                    ) || aniListResults.find(a =>
                         (a.title_romaji && normName(a.title_romaji) === aliasNorm) ||
                         (a.title_english && normName(a.title_english) === aliasNorm)
                     );
-                    // Also fix the display name if alias matched
-                    if (aniMatch && !r.title_english) r.title_english = aniMatch.title_english;
+                }
+                // If TITLE_MAP matched, fix the display name (abbreviation → real title)
+                if (aliasKey) {
+                    r.name = (aniMatch?.title_romaji) || TITLE_MAP[aliasKey];
+                    if (!r.title_english) r.title_english = aniMatch?.title_english || null;
+                }
+                // If aniMatch is adult but the AllAnime source isn't marked adult, skip the match
+                if (aniMatch && aniMatch.isAdult) {
+                    // Only use adult match if search was specifically for this title
+                    const nameMatch = normName(aniMatch.title_romaji) === rNorm || normName(aniMatch.title_english) === rNorm;
+                    if (!nameMatch && !aliasKey) aniMatch = null;
                 }
                 if (aniMatch) {
                     if (!r.title_english) r.title_english = aniMatch.title_english;
                     r.cover = r.cover || aniMatch.cover;
                     r.description = r.description || aniMatch.description;
                     r.anilist_format = aniMatch.format;
+                    // Set genres, filter Hentai from non-adult matches
+                    r.genres = (aniMatch.genres || []).filter(g => aniMatch.isAdult || g !== 'Hentai');
+                    r.anilist_id = aniMatch.anilist_id;
                 }
             }
 
