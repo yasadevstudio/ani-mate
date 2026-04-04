@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.4.0';
+    const APP_VERSION = '0.4.1';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -1635,12 +1635,7 @@
 
     // === CHANGELOG ===
     const CHANGELOG = [
-        'Per-show new episode dots on favorites (click to dismiss)',
-        'Tri-state release labels: UPCOMING → PUBLISHING → AIRED',
-        'Smarter title matching (seasons, sequels, long romaji names)',
-        'Franchise grouping improved (JoJo, Spy x Family, Dr. STONE, Slime, etc.)',
-        'Quality auto-selects highest resolution available',
-        'Fixed mobile update loop (24h cooldown after dismissing)',
+        'Fixed episode list not scrollable — description capped at 35% screen height',
     ];
 
     function showChangelog() {
