@@ -1092,9 +1092,14 @@ body {
     border: 1px solid rgba(0, 255, 100, 0.4);
 }
 .release-tag.pending {
-    background: rgba(255, 170, 0, 0.15);
-    color: #fa0;
-    border: 1px solid rgba(255, 170, 0, 0.3);
+    background: rgba(255, 0, 255, 0.1);
+    color: #f0f;
+    border: 1px solid rgba(255, 0, 255, 0.3);
+}
+.release-tag.publishing {
+    background: rgba(255, 221, 0, 0.12);
+    color: #fd0;
+    border: 1px solid rgba(255, 221, 0, 0.4);
 }
 
 /* === CHANGELOG MODAL === */
@@ -1168,4 +1173,14 @@ body {
     background: #f44;
     border-radius: 50%;
     border: 1px solid var(--bg);
+}
+.fav-new-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #f0f;
+    box-shadow: 0 0 6px #f0f;
+    margin-left: 6px;
+    vertical-align: middle;
 }

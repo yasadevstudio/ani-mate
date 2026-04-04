@@ -1125,6 +1125,11 @@
             border: 1px solid rgba(255, 0, 255, 0.3);
             background: rgba(255, 0, 255, 0.06);
         }
+        .release-tag.publishing {
+            color: var(--accent-gold);
+            border: 1px solid rgba(255, 221, 0, 0.4);
+            background: rgba(255, 221, 0, 0.08);
+        }
 
         /* === DESCRIPTION COVER IMAGE === */
         .anime-banner-img {
@@ -1169,6 +1174,16 @@
             height: 8px;
             border-radius: 50%;
             background: var(--accent-magenta);
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+        .fav-new-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-magenta);
+            box-shadow: 0 0 6px var(--accent-magenta);
             margin-left: 6px;
             vertical-align: middle;
         }
@@ -1367,7 +1382,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.3.9 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.4.0 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -1421,7 +1436,9 @@
         pendingResumeTime: 0,
         autoPlay: false,
         preferEnglish: true,
-        nsfw: false
+        nsfw: false,
+        favUpdates: [],
+        favReadIds: JSON.parse(localStorage.getItem('ani-mate-fav-read-ids') || '[]')
     };
 
     // === NEURAL PARTICLE CANVAS ===
@@ -1885,8 +1902,9 @@
                 toast('No stream URL available', 'error');
             }
 
-            // Refresh history from server (background)
+            // Refresh history from server (background) + invalidate continue cache
             loadHistory();
+            continueFetchedAt = 0;
         } catch (err) {
             const msg = err.message || 'Unknown error';
             if (msg.includes('No streams available') || msg.includes('not be uploaded yet')) {
@@ -1931,7 +1949,15 @@
     }
 
     function pollDownloadStatus(dlId, filename) {
+        let polls = 0;
+        const maxPolls = 300; // 10 min at 2s intervals
         const poll = setInterval(async () => {
+            polls++;
+            if (polls > maxPolls) {
+                clearInterval(poll);
+                toast(`Download timed out: ${filename}`, 'error');
+                return;
+            }
             try {
                 const data = await apiCall(`/download-status?id=${encodeURIComponent(dlId)}`);
                 if (data.status === 'complete') {
@@ -1941,7 +1967,6 @@
                     clearInterval(poll);
                     toast(`Download failed: ${data.error}`, 'error');
                 }
-                // Still downloading — silent polling
             } catch {
                 clearInterval(poll);
             }
@@ -2223,17 +2248,19 @@
     }
 
     // === EVENT LISTENERS ===
+    let searchDebounce = null;
+    function triggerSearch() {
+        const q = document.getElementById('search-input').value.trim();
+        if (!q) return;
+        clearTimeout(searchDebounce);
+        searchDebounce = setTimeout(() => searchAnime(q), 250);
+    }
+
     document.getElementById('search-input').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-            const q = e.target.value.trim();
-            if (q) searchAnime(q);
-        }
+        if (e.key === 'Enter') triggerSearch();
     });
 
-    document.getElementById('search-btn').addEventListener('click', () => {
-        const q = document.getElementById('search-input').value.trim();
-        if (q) searchAnime(q);
-    });
+    document.getElementById('search-btn').addEventListener('click', triggerSearch);
 
     document.querySelectorAll('.mode-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -2551,18 +2578,19 @@
             else container.innerHTML = '<div class="no-results">Enter a search query to find anime</div>';
         } else if (tab === 'continue') {
             searchBox.style.display = 'none';
+            container.innerHTML = '<div class="no-results">Loading watch list...</div>';
             loadContinue();
         } else if (tab === 'daily') {
             searchBox.style.display = 'none';
+            container.innerHTML = '<div class="no-results">Loading trending anime...</div>';
             loadDaily();
         } else if (tab === 'releases') {
             searchBox.style.display = 'none';
+            container.innerHTML = '<div class="no-results">Loading airing schedule...</div>';
             state.releasesDate = new Date();
             loadReleases();
         } else if (tab === 'favs') {
             searchBox.style.display = 'none';
-            const badge = document.querySelector('.fav-badge');
-            if (badge) badge.remove();
             loadFavorites();
         }
     }
@@ -2572,12 +2600,19 @@
     });
 
     // === DAILY ===
-    async function loadDaily() {
+    let dailyFetchedAt = 0;
+    async function loadDaily(force) {
         const container = document.getElementById('results-container');
+        // Skip re-fetch if data is fresh (<5 min) and not forced
+        if (!force && state.dailyResults.length > 0 && (Date.now() - dailyFetchedAt) < 300000) {
+            renderDaily();
+            return;
+        }
         container.innerHTML = '<div class="loading-indicator">LOADING TRENDING...</div>';
         try {
             const data = await apiCall(`/daily?mode=${state.mode}`);
             state.dailyResults = data.results || [];
+            dailyFetchedAt = Date.now();
             renderDaily();
         } catch (err) {
             container.innerHTML = `<div class="no-results">Error: ${err.message}</div>`;
@@ -2615,12 +2650,19 @@
     }
 
     // === CONTINUE WATCHING ===
-    async function loadContinue() {
+    let continueFetchedAt = 0;
+    async function loadContinue(force) {
         const container = document.getElementById('results-container');
+        // Skip re-fetch if data is fresh (<30s) and not forced — continue changes on playback
+        if (!force && state.continueResults.length > 0 && (Date.now() - continueFetchedAt) < 30000) {
+            renderContinue();
+            return;
+        }
         container.innerHTML = '<div class="loading-indicator">LOADING CONTINUE LIST...</div>';
         try {
             const data = await apiCall('/continue');
             state.continueResults = data.continue_list || [];
+            continueFetchedAt = Date.now();
             renderContinue();
         } catch (err) {
             container.innerHTML = `<div class="no-results">Error: ${err.message}</div>`;
@@ -2639,6 +2681,11 @@
             container.innerHTML = '<div class="no-results">No anime to continue. Start watching something!</div>';
             return;
         }
+        // Build cover lookup from favorites + search results + daily
+        const coverMap = {};
+        for (const src of [...(state.favorites || []), ...(state.results || []), ...(state.dailyResults || [])]) {
+            if (src.cover && (src.id || src.anime_id)) coverMap[src.id || src.anime_id] = src.cover;
+        }
         container.innerHTML = '<div class="section-label">CONTINUE WATCHING</div>' +
             state.continueResults.map(r => {
                 const watchedCount = Array.isArray(r.episodes_watched) ? r.episodes_watched.length : 1;
@@ -2653,8 +2700,11 @@
                 const enTitle = r.title_english || (state.favorites.find(f => f.id === r.anime_id) || {}).title_english;
                 const hasEn = enTitle && enTitle.toLowerCase() !== (r.title || '').toLowerCase();
                 const displayTitle = (state.preferEnglish && hasEn) ? enTitle : (r.title || r.anime_id);
+                const cover = coverMap[r.anime_id] || null;
+                const coverHtml = cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${esc(cover)}" loading="lazy" alt=""></div>` : '';
                 return `<div class="result-card glass" data-id="${r.anime_id}" data-title="${esc(r.title)}" data-eps="${r.total_episodes || '?'}" data-resume-ep="${resumeEp}" data-resume-time="${resumeTime}" title="Click to resume watching">
                     <div class="result-card-row">
+                        ${coverHtml}
                         <div class="result-info">
                             <div class="result-title">${esc(displayTitle)}</div>
                             <div class="result-meta">
@@ -2741,10 +2791,12 @@
             html += items.map(r => {
                 const airTime = new Date(r.airingAt * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
                 const fmt = r.format || 'TV';
-                const isReleased = r.airingAt <= nowSec;
-                const tagHtml = isReleased
-                    ? '<span class="release-tag released">AIRED</span>'
-                    : '<span class="release-tag pending">UPCOMING</span>';
+                const hoursSinceAir = (nowSec - r.airingAt) / 3600;
+                const tagHtml = r.airingAt > nowSec
+                    ? '<span class="release-tag pending">UPCOMING</span>'
+                    : hoursSinceAir < 6
+                        ? '<span class="release-tag publishing">PUBLISHING</span>'
+                        : '<span class="release-tag released">AIRED</span>';
                 const hasRomaji = r.title_romaji && r.title_romaji.toLowerCase() !== r.title.toLowerCase();
                 const relPrimary = state.preferEnglish ? r.title : (hasRomaji ? r.title_romaji : r.title);
                 const relSecondary = state.preferEnglish ? (hasRomaji ? r.title_romaji : null) : (hasRomaji ? r.title : null);
@@ -2857,6 +2909,7 @@
             }
         }
 
+        const updatedIds = new Set((state.favUpdates || []).map(u => u.id));
         let html = '<div class="section-label">FAVORITES</div>';
 
         // Render franchise groups
@@ -2869,6 +2922,8 @@
             const parent = members[0];
             const hasEn = parent.title_english && parent.title_english.toLowerCase() !== parent.name.toLowerCase();
             const primary = (state.preferEnglish && hasEn) ? parent.title_english : parent.name;
+            const franchiseHasUpdate = members.some(m => updatedIds.has(m.id));
+            const franchiseDot = franchiseHasUpdate ? '<span class="fav-new-dot" title="New episode this week"></span>' : '';
 
             html += `<div class="franchise-group" data-franchise="${fid}">
                 <div class="result-card glass franchise-parent" data-id="${parent.id}" data-title="${esc(parent.name)}" data-eps="${parent.episodes}" title="${esc(parent.name)}">
@@ -2876,7 +2931,7 @@
                         <button class="fav-star active" data-fav-id="${parent.id}" data-fav-name="${esc(parent.name)}" data-fav-eps="${parent.episodes}" data-fav-english="${esc(parent.title_english || '')}" data-fav-franchise="${fid}" data-fav-cover="${esc(parent.cover || '')}" title="Remove from favorites">&#9733;</button>
                         ${parent.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${esc(parent.cover)}" loading="lazy" alt=""></div>` : ''}
                         <div class="result-info">
-                            <div class="result-title">${esc(primary)}</div>
+                            <div class="result-title">${esc(primary)}${franchiseDot}</div>
                             <div class="result-meta"><span class="result-type series">FRANCHISE</span>${members.length} entries <span class="franchise-toggle">&#9660;</span></div>
                         </div>
                     </div>
@@ -2905,12 +2960,13 @@
             const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
             const primary = (state.preferEnglish && hasEn) ? r.title_english : r.name;
             const secondary = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : null);
+            const newDot = updatedIds.has(r.id) ? '<span class="fav-new-dot" title="New episode this week"></span>' : '';
             return `<div class="result-card glass" data-id="${r.id}" data-title="${esc(r.name)}" data-eps="${r.episodes}" title="${esc(r.name)}">
                 <div class="result-card-row">
                     <button class="fav-star active" data-fav-id="${r.id}" data-fav-name="${esc(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${esc(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}" data-fav-cover="${esc(r.cover || '')}" title="Remove from favorites">&#9733;</button>
                     ${r.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${esc(r.cover)}" loading="lazy" alt=""></div>` : ''}
                     <div class="result-info">
-                        <div class="result-title">${esc(primary)}</div>
+                        <div class="result-title">${esc(primary)}${newDot}</div>
                         ${secondary ? `<div class="result-title-en">${esc(secondary)}</div>` : ''}
                         <div class="result-meta">${r.episodes} EP</div>
                     </div>
@@ -2978,6 +3034,10 @@
                 if (e.target.closest('.fav-star')) return;
                 document.querySelectorAll('.result-card').forEach(c => c.classList.remove('selected'));
                 card.classList.add('selected');
+                // Mark as read if this favorite had a new-episode dot
+                if (state.activeTab === 'favs' && card.dataset.id) {
+                    markFavRead(card.dataset.id);
+                }
                 loadEpisodes(card.dataset.id, card.dataset.title, parseInt(card.dataset.eps));
             });
             card.addEventListener('contextmenu', (e) => {
@@ -3028,12 +3088,17 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.3.9';
+    const APP_VERSION = '0.4.0';
     const CHANGELOG = [
-        '18+ toggle — enable to search adult content, disabled by default',
-        'Adult content (Hentai genre) filtered from results when 18+ is off',
-        'Abbreviated title fix verified working (1P→ONE PIECE, etc.)',
-        'Genres and adult flags properly wired in AniList enrichment'
+        'Per-show new episode dots on favorites (click to dismiss)',
+        'Tri-state release labels: UPCOMING → PUBLISHING → AIRED',
+        'Smarter title matching (seasons, sequels, long romaji names)',
+        'Continue watching now shows cover art',
+        'Quality auto-selects highest resolution available',
+        'Tab caching (Daily/Continue load instantly on revisit)',
+        'Franchise grouping improved (JoJo, Spy x Family, Dr. STONE, Slime, etc.)',
+        'Fixed mobile update loop (24h cooldown after dismissing)',
+        'Search debounce, download timeout, stream retry on failure'
     ];
 
     function showChangelog() {
@@ -3069,18 +3134,35 @@
     // === FAVORITES NEW EPISODE CHECK ===
     async function checkFavoritesUpdates() {
         try {
-            const tabBtn = document.getElementById('tab-favs');
-            const existing = tabBtn.querySelector('.fav-badge');
-            if (existing) existing.remove();
             const data = await apiCall('/favorites/check');
-            if (data.updates && data.updates.length > 0) {
-                const badge = document.createElement('span');
-                badge.className = 'fav-badge';
-                badge.title = `${data.updates.length} favorite${data.updates.length > 1 ? 's have' : ' has'} new episodes`;
-                tabBtn.appendChild(badge);
-                state.favUpdates = data.updates;
+            if (data.updates) {
+                // Filter out IDs the user has already read
+                state.favUpdates = data.updates.filter(u => !state.favReadIds.includes(u.id));
             }
+            updateFavBadge();
         } catch { /* silent */ }
+    }
+
+    function updateFavBadge() {
+        const tabBtn = document.getElementById('tab-favs');
+        const existing = tabBtn.querySelector('.fav-badge');
+        if (existing) existing.remove();
+        const unread = (state.favUpdates || []).length;
+        if (unread > 0) {
+            const badge = document.createElement('span');
+            badge.className = 'fav-badge';
+            badge.title = `${unread} favorite${unread > 1 ? 's have' : ' has'} new episodes`;
+            tabBtn.appendChild(badge);
+        }
+    }
+
+    function markFavRead(favId) {
+        state.favUpdates = (state.favUpdates || []).filter(u => u.id !== favId);
+        if (!state.favReadIds.includes(favId)) {
+            state.favReadIds.push(favId);
+            localStorage.setItem('ani-mate-fav-read-ids', JSON.stringify(state.favReadIds));
+        }
+        updateFavBadge();
     }
 
     // === MOBILE SCREEN ORIENTATION ===

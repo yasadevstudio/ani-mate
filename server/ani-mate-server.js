@@ -17,6 +17,7 @@ try {
     consumetHiAnime = new ANIME.Hianime();
 } catch { /* consumet not available — AllAnime only */ }
 
+const PKG_VERSION = (() => { try { return require('../package.json').version; } catch { return '0.4.0'; } })();
 const PORT = parseInt(process.env.ANI_MATE_PORT) || 7890;
 const HIST_DIR = process.env.ANI_MATE_DATA_DIR
     || process.env.ANI_CLI_HIST_DIR
@@ -44,7 +45,9 @@ function loadForgeHistory() {
 
 function saveForgeHistory(history) {
     fs.mkdirSync(path.dirname(FORGE_HIST_FILE), { recursive: true });
-    fs.writeFileSync(FORGE_HIST_FILE, JSON.stringify(history, null, 2));
+    const tmp = FORGE_HIST_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(history, null, 2));
+    fs.renameSync(tmp, FORGE_HIST_FILE);
 }
 
 function addToForgeHistory(entry) {
@@ -134,7 +137,9 @@ function loadFavorites() {
 function saveFavorites(favs) {
     try {
         if (!fs.existsSync(HIST_DIR)) fs.mkdirSync(HIST_DIR, { recursive: true });
-        fs.writeFileSync(FAVORITES_FILE, JSON.stringify(favs, null, 2));
+        const tmp = FAVORITES_FILE + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(favs, null, 2));
+        fs.renameSync(tmp, FAVORITES_FILE);
     } catch { /* ignore */ }
 }
 
@@ -184,7 +189,7 @@ async function getAniListTrending() {
         const name = m.title?.romaji || m.title?.english || 'Unknown';
         const eps = m.episodes || 0;
         const type = eps === 1 ? 'movie' : eps <= 12 ? 'short' : 'series';
-        return { id: null, name, title_english: m.title?.english || null, cover: m.coverImage?.medium || null, episodes: eps, type, anilist_id: m.id };
+        return fixDisplayName({ id: null, name, title_english: m.title?.english || null, cover: m.coverImage?.medium || null, episodes: eps, type, anilist_id: m.id });
     });
 }
 
@@ -206,7 +211,7 @@ async function getAllAnimePopular(mode = 'sub') {
         const epCount = show.availableEpisodes?.[mode] || 0;
         if (epCount > 0) {
             const type = epCount === 1 ? 'movie' : epCount <= 12 ? 'short' : 'series';
-            results.push({ id: show._id, name: show.name, episodes: epCount, type });
+            results.push(fixDisplayName({ id: show._id, name: show.name, episodes: epCount, type }));
         }
     }
     return results;
@@ -340,6 +345,7 @@ const INFO_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 // Title corrections for AllAnime names that don't match AniList/MAL
 // Used by both /info endpoint and search enrichment
 const TITLE_MAP = {
+    // Abbreviations → full romaji (for AllAnime search)
     '1P': 'One Piece',
     'OP': 'One Piece',
     'AOT': 'Attack on Titan',
@@ -361,6 +367,20 @@ const TITLE_MAP = {
     'TOG': 'Tower of God',
     'SOL': 'Solo Leveling',
     'SxF': 'Spy x Family',
+    // Long romaji → English (for titles AniList fails to match)
+    'Tensei shitara Slime Datta Ken': 'That Time I Got Reincarnated as a Slime',
+    'Ore dake Level Up na Ken': 'Solo Leveling',
+    'Mushoku Tensei': 'Mushoku Tensei: Jobless Reincarnation',
+    'Boku no Hero Academia': 'My Hero Academia',
+    'Shingeki no Kyojin': 'Attack on Titan',
+    'Kimetsu no Yaiba': 'Demon Slayer',
+    'Dungeon ni Deai wo Motomeru no wa Machigatteiru Darou ka': 'Is It Wrong to Try to Pick Up Girls in a Dungeon?',
+    'Re:Zero kara Hajimeru Isekai Seikatsu': 'Re:ZERO -Starting Life in Another World-',
+    'Kono Subarashii Sekai ni Shukufuku wo!': 'KonoSuba: God\'s Blessing on This Wonderful World!',
+    'Sousou no Frieren': 'Frieren: Beyond Journey\'s End',
+    'Oshi no Ko': 'Oshi No Ko',
+    'Sono Bisque Doll wa Koi wo Suru': 'My Dress-Up Darling',
+    'Jujutsu Kaisen': 'Jujutsu Kaisen',
 };
 
 async function getAnimeInfo(title) {
@@ -413,6 +433,44 @@ async function getAnimeInfo(title) {
     return empty;
 }
 
+// Retry wrapper for flaky API calls (1 retry with backoff)
+async function withRetry(fn, retries = 1, delayMs = 1000) {
+    try { return await fn(); }
+    catch (err) {
+        if (retries <= 0) throw err;
+        await new Promise(r => setTimeout(r, delayMs));
+        return withRetry(fn, retries - 1, delayMs * 2);
+    }
+}
+
+// Fix display names using TITLE_MAP (abbreviations + romaji → English)
+function fixDisplayName(result) {
+    const normName = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+    const n = result.name;
+    // Check exact alias (case-insensitive)
+    const aliasKey = Object.keys(TITLE_MAP).find(k => k.toLowerCase() === n.toLowerCase())
+        || Object.keys(TITLE_MAP).find(k => normName(k) === normName(n));
+    if (aliasKey) {
+        result.name = TITLE_MAP[aliasKey];
+        if (!result.title_english) result.title_english = TITLE_MAP[aliasKey];
+    }
+    return result;
+}
+
+// Franchise pattern list — used by search grouping and favorites backfill
+const FRANCHISE_PATTERNS = [
+    'jujutsu kaisen', 'one piece', 'attack on titan', 'shingeki no kyojin',
+    'demon slayer', 'kimetsu no yaiba', 'my hero academia', 'boku no hero academia',
+    'sword art online', 'naruto', 'dragon ball', 'bleach', 'hunter x hunter',
+    'fullmetal alchemist', 'mob psycho', 're zero', 'overlord', 'konosuba',
+    'jojo', "jojo's bizarre adventure", 'spy x family', 'spy family',
+    'dr stone', 'dr. stone', 'solo leveling', 'ore dake level up',
+    'mushoku tensei', 'that time i got reincarnated as a slime', 'tensei shitara slime',
+    'danmachi', 'is it wrong to try to pick up girls in a dungeon',
+    'chainsaw man', 'vinland saga', 'mashle', 'blue lock', 'frieren',
+    'oshi no ko',
+];
+
 // Direct API calls to AllAnime (same as ani-cli but from Node)
 async function searchAnime(query, mode = 'sub', allowAdult = false) {
     const searchGql = `query($search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } } }`;
@@ -428,11 +486,13 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
     const params = new URLSearchParams({ variables, query: searchGql });
     const apiUrl = `${ALLANIME_API}?${params.toString()}`;
 
-    const response = await fetch(apiUrl, {
-        headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
-        signal: AbortSignal.timeout(8000)
+    const data = await withRetry(async () => {
+        const response = await fetch(apiUrl, {
+            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
+            signal: AbortSignal.timeout(8000)
+        });
+        return response.json();
     });
-    const data = await response.json();
 
     const results = [];
     if (data?.data?.shows?.edges) {
@@ -551,11 +611,13 @@ async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'bes
     const params = new URLSearchParams({ variables, query: gql });
     const apiUrl = `${ALLANIME_API}?${params.toString()}`;
 
-    const response = await fetch(apiUrl, {
-        headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
-        signal: AbortSignal.timeout(8000)
+    const text = await withRetry(async () => {
+        const response = await fetch(apiUrl, {
+            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
+            signal: AbortSignal.timeout(8000)
+        });
+        return response.text();
     });
-    const text = await response.text();
 
     // Parse source URLs from response
     const sourceUrls = [];
@@ -603,8 +665,13 @@ async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'bes
         }
     }
 
-    // Select quality
+    // Sort by resolution descending (1080p > 720p > 480p > auto/hls)
     if (allLinks.length === 0) return null;
+    const resRank = (r) => {
+        const m = String(r).match(/(\d+)/);
+        return m ? parseInt(m[1]) : 0;
+    };
+    allLinks.sort((a, b) => resRank(b.resolution) - resRank(a.resolution));
 
     let selected;
     if (quality === 'best') {
@@ -892,40 +959,60 @@ const server = http.createServer(async (req, res) => {
                 searchAniList(query.q, 15)
             ]);
 
-            const results = [...allAnimeResults];
+            const results = allAnimeResults.map(r => fixDisplayName(r));
             const existingNames = new Set(results.map(r => r.name.toLowerCase()));
 
             // Normalize name for fuzzy matching (strip punctuation, collapse whitespace)
             const normName = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
 
-            // Enrich AllAnime results with AniList data (exact match + alias fallback)
+            // Strip season/part suffixes for base-title matching
+            const stripSeason = (s) => s.replace(/\b(season|part|cour|s)\s*\d+/gi, '').replace(/\b\d+(st|nd|rd|th)\s*(season|part|cour)/gi, '').replace(/\s+(ii|iii|iv|v|vi)$/i, '').replace(/\s+/g, ' ').trim();
+
+            // Multi-pass AniList matching: exact → base-title → contains
+            function findAniMatch(name, aniResults) {
+                const n = normName(name);
+                const nBase = stripSeason(n);
+                // Pass 1: exact normalized match
+                let m = aniResults.find(a =>
+                    (a.title_romaji && normName(a.title_romaji) === n) ||
+                    (a.title_english && normName(a.title_english) === n));
+                if (m) return m;
+                // Pass 2: base title match (strip season suffixes from both sides)
+                m = aniResults.find(a => {
+                    const rBase = stripSeason(normName(a.title_romaji || ''));
+                    const eBase = stripSeason(normName(a.title_english || ''));
+                    return (rBase && rBase === nBase) || (eBase && eBase === nBase);
+                });
+                if (m) return m;
+                // Pass 3: one contains the other (min 8 chars to avoid false positives)
+                if (n.length >= 8) {
+                    m = aniResults.find(a => {
+                        const r = normName(a.title_romaji || '');
+                        const e = normName(a.title_english || '');
+                        return (r.length >= 8 && (r.startsWith(n) || n.startsWith(r))) ||
+                               (e.length >= 8 && (e.startsWith(n) || n.startsWith(e)));
+                    });
+                }
+                return m || null;
+            }
+
+            // Enrich AllAnime results with AniList data
             for (const r of results) {
                 const rNorm = normName(r.name);
-                let aniMatch = aniListResults.find(a =>
-                    (a.title_romaji && normName(a.title_romaji) === rNorm) ||
-                    (a.title_english && normName(a.title_english) === rNorm)
-                );
+                let aniMatch = findAniMatch(r.name, aniListResults);
                 // Fallback: check TITLE_MAP alias (e.g. "1P" → "One Piece"), case-insensitive
-                const aliasKey = Object.keys(TITLE_MAP).find(k => k.toLowerCase() === r.name.toLowerCase());
+                const aliasKey = Object.keys(TITLE_MAP).find(k => k.toLowerCase() === r.name.toLowerCase())
+                    || Object.keys(TITLE_MAP).find(k => normName(k) === rNorm);
                 if (!aniMatch && aliasKey) {
-                    const aliasNorm = normName(TITLE_MAP[aliasKey]);
-                    aniMatch = aniListResults.find(a =>
-                        !a.isAdult &&
-                        ((a.title_romaji && normName(a.title_romaji) === aliasNorm) ||
-                        (a.title_english && normName(a.title_english) === aliasNorm))
-                    ) || aniListResults.find(a =>
-                        (a.title_romaji && normName(a.title_romaji) === aliasNorm) ||
-                        (a.title_english && normName(a.title_english) === aliasNorm)
-                    );
+                    aniMatch = findAniMatch(TITLE_MAP[aliasKey], aniListResults);
                 }
                 // If TITLE_MAP matched, fix the display name (abbreviation → real title)
                 if (aliasKey) {
                     r.name = (aniMatch?.title_romaji) || TITLE_MAP[aliasKey];
-                    if (!r.title_english) r.title_english = aniMatch?.title_english || null;
+                    if (!r.title_english) r.title_english = aniMatch?.title_english || TITLE_MAP[aliasKey] || null;
                 }
                 // If aniMatch is adult but the AllAnime source isn't marked adult, skip the match
                 if (aniMatch && aniMatch.isAdult) {
-                    // Only use adult match if search was specifically for this title
                     const nameMatch = normName(aniMatch.title_romaji) === rNorm || normName(aniMatch.title_english) === rNorm;
                     if (!nameMatch && !aliasKey) aniMatch = null;
                 }
@@ -1020,16 +1107,10 @@ const server = http.createServer(async (req, res) => {
             }
 
             // Name-pattern franchise overrides — group results whose normalized names share a common prefix
-            // This catches series AniList doesn't link (e.g. JJK seasons, movies)
-            const FRANCHISE_PATTERNS = [
-                'jujutsu kaisen', 'one piece', 'attack on titan', 'shingeki no kyojin',
-                'demon slayer', 'kimetsu no yaiba', 'my hero academia', 'boku no hero academia',
-                'sword art online', 'naruto', 'dragon ball', 'bleach', 'hunter x hunter',
-                'fullmetal alchemist', 'mob psycho', 're zero', 'overlord', 'konosuba',
-            ];
             for (const pattern of FRANCHISE_PATTERNS) {
+                const pNorm = normName(pattern);
                 const matchingIds = Object.entries(nameToAniId)
-                    .filter(([name]) => name.startsWith(pattern) || name === pattern)
+                    .filter(([name]) => name.startsWith(pNorm) || name === pNorm)
                     .map(([, id]) => id);
                 for (let i = 1; i < matchingIds.length; i++) ufUnion(matchingIds[0], matchingIds[i]);
             }
@@ -1244,7 +1325,30 @@ const server = http.createServer(async (req, res) => {
                         saveForgeHistory(history);
                     }
                 }
-                jsonResponse(res, 200, { favorites: favs, enriched: needsEnrich.size });
+                // Apply same fixDisplayName + franchise backfill as GET /favorites
+                const fixedFavs = favs.map(f => fixDisplayName(f));
+                const fn2 = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+                const pats2 = FRANCHISE_PATTERNS.map(p => fn2(p));
+                function matchPat2(names) {
+                    for (const name of names) {
+                        const n = fn2(name);
+                        const p = pats2.find(p => n.startsWith(p) || (p.length >= 6 && n.includes(p)));
+                        if (p) return p;
+                    }
+                    return null;
+                }
+                const fp2 = favs.map(f => matchPat2([f.name, f.title_english || '']));
+                const pi2 = {};
+                for (let i = 0; i < favs.length; i++) {
+                    if (!favs[i].franchise_id || !fp2[i]) continue;
+                    if (!pi2[fp2[i]]) pi2[fp2[i]] = favs[i].franchise_id;
+                }
+                for (let i = 0; i < fixedFavs.length; i++) {
+                    if (!fixedFavs[i].franchise_id && fp2[i]) {
+                        fixedFavs[i].franchise_id = pi2[fp2[i]] || ('fav-' + fp2[i].replace(/\s+/g, '-'));
+                    }
+                }
+                jsonResponse(res, 200, { favorites: fixedFavs, enriched: needsEnrich.size });
             } catch (err) {
                 jsonResponse(res, 500, { error: 'Refresh failed' });
             }
@@ -1314,7 +1418,34 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (pathname === '/favorites' && req.method === 'GET') {
-            const favs = loadFavorites();
+            const rawFavs = loadFavorites();
+            const fn = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+            const patterns = FRANCHISE_PATTERNS.map(p => fn(p));
+            // Helper: find matching pattern for a name (checks all name variants)
+            function matchPattern(names) {
+                for (const name of names) {
+                    const n = fn(name);
+                    const p = patterns.find(p => n.startsWith(p) || (p.length >= 6 && n.includes(p)));
+                    if (p) return p;
+                }
+                return null;
+            }
+            // First pass: match ALL entries to patterns (using original name before rename)
+            const favPat = rawFavs.map(f => matchPattern([f.name, f.title_english || '']));
+            // Second pass: build pattern → existing franchise_id map
+            const patToId = {};
+            for (let i = 0; i < rawFavs.length; i++) {
+                if (!rawFavs[i].franchise_id || !favPat[i]) continue;
+                if (!patToId[favPat[i]]) patToId[favPat[i]] = rawFavs[i].franchise_id;
+            }
+            // Third pass: apply fixDisplayName + assign franchise_id
+            const favs = rawFavs.map((f, i) => {
+                const fixed = fixDisplayName(f);
+                if (!fixed.franchise_id && favPat[i]) {
+                    fixed.franchise_id = patToId[favPat[i]] || ('fav-' + favPat[i].replace(/\s+/g, '-'));
+                }
+                return fixed;
+            });
             jsonResponse(res, 200, { favorites: favs });
             return;
         }
@@ -1557,6 +1688,7 @@ const server = http.createServer(async (req, res) => {
                 ];
                 const allowed = ALLOWED_PROXY_DOMAINS.some(d => proxyHost === d || proxyHost.endsWith('.' + d));
                 if (!allowed) {
+                    console.warn(`[ANI-MATE] Blocked proxy domain: ${proxyHost}`);
                     jsonResponse(res, 403, { error: 'Domain not allowed for proxy' });
                     return;
                 }
@@ -1638,7 +1770,7 @@ const server = http.createServer(async (req, res) => {
             jsonResponse(res, 200, {
                 status: 'online',
                 server: 'ANI-MATE',
-                version: '0.3.0',
+                version: PKG_VERSION,
                 port: PORT,
                 uptime: process.uptime(),
                 timestamp: new Date().toISOString()

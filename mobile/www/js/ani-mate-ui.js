@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.3.9';
+    const APP_VERSION = '0.4.0';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -37,7 +37,9 @@
         playerUiTimer: null,
         playLock: false,
         preferEnglish: true,
-        nsfw: false
+        nsfw: false,
+        favUpdates: [],
+        favReadIds: JSON.parse(localStorage.getItem('ani-mate-fav-read-ids') || '[]')
     };
 
     // === CAPACITOR PLUGINS ===
@@ -99,10 +101,13 @@
             if (state.results.length > 0) renderResults();
             else resultsContainer.innerHTML = '<div class="no-results">Search for anime above</div>';
         } else if (tab === 'continue') {
+            resultsContainer.innerHTML = '<div class="no-results">Loading watch list...</div>';
             loadContinue();
         } else if (tab === 'daily') {
+            resultsContainer.innerHTML = '<div class="no-results">Loading trending anime...</div>';
             loadDaily();
         } else if (tab === 'releases') {
+            resultsContainer.innerHTML = '<div class="no-results">Loading airing schedule...</div>';
             if (!state.releasesDate) state.releasesDate = new Date();
             loadReleases();
         } else if (tab === 'favs') {
@@ -276,6 +281,7 @@
         container.querySelectorAll('.result-card').forEach(card => {
             card.addEventListener('click', (e) => {
                 if (e.target.closest('.fav-star-inline')) return;
+                if (state.activeTab === 'favs' && card.dataset.id) markFavRead(card.dataset.id);
                 loadEpisodes(card.dataset.id, card.dataset.title, parseInt(card.dataset.eps) || 0);
             });
         });
@@ -1118,10 +1124,12 @@
                     ? `<div class="cover-wrap"><img src="${r.cover}" loading="lazy" alt=""></div>`
                     : '';
                 const isFav = state.favorites.some(f => f.name === r.title || f.name === r.title_romaji);
-                const isReleased = r.airingAt <= nowSec;
-                const tagHtml = isReleased
-                    ? '<span class="release-tag released">RELEASED</span>'
-                    : '<span class="release-tag pending">PENDING</span>';
+                const hoursSinceAir = (nowSec - r.airingAt) / 3600;
+                const tagHtml = r.airingAt > nowSec
+                    ? '<span class="release-tag pending">UPCOMING</span>'
+                    : hoursSinceAir < 6
+                        ? '<span class="release-tag publishing">PUBLISHING</span>'
+                        : '<span class="release-tag released">AIRED</span>';
                 const relHasEn = r.title && r.title_romaji && r.title.toLowerCase() !== r.title_romaji.toLowerCase();
                 const relPrimary = (state.preferEnglish || !relHasEn) ? r.title : r.title_romaji;
                 const relSecondary = (state.preferEnglish && relHasEn) ? r.title_romaji : (relHasEn ? r.title : '');
@@ -1261,6 +1269,7 @@
             }
         }
 
+        const updatedIds = new Set((state.favUpdates || []).map(u => u.id));
         let html = '<div class="section-label">FAVORITES</div>';
 
         for (const [fid, members] of Object.entries(franchises)) {
@@ -1268,6 +1277,8 @@
             const parent = members[0];
             const hasEn = parent.title_english && parent.title_english.toLowerCase() !== parent.name.toLowerCase();
             const primary = (state.preferEnglish && hasEn) ? parent.title_english : parent.name;
+            const franchiseHasUpdate = members.some(m => updatedIds.has(m.id));
+            const franchiseDot = franchiseHasUpdate ? '<span class="fav-new-dot" title="New episode this week"></span>' : '';
 
             html += `<div class="franchise-group" data-franchise="${fid}">
                 <div class="result-card franchise-parent" data-id="${parent.id}" data-title="${escAttr(parent.name)}" data-eps="${parent.episodes}">
@@ -1275,7 +1286,7 @@
                         <button class="fav-star-inline active" data-fav-id="${parent.id}" data-fav-name="${escAttr(parent.name)}" data-fav-eps="${parent.episodes}" data-fav-english="${escAttr(parent.title_english || '')}" data-fav-franchise="${fid}" data-fav-cover="${escAttr(parent.cover || '')}">&#9733;</button>
                         ${parent.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${escAttr(parent.cover)}" loading="lazy" alt=""></div>` : ''}
                         <div class="result-info">
-                            <div class="result-title">${esc(primary)}</div>
+                            <div class="result-title">${esc(primary)}${franchiseDot}</div>
                             <div class="result-meta"><span class="result-type series">FRANCHISE</span>${members.length} entries <span class="franchise-toggle">&#9660;</span></div>
                         </div>
                     </div>
@@ -1302,12 +1313,13 @@
             const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
             const primary = (state.preferEnglish && hasEn) ? r.title_english : r.name;
             const secondary = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : '');
+            const newDot = updatedIds.has(r.id) ? '<span class="fav-new-dot" title="New episode this week"></span>' : '';
             return `<div class="result-card" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
                 <div class="result-card-row">
                     <button class="fav-star-inline active" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}" data-fav-cover="${escAttr(r.cover || '')}">&#9733;</button>
                     ${r.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${escAttr(r.cover)}" loading="lazy" alt=""></div>` : ''}
                     <div class="result-info">
-                        <div class="result-title">${esc(primary)}</div>
+                        <div class="result-title">${esc(primary)}${newDot}</div>
                         ${secondary ? `<div class="result-title-en">${esc(secondary)}</div>` : ''}
                         <div class="result-meta">${r.episodes} EP</div>
                     </div>
@@ -1511,6 +1523,13 @@
             const latest = (release.tag_name || '').replace(/^v/, '');
             if (!latest || !isNewer(latest, APP_VERSION)) return;
 
+            // 24h cooldown: don't nag if user dismissed this version recently
+            const dismissKey = 'ani-mate-update-dismissed';
+            try {
+                const dismissed = JSON.parse(localStorage.getItem(dismissKey) || '{}');
+                if (dismissed.version === latest && (Date.now() - dismissed.at) < 86400000) return;
+            } catch { /* corrupted — ignore */ }
+
             // Find the mobile APK asset
             const apk = (release.assets || []).find(a => a.name.toLowerCase().includes('mobile') && a.name.endsWith('.apk'));
             if (!apk) return;
@@ -1563,8 +1582,14 @@
         `;
         document.body.appendChild(overlay);
 
-        document.getElementById('update-later').onclick = () => overlay.remove();
-        document.getElementById('update-install').onclick = () => startUpdate(downloadUrl, overlay);
+        document.getElementById('update-later').onclick = () => {
+            localStorage.setItem('ani-mate-update-dismissed', JSON.stringify({ version, at: Date.now() }));
+            overlay.remove();
+        };
+        document.getElementById('update-install').onclick = () => {
+            localStorage.removeItem('ani-mate-update-dismissed');
+            startUpdate(downloadUrl, overlay);
+        };
     }
 
     async function startUpdate(url, overlay) {
@@ -1610,10 +1635,12 @@
 
     // === CHANGELOG ===
     const CHANGELOG = [
-        '18+ toggle — enable to search adult content, disabled by default',
-        'Adult content (Hentai genre) filtered from results when 18+ is off',
-        'Abbreviated title fix verified working (1P→ONE PIECE, etc.)',
-        'Genres and adult flags properly wired in AniList enrichment'
+        'Per-show new episode dots on favorites (click to dismiss)',
+        'Tri-state release labels: UPCOMING → PUBLISHING → AIRED',
+        'Smarter title matching (seasons, sequels, long romaji names)',
+        'Franchise grouping improved (JoJo, Spy x Family, Dr. STONE, Slime, etc.)',
+        'Quality auto-selects highest resolution available',
+        'Fixed mobile update loop (24h cooldown after dismissing)',
     ];
 
     function showChangelog() {
@@ -1675,9 +1702,9 @@
                 page++;
             }
 
-            // Check if any favorites match recently aired shows
+            // Check which favorites match recently aired shows
             const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-            let hasUpdates = false;
+            const updates = [];
             for (const fav of state.favorites) {
                 const favNorm = norm(fav.name);
                 const match = allRecent.find(s => {
@@ -1687,24 +1714,38 @@
                            (romaji && (romaji.includes(favNorm) || favNorm.includes(romaji))) ||
                            (english && (english.includes(favNorm) || favNorm.includes(english)));
                 });
-                if (match) { hasUpdates = true; break; }
+                if (match) updates.push({ id: fav.id, name: fav.name });
             }
 
-            const badge = document.querySelector('.fav-badge');
-            if (hasUpdates) {
-                if (!badge) {
-                    const favBtn = document.querySelector('[data-tab="favs"]');
-                    if (favBtn) {
-                        const b = document.createElement('span');
-                        b.className = 'fav-badge';
-                        favBtn.style.position = 'relative';
-                        favBtn.appendChild(b);
-                    }
-                }
-            } else if (badge) {
-                badge.remove();
-            }
+            // Filter out read IDs
+            state.favUpdates = updates.filter(u => !state.favReadIds.includes(u.id));
+            updateFavBadge();
         } catch (e) { /* non-critical */ }
+    }
+
+    function updateFavBadge() {
+        const badge = document.querySelector('.fav-badge');
+        if (badge) badge.remove();
+        const unread = (state.favUpdates || []).length;
+        if (unread > 0) {
+            const favBtn = document.querySelector('[data-tab="favs"]');
+            if (favBtn) {
+                const b = document.createElement('span');
+                b.className = 'fav-badge';
+                b.title = `${unread} favorite${unread > 1 ? 's have' : ' has'} new episodes`;
+                favBtn.style.position = 'relative';
+                favBtn.appendChild(b);
+            }
+        }
+    }
+
+    function markFavRead(favId) {
+        state.favUpdates = (state.favUpdates || []).filter(u => u.id !== favId);
+        if (!state.favReadIds.includes(favId)) {
+            state.favReadIds.push(favId);
+            localStorage.setItem('ani-mate-fav-read-ids', JSON.stringify(state.favReadIds));
+        }
+        updateFavBadge();
     }
 
     // Global image error handler — hide broken cover/banner images
