@@ -202,7 +202,9 @@ async function getAllAnimePopular(mode = 'sub') {
         headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
         signal: AbortSignal.timeout(8000)
     });
-    const data = await response.json();
+    const text = await response.text();
+    let data;
+    try { data = JSON.parse(text); } catch { return []; }
     const results = [];
     const recs = data?.data?.queryPopular?.recommendations || [];
     for (const rec of recs) {
@@ -558,11 +560,15 @@ async function getEpisodeList(showId, mode = 'sub') {
     const params = new URLSearchParams({ variables, query: gql });
     const apiUrl = `${ALLANIME_API}?${params.toString()}`;
 
-    const response = await fetch(apiUrl, {
-        headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
-        signal: AbortSignal.timeout(8000)
+    const data = await withRetry(async () => {
+        const response = await fetch(apiUrl, {
+            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
+            signal: AbortSignal.timeout(8000)
+        });
+        const text = await response.text();
+        try { return JSON.parse(text); }
+        catch { throw new Error('AllAnime returned non-JSON response'); }
     });
-    const data = await response.json();
 
     let episodes = [];
     try {
