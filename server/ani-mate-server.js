@@ -1149,7 +1149,13 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
             const mode = query.mode || 'sub';
-            const episodes = await getEpisodeList(query.id, mode);
+            let episodes = [];
+            try {
+                episodes = await getEpisodeList(query.id, mode);
+            } catch {
+                jsonResponse(res, 200, { anime_id: query.id, episodes: [], mode, error: 'Source temporarily unavailable — try again in a moment' });
+                return;
+            }
             jsonResponse(res, 200, { anime_id: query.id, episodes, mode });
             return;
         }
