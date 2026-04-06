@@ -27,7 +27,7 @@ const HIST_FILE = path.join(HIST_DIR, 'ani-hsts');
 // Ensure data directory exists on startup
 try { fs.mkdirSync(HIST_DIR, { recursive: true }); } catch {}
 const AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0';
-const ALLANIME_REFR = 'https://allanime.to';
+const ALLANIME_REFR = 'https://allmanga.to';
 const ALLANIME_API = 'https://api.allanime.day/api';
 
 // Internal history for the UI (richer than ani-cli's)
@@ -195,11 +195,11 @@ async function getAniListTrending() {
 
 async function getAllAnimePopular(mode = 'sub') {
     const gql = `query($type: VaildPopularTypeEnumType!, $size: Int!, $dateRange: Int, $page: Int) { queryPopular(type: $type, size: $size, dateRange: $dateRange, page: $page) { recommendations { anyCard { _id name availableEpisodes __typename } } } }`;
-    const variables = JSON.stringify({ type: 'anime', size: 25, dateRange: 1, page: 1 });
-    const params = new URLSearchParams({ variables, query: gql });
-    const apiUrl = `${ALLANIME_API}?${params.toString()}`;
-    const response = await fetch(apiUrl, {
-        headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
+    const variables = { type: 'anime', size: 25, dateRange: 1, page: 1 };
+    const response = await fetch(ALLANIME_API, {
+        method: 'POST',
+        headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ variables, query: gql }),
         signal: AbortSignal.timeout(8000)
     });
     const text = await response.text();
@@ -477,23 +477,23 @@ const FRANCHISE_PATTERNS = [
 async function searchAnime(query, mode = 'sub', allowAdult = false) {
     const searchGql = `query($search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } } }`;
 
-    const variables = JSON.stringify({
+    const variables = {
         search: { allowAdult, allowUnknown: false, query },
         limit: 40,
         page: 1,
         translationType: mode,
         countryOrigin: 'ALL'
-    });
-
-    const params = new URLSearchParams({ variables, query: searchGql });
-    const apiUrl = `${ALLANIME_API}?${params.toString()}`;
+    };
 
     const data = await withRetry(async () => {
-        const response = await fetch(apiUrl, {
-            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
+        const response = await fetch(ALLANIME_API, {
+            method: 'POST',
+            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ variables, query: searchGql }),
             signal: AbortSignal.timeout(8000)
         });
-        return response.json();
+        const text = await response.text();
+        try { return JSON.parse(text); } catch { throw new Error('AllAnime returned non-JSON'); }
     });
 
     const results = [];
@@ -556,13 +556,13 @@ async function searchAniList(query, limit = 15) {
 
 async function getEpisodeList(showId, mode = 'sub') {
     const gql = `query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail } }`;
-    const variables = JSON.stringify({ showId });
-    const params = new URLSearchParams({ variables, query: gql });
-    const apiUrl = `${ALLANIME_API}?${params.toString()}`;
+    const variables = { showId };
 
     const data = await withRetry(async () => {
-        const response = await fetch(apiUrl, {
-            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
+        const response = await fetch(ALLANIME_API, {
+            method: 'POST',
+            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ variables, query: gql }),
             signal: AbortSignal.timeout(8000)
         });
         const text = await response.text();
@@ -613,13 +613,13 @@ function decodeProviderId(encoded) {
 async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'best') {
     const gql = `query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls } }`;
 
-    const variables = JSON.stringify({ showId, translationType: mode, episodeString });
-    const params = new URLSearchParams({ variables, query: gql });
-    const apiUrl = `${ALLANIME_API}?${params.toString()}`;
+    const variables = { showId, translationType: mode, episodeString };
 
     const text = await withRetry(async () => {
-        const response = await fetch(apiUrl, {
-            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
+        const response = await fetch(ALLANIME_API, {
+            method: 'POST',
+            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ variables, query: gql }),
             signal: AbortSignal.timeout(8000)
         });
         return response.text();
