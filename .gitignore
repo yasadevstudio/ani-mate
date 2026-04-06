@@ -12,3 +12,4 @@ mobile/android/capacitor-*/**/build/
 mobile/android/local.properties
 *.apk
 *.aab
+DEVELOPMENT.md
