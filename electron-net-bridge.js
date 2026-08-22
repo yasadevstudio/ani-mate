@@ -51,6 +51,10 @@ let solving = null;          // single-flight challenge solve
 // session-level onBeforeSendHeaders rule, which is what this installs. It also aligns the
 // User-Agent with the Chromium actually doing the sending; the hardcoded Firefox UA
 // contradicted Chromium's own sec-ch-ua client hints on every request.
+// Origin/Referer spoofing applies ONLY to allanime hosts. AniList and Jikan are
+// ordinary APIs -- sending them an allmanga.to Origin would be wrong and could be
+// rejected. They still travel Chromium's stack (which is what defeats the 403),
+// they just get no injected headers.
 const SOURCE_ORIGIN = 'https://allmanga.to';
 const CHROME_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
                   'Chrome/130.0.6723.191 Safari/537.36';
