@@ -1382,7 +1382,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.4.4 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.4.5 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -3088,17 +3088,14 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.4.4';
+    const APP_VERSION = '0.4.5';
     const CHANGELOG = [
-        'Fixed AllAnime Cloudflare block — switched to POST API (same method as ani-cli)',
-        'Tri-state release labels: UPCOMING → PUBLISHING → AIRED',
-        'Smarter title matching (seasons, sequels, long romaji names)',
-        'Continue watching now shows cover art',
-        'Quality auto-selects highest resolution available',
-        'Tab caching (Daily/Continue load instantly on revisit)',
-        'Franchise grouping improved (JoJo, Spy x Family, Dr. STONE, Slime, etc.)',
-        'Fixed mobile update loop (24h cooldown after dismissing)',
-        'Search debounce, download timeout, stream retry on failure'
+        'Fixed: no streams would load — every source the app used had gone offline',
+        'Added AniDB as a new streaming source (search, episodes, sub and dub)',
+        'Source requests now route through the browser engine, fixing blocked-request errors',
+        'Fallbacks now cover search and episode lists too, not just streams',
+        'New source health check — dead sources are reported instead of showing nothing',
+        'Playback now shows which source it came from'
     ];
 
     function showChangelog() {

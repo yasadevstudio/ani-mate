@@ -17,6 +17,14 @@ try {
     consumetHiAnime = new ANIME.Hianime();
 } catch { /* consumet not available — AllAnime only */ }
 
+// AniDB provider (2026-08-22). Every previously-known source is dead: AllAnime 403s behind
+// Cloudflare, animepahe.si has no DNS, HiAnime 522s, and consumet 1.8.8 is the latest
+// release yet unpublished since 2026-01-20 with stale scrapers. Upstream ani-cli migrated
+// to anidb.app; verified working here (search -> episodes -> HLS playlist, HTTP 200).
+// Requests must travel the Electron bridge, so it is constructed with `afetch`.
+let anidbProvider = null;
+
+
 const PKG_VERSION = (() => { try { return require('../package.json').version; } catch { return '0.4.0'; } })();
 const PORT = parseInt(process.env.ANI_MATE_PORT) || 7890;
 const HIST_DIR = process.env.ANI_MATE_DATA_DIR
@@ -29,6 +37,73 @@ try { fs.mkdirSync(HIST_DIR, { recursive: true }); } catch {}
 const AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0';
 const ALLANIME_REFR = 'https://allmanga.to';
 const ALLANIME_API = 'https://api.allanime.day/api';
+
+// ---------------------------------------------------------------------------
+// afetch — fetch-shaped, but the request travels Chromium's network stack.
+//
+// This server runs as a fork() child of the Electron main process. A bare Node request
+// from here carries no cookie jar and no browser fingerprint, so the source's browser
+// check returns 403 to every call. When an IPC parent is present we hand the request to
+// main, which issues it via Electron `net` on the shared session (see
+// ../electron-net-bridge.js). Standalone (no parent) we fall back to plain fetch so the
+// server still runs headless for development.
+//
+// Returns a minimal Response-like object so existing call sites are unchanged.
+let _netSeq = 0;
+const _netPending = new Map();
+if (process.send) {
+    process.on('message', (m) => {
+        if (m && m.type === 'net-response' && _netPending.has(m.id)) {
+            const done = _netPending.get(m.id);
+            _netPending.delete(m.id);
+            done(m);
+        }
+    });
+}
+// Built here because it must be handed `afetch` (the bridge), not global fetch.
+function getAniDB() {
+    if (!anidbProvider) {
+        try {
+            const { createAniDB } = require('./providers/anidb.js');
+            anidbProvider = createAniDB(afetch);
+        } catch (e) {
+            console.error('[anidb] provider unavailable:', e.message);
+            anidbProvider = null;
+        }
+    }
+    return anidbProvider;
+}
+
+async function afetch(url, opts = {}) {
+    if (!process.send) return fetch(url, opts);          // dev / headless fallback
+    const id = ++_netSeq;
+    const reply = new Promise((res) => _netPending.set(id, res));
+    const timeout = new Promise((res) => setTimeout(() => {
+        _netPending.delete(id);
+        res({ status: 0, body: '', error: 'bridge timeout' });
+    }, 30000));
+    try {
+        process.send({
+            type: 'net-request', id, url,
+            method: opts.method || 'GET',
+            headers: opts.headers || {},
+            body: opts.body || null,
+            challengeOrigin: ALLANIME_REFR
+        });
+    } catch (e) {
+        _netPending.delete(id);
+        return { ok: false, status: 0, sourceError: String(e),
+                 text: async () => '', json: async () => ({}) };
+    }
+    const r = await Promise.race([reply, timeout]);
+    return {
+        ok: r.status >= 200 && r.status < 300,
+        status: r.status,
+        sourceError: r.error || null,
+        text: async () => r.body || '',
+        json: async () => JSON.parse(r.body || '{}')
+    };
+}
 
 // Internal history for the UI (richer than ani-cli's)
 const FORGE_HIST_FILE = path.join(HIST_DIR, 'ani-mate-history.json');
@@ -196,7 +271,7 @@ async function getAniListTrending() {
 async function getAllAnimePopular(mode = 'sub') {
     const gql = `query($type: VaildPopularTypeEnumType!, $size: Int!, $dateRange: Int, $page: Int) { queryPopular(type: $type, size: $size, dateRange: $dateRange, page: $page) { recommendations { anyCard { _id name availableEpisodes __typename } } } }`;
     const variables = { type: 'anime', size: 25, dateRange: 1, page: 1 };
-    const response = await fetch(ALLANIME_API, {
+    const response = await afetch(ALLANIME_API, {
         method: 'POST',
         headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
         body: JSON.stringify({ variables, query: gql }),
@@ -486,7 +561,7 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
     };
 
     const data = await withRetry(async () => {
-        const response = await fetch(ALLANIME_API, {
+        const response = await afetch(ALLANIME_API, {
             method: 'POST',
             headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
             body: JSON.stringify({ variables, query: searchGql }),
@@ -513,6 +588,25 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
     }
     // Sort: series first (by ep count desc), then shorts, then movies
     results.sort((a, b) => b.episodes - a.episodes);
+    if (results.length) return results;
+
+    // FALLBACK: AllAnime returned nothing (it currently 403s on every call). IDs are
+    // tagged `anidb:<id>` so getEpisodeList/getEpisodeUrl route to the right provider —
+    // show ids are not portable between sources.
+    const ad = getAniDB();
+    if (ad) {
+        try {
+            const alt = await ad.search(query);
+            return alt.map((r) => ({
+                id: 'anidb:' + r.id,
+                name: r.title,
+                episodes: 0,
+                provider: 'AniDB'
+            }));
+        } catch (e) {
+            console.error('[anidb] search failed:', e.message);
+        }
+    }
     return results;
 }
 
@@ -555,11 +649,24 @@ async function searchAniList(query, limit = 15) {
 }
 
 async function getEpisodeList(showId, mode = 'sub') {
+    // Route by provider tag. AniDB show ids are numeric and unrelated to AllAnime's,
+    // so the tag applied at search time decides which source answers.
+    if (String(showId).startsWith('anidb:')) {
+        const ad = getAniDB();
+        if (!ad) return [];
+        try {
+            const eps = await ad.getEpisodes(String(showId).slice(6));
+            return eps.map((e) => e.number);
+        } catch (e) {
+            console.error('[anidb] episodes failed:', e.message);
+            return [];
+        }
+    }
     const gql = `query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail } }`;
     const variables = { showId };
 
     const data = await withRetry(async () => {
-        const response = await fetch(ALLANIME_API, {
+        const response = await afetch(ALLANIME_API, {
             method: 'POST',
             headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
             body: JSON.stringify({ variables, query: gql }),
@@ -616,7 +723,7 @@ async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'bes
     const variables = { showId, translationType: mode, episodeString };
 
     const text = await withRetry(async () => {
-        const response = await fetch(ALLANIME_API, {
+        const response = await afetch(ALLANIME_API, {
             method: 'POST',
             headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
             body: JSON.stringify({ variables, query: gql }),
@@ -639,7 +746,7 @@ async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'bes
         sourceUrls.map(async (source) => {
             const decodedPath = decodeProviderId(source.url);
             const linkUrl = decodedPath.startsWith('http') ? decodedPath : `https://allanime.day${decodedPath}`;
-            const linkResp = await fetch(linkUrl, {
+            const linkResp = await afetch(linkUrl, {
                 headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
                 signal: AbortSignal.timeout(8000)
             });
@@ -779,21 +886,63 @@ async function getFallbackStreamUrl(provider, providerName, title, titleEnglish,
 }
 
 // Master fallback chain: try each provider in order
+// Provenance of the last successful resolve. Surfaced by /play so a working stream and a
+// silently-substituted source are distinguishable, and so the next rotation is visible.
+let lastStreamSource = null;
+
 async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, title, titleEnglish) {
+    lastStreamSource = null;
+    // 0. AniDB shows resolve directly — the tag already told us who owns this id.
+    if (String(showId).startsWith('anidb:')) {
+        const ad = getAniDB();
+        if (ad) {
+            try {
+                const eps = await ad.getEpisodes(String(showId).slice(6));
+                const hit = eps.find((e) => String(e.number) === String(episodeString));
+                if (hit) {
+                    const st = await ad.getStream(hit.id, mode);
+                    if (st) { lastStreamSource = 'AniDB'; return st.url; }
+                }
+            } catch (e) {
+                console.error('[anidb] stream failed:', e.message);
+            }
+        }
+        return null;
+    }
+
     // 1. Try AllAnime (primary)
     const allAnimeResult = await getEpisodeUrl(showId, episodeString, mode, quality);
-    if (allAnimeResult) return allAnimeResult;
+    if (allAnimeResult) { lastStreamSource = 'AllAnime'; return allAnimeResult; }
 
     // 2. Try AnimePahe
     if (consumetAnimePahe) {
         const paheResult = await getFallbackStreamUrl(consumetAnimePahe, 'AnimePahe', title, titleEnglish, episodeString, mode);
-        if (paheResult) return paheResult;
+        if (paheResult) { lastStreamSource = 'AnimePahe'; return paheResult; }
     }
 
     // 3. Try HiAnime
     if (consumetHiAnime) {
         const hiResult = await getFallbackStreamUrl(consumetHiAnime, 'HiAnime', title, titleEnglish, episodeString, mode);
-        if (hiResult) return hiResult;
+        if (hiResult) { lastStreamSource = 'HiAnime'; return hiResult; }
+    }
+
+    // 4. Last resort: match the title on AniDB. Reached when a show was found via AllAnime
+    // (so its id is not tagged) but no source could produce a stream.
+    const ad4 = getAniDB();
+    if (ad4) {
+        try {
+            for (const t of [title, titleEnglish].filter(Boolean)) {
+                const hits = await ad4.search(t);
+                if (!hits.length) continue;
+                const eps = await ad4.getEpisodes(hits[0].id);
+                const hit = eps.find((e) => String(e.number) === String(episodeString));
+                if (!hit) continue;
+                const st = await ad4.getStream(hit.id, mode);
+                if (st) { lastStreamSource = 'AniDB (title match)'; return st.url; }
+            }
+        } catch (e) {
+            console.error('[anidb] title-match fallback failed:', e.message);
+        }
     }
 
     return null;
@@ -941,6 +1090,33 @@ const server = http.createServer(async (req, res) => {
         }
 
         // API routes
+        // SOURCE HEALTH — probe every provider and say which are alive.
+        // The 2026-08-20 diagnosis asked for exactly this: sources rotate every few months,
+        // and without a probe a dead source is indistinguishable from a broken app. Returns
+        // per-provider status so the UI can say "source unreachable" instead of showing an
+        // empty list.
+        if (pathname === '/health/sources') {
+            const out = [];
+            const ad = getAniDB();
+            if (ad) { try { out.push(await ad.health()); } catch (e) { out.push({ name: 'AniDB', ok: false, error: String(e.message || e) }); } }
+            else out.push({ name: 'AniDB', ok: false, error: 'provider not loaded' });
+            try {
+                const t0 = Date.now();
+                // A real query, not an empty one: an empty GraphQL body makes the edge
+                // hang for the full timeout, which reports as a 30 s failure regardless of
+                // whether the source is actually up.
+                const probeVars = encodeURIComponent(JSON.stringify({ search: { allowAdult: false, allowUnknown: false, query: 'naruto' }, limit: 1, page: 1, translationType: 'sub', countryOrigin: 'ALL' }));
+                const probeQuery = encodeURIComponent('query( $search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType ) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name __typename } }}');
+                const r = await afetch(`${ALLANIME_API}?variables=${probeVars}&query=${probeQuery}`, { method: 'GET' });
+                out.push({ name: 'AllAnime', ok: !!(r && r.ok), status: r ? r.status : 0, ms: Date.now() - t0 });
+            } catch (e) { out.push({ name: 'AllAnime', ok: false, error: String(e.message || e) }); }
+            out.push({ name: 'AnimePahe', ok: false, note: consumetAnimePahe ? 'loaded (consumet 1.8.8, domain rotated)' : 'not installed' });
+            out.push({ name: 'HiAnime', ok: false, note: consumetHiAnime ? 'loaded (consumet 1.8.8, upstream 522)' : 'not installed' });
+            const anyOk = out.some((o) => o.ok);
+            jsonResponse(res, 200, { ok: anyOk, providers: out });
+            return;
+        }
+
         if (pathname === '/info') {
             if (!query.title) {
                 jsonResponse(res, 400, { error: 'Missing title parameter' });
@@ -1176,7 +1352,7 @@ const server = http.createServer(async (req, res) => {
                 params.title || '', params.title_english || ''
             );
             if (!epUrl) {
-                jsonResponse(res, 404, { error: 'No streams available for this episode. The episode may not be uploaded yet — try again later.', retryable: true });
+                jsonResponse(res, 404, { error: 'No streams available for this episode. The episode may not be uploaded yet — try again later.', retryable: true, sources_tried: ['AllAnime','AnimePahe','HiAnime','AniDB'] });
                 return;
             }
 
@@ -1210,7 +1386,7 @@ const server = http.createServer(async (req, res) => {
 
             const playTitle = `${params.title || 'Anime'} - Episode ${params.episode}`;
             jsonResponse(res, 200, {
-                status: 'playing',
+                status: 'playing', source: lastStreamSource,
                 stream_url: epUrl.url,
                 resolution: epUrl.resolution,
                 provider: epUrl.provider,

@@ -13,3 +13,6 @@ mobile/android/local.properties
 *.apk
 *.aab
 DEVELOPMENT.md
+
+# CSL working backups
+*.bak-*

@@ -64,6 +64,17 @@ function startServer(port) {
             stdio: ['ignore', 'pipe', 'pipe', 'ipc']
         });
 
+        // Route source-API calls through Chromium's network stack instead of the forked
+        // child's bare Node HTTP. The child has no cookie jar and no browser fingerprint,
+        // which is why every request came back 403 behind a browser check. See
+        // electron-net-bridge.js for the full reasoning.
+        try {
+            require('./electron-net-bridge').attach(serverProcess);
+            console.log('[main] net bridge attached');
+        } catch (e) {
+            console.error('[main] net bridge FAILED to attach:', e);
+        }
+
         let resolved = false;
 
         serverProcess.stdout.on('data', (data) => {

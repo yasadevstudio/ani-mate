@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.4.4';
+    const APP_VERSION = '0.4.5';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -1635,7 +1635,12 @@
 
     // === CHANGELOG ===
     const CHANGELOG = [
-        'Fixed episode list not scrollable — description capped at 35% screen height',
+        'Fixed: no streams would load — every source the app used had gone offline',
+        'Added AniDB as a new streaming source (search, episodes, sub and dub)',
+        'Source requests now route through the browser engine, fixing blocked-request errors',
+        'Fallbacks now cover search and episode lists too, not just streams',
+        'New source health check — dead sources are reported instead of showing nothing',
+        'Playback now shows which source it came from'
     ];
 
     function showChangelog() {
