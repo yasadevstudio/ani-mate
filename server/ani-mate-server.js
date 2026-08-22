@@ -489,13 +489,68 @@ async function getAnimeInfo(title) {
             infoCache[title] = result;
             return result;
         }
-    } catch { /* fall through to Jikan */ }
+    } catch (e) { console.error('[meta] AniList failed:', e.message); }
 
-    // Jikan/MAL fallback
-    try {
-        const resp = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(searchTitle)}&limit=1`, {
-            signal: AbortSignal.timeout(5000)
+    // ---------------------------------------------------------------------------
+// jikanGet — Jikan over Node's https module, NOT global fetch.
+//
+// MEASURED 2026-08-22, same URL, same machine, same minute:
+//     curl (any HTTP version)      -> 200
+//     node https module (HTTP/1.1) -> 200, real data
+//     node global fetch (undici)   -> 504, every time, with or without headers
+// It is undici specifically. Not the User-Agent (tested three variants, all 504), not
+// HTTP/2 (curl negotiated 1.1 anyway), and not the Electron bridge (plain node 504s too).
+//
+// Jikan also rate-limits (~3 req/s, 60/min) and answers 429 when exceeded — observed on
+// the first of five back-to-back probes. So calls are serialised with a minimum gap and
+// retried once on 429, otherwise a grid of covers trips it immediately.
+const JIKAN_MIN_GAP_MS = 400;
+let jikanChain = Promise.resolve();
+let jikanLast = 0;
+
+function jikanRequest(url) {
+    return new Promise((resolve) => {
+        const https = require('https');
+        const req = https.get(url, {
+            headers: { 'User-Agent': 'ANI-MATE', 'Accept': 'application/json' },
+            timeout: 8000
+        }, (res) => {
+            let d = '';
+            res.on('data', (c) => { d += c; });
+            res.on('end', () => resolve({ status: res.statusCode, body: d }));
+            res.on('error', () => resolve({ status: 0, body: '' }));
         });
+        req.on('error', () => resolve({ status: 0, body: '' }));
+        req.on('timeout', () => { try { req.destroy(); } catch {} resolve({ status: 0, body: '' }); });
+    });
+}
+
+// Serialised + rate-limit aware. Returns a fetch-like object so call sites are unchanged.
+function jikanGet(url) {
+    const run = async () => {
+        const wait = Math.max(0, JIKAN_MIN_GAP_MS - (Date.now() - jikanLast));
+        if (wait) await new Promise((r) => setTimeout(r, wait));
+        let r = await jikanRequest(url);
+        if (r.status === 429) {                       // backoff once, then give up
+            await new Promise((r2) => setTimeout(r2, 1500));
+            r = await jikanRequest(url);
+        }
+        jikanLast = Date.now();
+        return r;
+    };
+    const p = jikanChain.then(run, run);
+    jikanChain = p.then(() => undefined, () => undefined);
+    return p.then((r) => ({
+        ok: r.status >= 200 && r.status < 300,
+        status: r.status,
+        json: async () => JSON.parse(r.body || '{}'),
+        text: async () => r.body || ''
+    }));
+}
+
+// Jikan/MAL fallback
+    try {
+        const resp = await jikanGet(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(searchTitle)}&limit=1`);
         const json = await resp.json();
         const anime = json?.data?.[0];
         if (anime) {
@@ -503,9 +558,14 @@ async function getAnimeInfo(title) {
             infoCache[title] = result;
             return result;
         }
-    } catch { /* no fallback */ }
+    } catch (e) { console.error('[meta] Jikan fallback failed:', e.message); }
 
-    const empty = { description: null, cover: null, genres: [], score: null, source: null, at: Date.now() };
+    // DO NOT cache a failure for the full hour. A single upstream blip used to blank
+    // covers/descriptions for INFO_CACHE_TTL and never retry, which also hid the cause:
+    // repeat calls returned the cached empty without touching the network, so nothing
+    // ever logged. Failures now expire in 60s so the next view retries.
+    const empty = { description: null, cover: null, genres: [], score: null, source: null,
+                    at: Date.now() - (INFO_CACHE_TTL - 60 * 1000) };
     infoCache[title] = empty;
     return empty;
 }
@@ -1105,9 +1165,16 @@ const server = http.createServer(async (req, res) => {
                 // A real query, not an empty one: an empty GraphQL body makes the edge
                 // hang for the full timeout, which reports as a 30 s failure regardless of
                 // whether the source is actually up.
-                const probeVars = encodeURIComponent(JSON.stringify({ search: { allowAdult: false, allowUnknown: false, query: 'naruto' }, limit: 1, page: 1, translationType: 'sub', countryOrigin: 'ALL' }));
-                const probeQuery = encodeURIComponent('query( $search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType ) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name __typename } }}');
-                const r = await afetch(`${ALLANIME_API}?variables=${probeVars}&query=${probeQuery}`, { method: 'GET' });
+                // MUST be POST. The app's real AllAnime calls are POST (see v0.4.4);
+                // a GET probe returns 403 and libels a working source as dead.
+                const r = await afetch(ALLANIME_API, {
+                    method: 'POST',
+                    headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        variables: { search: { allowAdult: false, allowUnknown: false, query: 'naruto' }, limit: 1, page: 1, translationType: 'sub', countryOrigin: 'ALL' },
+                        query: 'query( $search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType ) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name __typename } }}'
+                    })
+                });
                 out.push({ name: 'AllAnime', ok: !!(r && r.ok), status: r ? r.status : 0, ms: Date.now() - t0 });
             } catch (e) { out.push({ name: 'AllAnime', ok: false, error: String(e.message || e) }); }
             out.push({ name: 'AnimePahe', ok: false, note: consumetAnimePahe ? 'loaded (consumet 1.8.8, domain rotated)' : 'not installed' });
