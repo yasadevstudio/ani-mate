@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.4.6';
+    const APP_VERSION = '0.4.7';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -223,7 +223,11 @@
 
     function renderResults() {
         if (state.results.length === 0) {
+            // "No results" is the same thing on screen whether the query genuinely has
+            // no match or every source is unreachable. Ask the sources which it is and
+            // say so, rather than leaving it looking like the app is broken.
             resultsContainer.innerHTML = '<div class="no-results">No results found</div>';
+            reportSourceTrouble();
             return;
         }
 
@@ -951,6 +955,33 @@
         $('tz-right').addEventListener('click', () => handleTap('right'));
     }
 
+    // Runs only after an empty result. Cheap, and it turns a dead end into a diagnosis.
+    async function reportSourceTrouble() {
+        if (!window.SOURCES) return;
+        try {
+            const h = await window.SOURCES.healthCheck();
+            const live = h.sources.filter(s => s.state === 'up');
+            if (live.length) return;   // sources are fine — the query really had no match
+
+            const rows = h.sources.map(s => {
+                const label = s.state === 'disabled' ? 'not enabled' : s.state;
+                const ms = s.ms != null ? ` &middot; ${s.ms}ms` : '';
+                return `<div class="src-row"><span class="src-name">${esc(s.name)}</span>` +
+                       `<span class="src-state src-${s.state}">${label}${ms}</span></div>`;
+            }).join('');
+            const t = h.transports || {};
+            const transports = Object.keys(t).filter(k => t[k]).join(', ') || 'none';
+
+            resultsContainer.innerHTML =
+                '<div class="no-results source-trouble">' +
+                '<div class="st-title">EVERY SOURCE IS UNREACHABLE</div>' +
+                '<div class="st-sub">This is not an empty search &mdash; nothing answered.</div>' +
+                `<div class="st-rows">${rows}</div>` +
+                `<div class="st-foot">transports available: ${esc(transports)}</div>` +
+                '</div>';
+        } catch { /* leave the plain message */ }
+    }
+
     // === CONTINUE WATCHING ===
     async function loadContinue() {
         resultsContainer.innerHTML = '<div class="loading-indicator">LOADING...</div>';
@@ -1635,12 +1666,11 @@
 
     // === CHANGELOG ===
     const CHANGELOG = [
-        'Streaming works on Android again — the v0.4.5 fix never reached this build',
-        'Sources now load through the browser engine, clearing the checks that blocked them',
-        'Two streaming sources instead of one, with automatic failover between them',
-        'A source that fails is set aside for a few minutes instead of being retried every time',
-        'Covers and descriptions fall back across AniList, MyAnimeList and Kitsu',
-        'The app now checks for updates when you return to it, not only on a cold start'
+        'Fixed: search results could not be opened — cards were built with a missing id',
+        'Fixed: the daily list was empty whenever the streaming source was blocked',
+        'Trending now comes from AniList when no streaming source will answer',
+        'An empty search now reports which sources are down instead of just saying no results',
+        'Opening a trending title finds a playable source for it automatically'
     ];
 
     function showChangelog() {

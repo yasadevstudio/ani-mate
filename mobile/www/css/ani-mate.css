@@ -1187,3 +1187,27 @@ body {
     margin-left: 6px;
     vertical-align: middle;
 }
+
+/* Source trouble — shown when a search returns nothing AND no source answered.
+   Added 2026-08-25: an empty list looked identical to a dead app, which cost a
+   release cycle of guessing. */
+.source-trouble { text-align: left; padding: 20px 18px; }
+.source-trouble .st-title {
+    font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: .12em;
+    color: var(--danger); margin-bottom: 6px;
+}
+.source-trouble .st-sub { font-size: 12px; color: var(--text-dim); margin-bottom: 14px; }
+.source-trouble .st-rows { border-top: 1px solid var(--border); }
+.source-trouble .src-row {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px;
+}
+.source-trouble .src-name { color: var(--text); }
+.source-trouble .src-state { font-family: 'Jura', monospace; font-size: 12px; }
+.source-trouble .src-up { color: var(--success); }
+.source-trouble .src-down { color: var(--danger); }
+.source-trouble .src-disabled { color: var(--text-dim); }
+.source-trouble .st-foot {
+    margin-top: 12px; font-family: 'Jura', monospace;
+    font-size: 11px; color: var(--text-dim);
+}

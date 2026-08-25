@@ -313,12 +313,16 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
         try {
             const alt = await window.SOURCES.search(query, mode);
             if (alt.length) {
-                return alt.map(a => ({
-                    _id: a.id,
-                    name: a.name,
-                    availableEpisodes: a.episodes || null,
-                    source: a.provider || 'fallback'
-                }));
+                return alt.map(a => {
+                    const eps = Number(a.episodes) || 0;
+                    return {
+                        id: a.id,
+                        name: a.name,
+                        episodes: eps,
+                        type: eps === 1 ? 'movie' : eps > 0 && eps <= 12 ? 'short' : 'series',
+                        source: a.provider || 'fallback'
+                    };
+                });
             }
         } catch (e) { /* chain exhausted — return empty, the UI reports it */ }
     }
@@ -328,6 +332,29 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
 // Provider-tagged ids come from window.SOURCES and must route back to their owner.
 function isTagged(id) {
     return typeof id === 'string' && /^[a-z]+:/.test(id);
+}
+
+// The trending list is built from AniList, which knows titles but no streaming ids.
+// Those entries carry "search:<title>" and are resolved to a real provider id the
+// first time they are opened. Resolved ids are memoised for the session so opening
+// the same show twice does not search twice.
+const resolvedIds = new Map();
+async function resolveSearchId(taggedId, mode = 'sub') {
+    if (!taggedId.startsWith('search:')) return taggedId;
+    if (resolvedIds.has(taggedId)) return resolvedIds.get(taggedId);
+    const title = taggedId.slice(7);
+    let real = null;
+    try {
+        const hits = await window.SOURCES.search(title, mode);
+        if (hits.length) {
+            const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+            const want = norm(title);
+            const exact = hits.find(h => norm(h.name) === want);
+            real = (exact || hits[0]).id;
+        }
+    } catch { /* leave null */ }
+    resolvedIds.set(taggedId, real);
+    return real;
 }
 
 // AniList search — fuzzy matching, romaji/English, catches misspellings
@@ -371,7 +398,9 @@ async function searchAniList(query, limit = 15) {
 // Get episode list for a show
 async function getEpisodeList(showId, mode = 'sub') {
     if (isTagged(showId) && window.SOURCES) {
-        const eps = await window.SOURCES.episodes(showId, mode).catch(() => []);
+        const real = await resolveSearchId(showId, mode);
+        if (!real) return [];
+        const eps = await window.SOURCES.episodes(real, mode).catch(() => []);
         return eps.map(e => e.number);
     }
     const gql = `query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail } }`;
@@ -424,8 +453,10 @@ function decodeProviderId(encoded) {
 async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'best') {
     if (isTagged(showId) && window.SOURCES) {
         // The provider owns the episode id; SOURCES built it during getEpisodeList.
-        const pid = showId.slice(0, showId.indexOf(':'));
-        const eps = await window.SOURCES.episodes(showId, mode).catch(() => []);
+        const real = await resolveSearchId(showId, mode);
+        if (!real) return null;
+        const pid = real.slice(0, real.indexOf(':'));
+        const eps = await window.SOURCES.episodes(real, mode).catch(() => []);
         const hit = eps.find(e => String(e.number) === String(episodeString)) || null;
         if (hit) {
             const s = await window.SOURCES.stream(hit.id, mode).catch(() => null);
@@ -525,6 +556,38 @@ async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'bes
     };
 }
 
+// Trending, without a streaming source. AniList answered every request during the
+// 2026-08-25 audit while every streaming host was walled, so it is the sturdier list.
+// Titles resolve to a playable id through the normal search chain when tapped.
+async function getTrendingFallback(mode = 'sub') {
+    const gql = `query { Page(page:1, perPage:25) { media(sort:TRENDING_DESC, type:ANIME, isAdult:false) {
+        id title{romaji english} episodes format coverImage{large} description(asHtml:false) } } }`;
+    const r = await fetch('https://graphql.anilist.co', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ query: gql }),
+        signal: AbortSignal.timeout(10000)
+    });
+    if (!r.ok) return [];
+    const j = await r.json();
+    const media = j?.data?.Page?.media || [];
+    return media.map(m => {
+        const eps = Number(m.episodes) || 0;
+        const name = m.title?.romaji || m.title?.english;
+        if (!name) return null;
+        return {
+            id: 'search:' + name,
+            name,
+            title_english: m.title?.english || null,
+            episodes: eps,
+            type: m.format === 'MOVIE' ? 'movie' : eps > 0 && eps <= 12 ? 'short' : 'series',
+            cover: m.coverImage?.large || null,
+            description: (m.description || '').replace(/<[^>]+>/g, ''),
+            source: 'anilist'
+        };
+    }).filter(Boolean);
+}
+
 // Daily popular/trending anime
 async function getDailyPopular(mode = 'sub') {
     const gql = `query($type: VaildPopularTypeEnumType!, $size: Int!, $dateRange: Int, $page: Int) { queryPopular(type: $type, size: $size, dateRange: $dateRange, page: $page) { recommendations { anyCard { _id name availableEpisodes __typename } } } }`;
@@ -546,14 +609,24 @@ async function getDailyPopular(mode = 'sub') {
         }
     }
 
+    // AllAnime is the only source that answers queryPopular, and when it is walled this
+    // list comes back empty. Fall back to AniList's own trending query, which needs no
+    // streaming source to build the list — the ids are resolved by search on click.
+    if (!results.length) {
+        try {
+            const trending = await getTrendingFallback(mode);
+            if (trending.length) results.push(...trending);
+        } catch { /* leave empty; the UI reports it */ }
+    }
+
     // Attach covers
     try {
         const titles = results.slice(0, 15).map(r => r.name);
         const anilistData = await getAniListCovers(titles);
         for (const r of results) {
             const info = anilistData[r.name];
-            r.cover = info?.cover || null;
-            r.description = info?.description || null;
+            r.cover = r.cover || info?.cover || null;
+            r.description = r.description || info?.description || null;
             r.title_english = r.title_english || info?.title_english || null;
         }
     } catch { /* non-critical */ }

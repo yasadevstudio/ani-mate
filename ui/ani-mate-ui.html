@@ -1382,7 +1382,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.4.6 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.4.7 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -3088,13 +3088,12 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.4.6';
+    const APP_VERSION = '0.4.7';
     const CHANGELOG = [
         'Two streaming sources instead of one, with automatic failover between them',
         'A source that fails is set aside for a few minutes instead of being retried every time',
         'Covers and descriptions fall back across AniList, MyAnimeList and Kitsu',
-        'Source health is tracked per source and reported when everything is down',
-        'Android build now has the streaming fix that shipped for desktop in v0.4.5'
+        'Android build fixes: results are openable again and the daily list is populated'
     ];
 
     function showChangelog() {
