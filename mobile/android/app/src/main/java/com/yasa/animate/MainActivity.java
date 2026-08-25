@@ -7,6 +7,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         registerPlugin(ApkInstaller.class);
+        registerPlugin(WebFetch.class);
         super.onCreate(savedInstanceState);
     }
 }

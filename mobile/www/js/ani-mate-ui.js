@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.4.5';
+    const APP_VERSION = '0.4.6';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -1635,12 +1635,12 @@
 
     // === CHANGELOG ===
     const CHANGELOG = [
-        'Fixed: no streams would load — every source the app used had gone offline',
-        'Added AniDB as a new streaming source (search, episodes, sub and dub)',
-        'Source requests now route through the browser engine, fixing blocked-request errors',
-        'Fallbacks now cover search and episode lists too, not just streams',
-        'New source health check — dead sources are reported instead of showing nothing',
-        'Playback now shows which source it came from'
+        'Streaming works on Android again — the v0.4.5 fix never reached this build',
+        'Sources now load through the browser engine, clearing the checks that blocked them',
+        'Two streaming sources instead of one, with automatic failover between them',
+        'A source that fails is set aside for a few minutes instead of being retried every time',
+        'Covers and descriptions fall back across AniList, MyAnimeList and Kitsu',
+        'The app now checks for updates when you return to it, not only on a cold start'
     ];
 
     function showChangelog() {
@@ -1781,6 +1781,19 @@
 
         // Check for updates (non-blocking, after 3s to not delay startup)
         setTimeout(checkForUpdate, 3000);
+
+        // ...and again whenever the app comes back to the foreground.
+        // Android keeps the WebView alive when an app is backgrounded, so init() runs
+        // once per cold start and never again. Without this a resident app can sit for
+        // weeks without noticing a release — which is exactly what happened with v0.4.5.
+        // Throttled to once an hour so returning to the app is not a network event.
+        App?.addListener?.('appStateChange', ({ isActive }) => {
+            if (!isActive) return;
+            const last = Number(localStorage.getItem('ani-mate-update-checked') || 0);
+            if (Date.now() - last < 3600000) return;
+            localStorage.setItem('ani-mate-update-checked', String(Date.now()));
+            checkForUpdate();
+        });
     }
 
     init();

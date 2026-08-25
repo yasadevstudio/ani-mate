@@ -301,10 +301,33 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
     }
 
     // When NSFW is off, filter out results with Hentai genre
-    if (!allowAdult) {
-        return results.filter(r => !(r.genres && r.genres.includes('Hentai')));
+    const filtered = (!allowAdult)
+        ? results.filter(r => !(r.genres && r.genres.includes('Hentai')))
+        : results;
+
+    // Nothing came back from the legacy path — every source it knows may be down.
+    // Fall through to the redundant chain, which carries its own transports and its
+    // own failover. Ids from there are provider-tagged ("anidb:3880") and the episode
+    // and stream calls below route on that tag.
+    if (!filtered.length && window.SOURCES) {
+        try {
+            const alt = await window.SOURCES.search(query, mode);
+            if (alt.length) {
+                return alt.map(a => ({
+                    _id: a.id,
+                    name: a.name,
+                    availableEpisodes: a.episodes || null,
+                    source: a.provider || 'fallback'
+                }));
+            }
+        } catch (e) { /* chain exhausted — return empty, the UI reports it */ }
     }
-    return results;
+    return filtered;
+}
+
+// Provider-tagged ids come from window.SOURCES and must route back to their owner.
+function isTagged(id) {
+    return typeof id === 'string' && /^[a-z]+:/.test(id);
 }
 
 // AniList search — fuzzy matching, romaji/English, catches misspellings
@@ -347,6 +370,10 @@ async function searchAniList(query, limit = 15) {
 
 // Get episode list for a show
 async function getEpisodeList(showId, mode = 'sub') {
+    if (isTagged(showId) && window.SOURCES) {
+        const eps = await window.SOURCES.episodes(showId, mode).catch(() => []);
+        return eps.map(e => e.number);
+    }
     const gql = `query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail } }`;
     const variables = JSON.stringify({ showId });
     const params = new URLSearchParams({ variables, query: gql });
@@ -395,6 +422,17 @@ function decodeProviderId(encoded) {
 
 // Get streaming URL for an episode
 async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'best') {
+    if (isTagged(showId) && window.SOURCES) {
+        // The provider owns the episode id; SOURCES built it during getEpisodeList.
+        const pid = showId.slice(0, showId.indexOf(':'));
+        const eps = await window.SOURCES.episodes(showId, mode).catch(() => []);
+        const hit = eps.find(e => String(e.number) === String(episodeString)) || null;
+        if (hit) {
+            const s = await window.SOURCES.stream(hit.id, mode).catch(() => null);
+            if (s) return { url: s.url, referer: s.referer, source: s.providerName || pid };
+        }
+        return null;
+    }
     const gql = `query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls } }`;
 
     const variables = JSON.stringify({ showId, translationType: mode, episodeString });
@@ -690,6 +728,7 @@ async function getAnimeInfo(title) {
 
 // Export all API functions
 window.API = {
+    decodeProviderId,
     searchAnime,
     searchAniList,
     getEpisodeList,
