@@ -10,7 +10,10 @@ Every release MUST update ALL of the following in a SINGLE commit before push + 
 4. **`ui/ani-mate-ui.html`** — `CHANGELOG` array with new features
 5. **`mobile/www/js/ani-mate-ui.js`** — `const APP_VERSION = 'X.Y.Z'`
 6. **`mobile/www/js/ani-mate-ui.js`** — `CHANGELOG` array with new features
-7. **GitHub Release Notes** — After push+tag, WAIT for the GitHub Actions workflow to finish (~4 min), THEN run `gh release edit vX.Y.Z --notes "..."`. NO code links, NO commit hashes, NO auto-generated notes. Plain English list of what changed.
+7. **`mobile/android/app/src/main/assets/public/js/` and `.../assets/public/css/`** — **COPY `mobile/www/js/*.js` AND `mobile/www/css/*.css` OVER.** This is what the APK actually ships. It is build output, it is NOT in git, and nothing copies it for you locally. On 2026-10-05 it still said `0.4.7` after every other file said `0.5.0`, so the APK would have gone out reporting the wrong version with none of the fixes. `npx cap sync android` does it, or `cp` the files.
+8. **`mobile/android/app/build.gradle`** — **VERIFY, DO NOT EDIT.** It reads the version out of `package.json` and derives a date-based `versionCode` itself, so bumping item 1 is enough. Confirm it still contains `versionName project.ext.animateVersionName`. It used to be hardcoded `versionCode 1` / `versionName "1.0"`, which is why every APK ever built was named `ANI-MATE-1.0-mobile.apk` while `package.json` said something else.
+   > ⚠ **`versionCode` MUST ONLY EVER INCREASE.** It is `date +%Y%m%d` because that is the scheme already in users' hands. A semver-derived number (0.5.0 → 500) is LOWER than an installed 20260825 build, and Android refuses a lower `versionCode` as a downgrade — every existing install would silently stop updating. Do not "tidy" this.
+9. **GitHub Release Notes** — After push+tag, WAIT for the GitHub Actions workflow to finish (~4 min), THEN run `gh release edit vX.Y.Z --notes "..."`. NO code links, NO commit hashes, NO auto-generated notes. Plain English list of what changed.
 
 ## COMMIT MEANS THE FULL PIPELINE
 
