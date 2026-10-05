@@ -62,6 +62,13 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # ⛔ MUST BE SET EXPLICITLY. The v3 default package list still asks for `tools`,
+          # which Google has REMOVED from the SDK, so sdkmanager exits 1 with
+          # "Failed to find package 'tools'" and the Android job dies before it builds
+          # anything. Broke the v0.5.0 run on 2026-10-05; the last green Android build was
+          # 2026-08-25, before the removal. Nothing in this repo changed to cause it.
+          packages: 'platform-tools'
 
       - name: Get version from tag
         id: version
