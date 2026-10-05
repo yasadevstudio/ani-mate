@@ -55,10 +55,42 @@ const ALLANIME_HEADERS = {
     'Accept-Language': 'en-US,en;q=0.9',
 };
 
-// AllAnime GET request returning parsed JSON
+// ⛔ ALLANIME MUST BE POST. GET IS CLOUDFLARE-BLOCKED AND ALWAYS HAS BEEN.
+// Measured 2026-10-05 against the live API, same machine, same minute:
+//     GET  https://api.allanime.day/api?variables=...&query=...  -> 403, "Just a moment..."
+//     POST https://api.allanime.day/api  {variables, query}       -> 200
+// The desktop server has used POST since v0.4.4 (server/ani-mate-server.js lines 187, 240),
+// which is the entire reason desktop worked and mobile did not. DEVELOPMENT.md line 19 has
+// said "POST ... GET is Cloudflare-blocked" since April.
+//
+// The 2026-08-25 note in this file concluded the challenge was "unsolvable" and shipped the
+// source disabled. It was never a challenge. It was the wrong verb.
+//
+// Mobile builds its URLs as `${ALLANIME_API}?${params}`, so this splits the query string
+// back out and sends it as a JSON body. Call sites keep passing a URL and do not change.
+function allanimeSplit(url) {
+    const u = new URL(url);
+    const variables = u.searchParams.get('variables');
+    const query = u.searchParams.get('query');
+    return {
+        endpoint: u.origin + u.pathname,
+        body: JSON.stringify({
+            variables: variables ? JSON.parse(variables) : undefined,
+            query: query || undefined,
+        }),
+    };
+}
+
+// AllAnime GET request returning parsed JSON.
+// THROWS on failure — see allanimeGetSafe below, which is what callers must use.
 async function allanimeGet(url) {
     if (CapHttp) {
-        const resp = await CapHttp.get({ url, headers: ALLANIME_HEADERS });
+        const { endpoint, body } = allanimeSplit(url);
+        const resp = await CapHttp.post({
+            url: endpoint,
+            headers: { ...ALLANIME_HEADERS, 'Content-Type': 'application/json' },
+            data: JSON.parse(body),
+        });
         if (resp.status !== 200) throw new Error(`AllAnime HTTP ${resp.status}`);
         // CapHttp auto-parses JSON if content-type is application/json
         if (typeof resp.data === 'string') {
@@ -67,23 +99,48 @@ async function allanimeGet(url) {
         }
         return resp.data;
     }
-    const resp = await fetch(url, { headers: ALLANIME_HEADERS });
+    const { endpoint, body } = allanimeSplit(url);
+    const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: { ...ALLANIME_HEADERS, 'Content-Type': 'application/json' },
+        body,
+    });
     if (!resp.ok) throw new Error(`AllAnime HTTP ${resp.status}`);
     return resp.json();
+}
+
+// Non-throwing form, and it is worth keeping for its own sake: a throwing call aborted its
+// caller before any fallback could run, so one dead source made the whole app look dead
+// rather than merely sourceless. The redundancy chain existed and was unreachable.
+//
+// THE 403 IT WAS WRITTEN FOR WAS NOT A CHALLENGE. It was a GET against an endpoint that
+// only accepts POST — fixed above, measured 2026-10-05. The wrapper stays because sources
+// will keep dying for real reasons; the diagnosis in the old note was simply wrong.
+// Returns null instead of throwing.
+async function allanimeGetSafe(url) {
+    try { return await allanimeGet(url); }
+    catch (e) { return null; }
 }
 
 // AllAnime GET request returning raw text
 async function allanimeGetText(url) {
     if (CapHttp) {
-        const resp = await CapHttp.get({
-            url,
-            headers: ALLANIME_HEADERS,
+        const { endpoint, body } = allanimeSplit(url);
+        const resp = await CapHttp.post({
+            url: endpoint,
+            headers: { ...ALLANIME_HEADERS, 'Content-Type': 'application/json' },
+            data: JSON.parse(body),
             responseType: 'text'
         });
         if (resp.status !== 200) throw new Error(`AllAnime HTTP ${resp.status}`);
         return typeof resp.data === 'object' ? JSON.stringify(resp.data) : String(resp.data);
     }
-    const resp = await fetch(url, { headers: ALLANIME_HEADERS });
+    const { endpoint, body } = allanimeSplit(url);
+    const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: { ...ALLANIME_HEADERS, 'Content-Type': 'application/json' },
+        body,
+    });
     return resp.text();
 }
 
@@ -130,7 +187,7 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
     const params = new URLSearchParams({ variables, query: searchGql });
     const apiUrl = `${ALLANIME_API}?${params.toString()}`;
 
-    const data = await allanimeGet(apiUrl);
+    const data = await allanimeGetSafe(apiUrl);
 
     const results = [];
     if (data?.data?.shows?.edges) {
@@ -408,7 +465,7 @@ async function getEpisodeList(showId, mode = 'sub') {
     const params = new URLSearchParams({ variables, query: gql });
     const apiUrl = `${ALLANIME_API}?${params.toString()}`;
 
-    const data = await allanimeGet(apiUrl);
+    const data = await allanimeGetSafe(apiUrl);
 
     let episodes = [];
     try {
@@ -595,7 +652,7 @@ async function getDailyPopular(mode = 'sub') {
     const params = new URLSearchParams({ variables, query: gql });
     const apiUrl = `${ALLANIME_API}?${params.toString()}`;
 
-    const data = await allanimeGet(apiUrl);
+    const data = await allanimeGetSafe(apiUrl);
 
     const results = [];
     const recs = data?.data?.queryPopular?.recommendations || [];

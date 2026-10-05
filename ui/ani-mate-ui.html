@@ -1223,6 +1223,17 @@
             letter-spacing: 2px;
             margin-bottom: 16px;
         }
+        /* The note sits between the version and the bullet list. It is a message from
+           YASA, not a changelog entry, so it reads as prose rather than another item. */
+        .changelog-modal .changelog-note {
+            font-size: 13px;
+            line-height: 1.5;
+            color: var(--accent-gold);
+            background: rgba(255, 221, 0, 0.06);
+            border-left: 2px solid var(--accent-gold);
+            padding: 10px 12px;
+            margin: 0 0 16px 0;
+        }
         .changelog-modal ul {
             list-style: none;
             padding: 0;
@@ -1382,7 +1393,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.4.7 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.5.0 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -1747,8 +1758,14 @@
             });
             state.hlsInstance = hls;
 
-            // Try direct first, fall back to proxy
-            hls.loadSource(streamUrl);
+            // GO STRAIGHT THROUGH THE PROXY WHEN A REFERER IS REQUIRED.
+            // "Try direct first" costs a guaranteed failure and a fatal-error round trip for
+            // any source whose CDN checks Referer, because a browser cannot set that header.
+            // Direct is still the default when no referer was supplied.
+            const src = state.streamReferer
+                ? `/proxy-stream?url=${encodeURIComponent(streamUrl)}&referer=${encodeURIComponent(state.streamReferer)}`
+                : streamUrl;
+            hls.loadSource(src);
             hls.attachMedia(video);
 
             hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -1762,12 +1779,16 @@
 
             hls.on(Hls.Events.ERROR, (event, data) => {
                 if (data.fatal) {
-                    if (data.type === Hls.ErrorTypes.NETWORK_ERROR && !streamUrl.startsWith('/proxy-stream')) {
+                    // `streamUrl` is the ORIGINAL url and never starts with /proxy-stream,
+                    // so this guard could not tell a direct attempt from a proxied one and
+                    // would have retried the proxy against itself. Test what was loaded.
+                    if (data.type === Hls.ErrorTypes.NETWORK_ERROR && !src.startsWith('/proxy-stream')) {
                         // CORS failure — retry through proxy
                         console.log('[ANI-MATE] Direct stream failed, trying proxy...');
                         toast('Routing through proxy...', 'info');
                         hls.destroy();
-                        const proxyUrl = `/proxy-stream?url=${encodeURIComponent(streamUrl)}`;
+                        const proxyUrl = `/proxy-stream?url=${encodeURIComponent(streamUrl)}`
+                            + (state.streamReferer ? `&referer=${encodeURIComponent(state.streamReferer)}` : '');
                         const hls2 = new Hls();
                         state.hlsInstance = hls2;
                         hls2.loadSource(proxyUrl);
@@ -1896,6 +1917,11 @@
 
             // Launch in-app player
             if (data.stream_url) {
+                // The CDN behind some sources checks Referer, and the browser cannot set one.
+                // Keep what /play returned so showPlayer can route via /proxy-stream, which
+                // can. Without this the stream 403s and the player just spins.
+                state.streamReferer = data.referer || null;
+                state.streamSubtitles = data.subtitles || [];
                 showPlayer(data.stream_url);
                 toast(`Playing: ${state.selectedAnime.title} EP ${state.selectedEpisode}`, 'success');
             } else {
@@ -3088,12 +3114,16 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.4.7';
+    const APP_VERSION = '0.5.0';
+    // A note from YASA, shown above the list in the update popup.
+    const CHANGELOG_NOTE = "Sorry this took so long. Some things in my personal life needed my attention and ANI-MATE had to wait. Thanks for being patient with it.";
+
     const CHANGELOG = [
-        'Two streaming sources instead of one, with automatic failover between them',
-        'A source that fails is set aside for a few minutes instead of being retried every time',
-        'Covers and descriptions fall back across AniList, MyAnimeList and Kitsu',
-        'Android build fixes: results are openable again and the daily list is populated'
+        "Streaming works again. Every source the app had went down at once, and this adds a new one that does not",
+        "Subtitles now come back with the stream, English track included",
+        "The source health screen tells the truth \u2014 it used to report everything fine while nothing could play",
+        "Streams that need a referer are routed correctly instead of silently failing to load",
+        "Android: search and episode lists talk to the source properly again",
     ];
 
     function showChangelog() {
@@ -3104,6 +3134,7 @@
         overlay.innerHTML = `<div class="changelog-modal">
             <h2>ANI-MATE UPDATED</h2>
             <div class="changelog-ver">v${APP_VERSION}</div>
+            <p class="changelog-note">${CHANGELOG_NOTE}</p>
             <ul>${CHANGELOG.map(c => `<li>${c}</li>`).join('')}</ul>
             <button class="changelog-dismiss" id="changelog-dismiss">GOT IT</button>
         </div>`;

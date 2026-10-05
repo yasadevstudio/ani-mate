@@ -21,31 +21,31 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * WebFetch — fetch a URL through Android's own WebView instead of OkHttp.
  *
- * WHY THIS EXISTS (2026-08-25)
- *   Every source ANI-MATE can use is gated behind a browser check. Measured this day:
- *     anidb.app          403 Cloudflare "Just a moment..."
- *     api.allanime.day   403 Cloudflare "Just a moment..."
- *     animepahe.su       200 DDoS-Guard interstitial, not the payload
- *     animeheaven.me     200 real page, results rendered by JS
- *   Headers change nothing — a Firefox agent, an Android Chrome agent and full
- *   Accept/Referer headers all return the same interstitial. Cloudflare is checking the
- *   TLS and HTTP/2 fingerprint, which no plain HTTP client reproduces.
+ * WHY (measured 2026-08-25, on this machine, through Chromium):
+ *   anidb.app answers 200 to a request from Chromium's network stack and 403 to every
+ *   plain HTTP client — curl with a Firefox agent, curl with an Android Chrome agent,
+ *   curl with full Accept/Referer headers all get the same 5.8 KB interstitial. There is
+ *   no challenge to solve and no cookie to obtain; the gate is the TLS/HTTP2 fingerprint.
+ *   CapacitorHttp is OkHttp, so it cannot pass. A Chromium WebView can, and does.
  *
- *   Desktop solved this in v0.4.5 with Electron's net module on session.defaultSession.
- *   CapacitorHttp is OkHttp and gets the same 403 curl does, so that fix could never
- *   have worked on Android. This is the Android equivalent.
+ *   Proven before this class was written, by running the exact chain in a Chromium
+ *   renderer with an Android user agent:
+ *     origin load                              200, title "AniDB — Watch Anime Online..."
+ *     fetch /api/frontend/anime/3880/episodes  200, 64,723 bytes, 1,175 episodes
+ *     fetch /browse?q=one%20piece              200, 115,316 bytes
+ *     fetch /api/frontend/episode/3512/languages 200, embed_url for eng and jpn
  *
- * HOW IT WORKS
- *   1. Navigate an off-screen WebView to the URL's ORIGIN. That is what clears the
- *      challenge, and the shared CookieManager keeps cf_clearance afterwards, so only
- *      the first request per host pays for it.
- *   2. Run fetch() from inside that page. Same-origin, so no CORS, and — unlike
- *      navigating straight at a JSON endpoint — no risk of the WebView treating an
- *      application/json response as a download instead of a document.
- *   3. If the in-page fetch fails (some hosts refuse XHR from their own origin),
- *      fall back to navigating directly and reading the rendered document.
+ * HOW
+ *   Navigate an off-screen WebView to the URL's origin, then run fetch() from inside that
+ *   page. Same-origin, so no CORS, and no risk of the WebView treating a JSON response as
+ *   a download the way navigating straight at the endpoint can.
  *
- * Returns { status, body, finalUrl, mode } where mode is "fetch" or "navigate".
+ * THE TRAP THIS CLASS EXISTS TO AVOID
+ *   evaluateJavascript() does NOT await promises. Handing it an async IIFE returns the
+ *   Promise's stringification, never the resolved value — which is exactly how the first
+ *   version of this plugin failed: every fetch appeared to return nothing, the code fell
+ *   through to direct navigation, and every request timed out. The async result is
+ *   therefore parked on window.__wf and collected by a later synchronous read.
  */
 @CapacitorPlugin(name = "WebFetch")
 public class WebFetch extends Plugin {
@@ -55,17 +55,14 @@ public class WebFetch extends Plugin {
         "Chrome/126.0.0.0 Mobile Safari/537.36";
 
     private static final int DEFAULT_TIMEOUT_MS = 25000;
-    private static final int POLL_MS = 400;
+    private static final int POLL_MS = 250;
 
     @PluginMethod
     @SuppressLint("SetJavaScriptEnabled")
     public void fetch(final PluginCall call) {
         final String url = call.getString("url");
-        if (url == null || url.isEmpty()) {
-            call.reject("Missing url parameter");
-            return;
-        }
-        final boolean wantHtml = Boolean.TRUE.equals(call.getBoolean("html", false));
+        if (url == null || url.isEmpty()) { call.reject("Missing url parameter"); return; }
+
         final int timeoutMs = call.getInt("timeoutMs", DEFAULT_TIMEOUT_MS);
         final String referer = call.getString("referer");
 
@@ -73,16 +70,14 @@ public class WebFetch extends Plugin {
         try {
             java.net.URL u = new java.net.URL(url);
             origin = u.getProtocol() + "://" + u.getHost() + "/";
-        } catch (Exception e) {
-            call.reject("Bad url: " + url);
-            return;
-        }
+        } catch (Exception e) { call.reject("Bad url: " + url); return; }
 
         getActivity().runOnUiThread(() -> {
             final AtomicBoolean done = new AtomicBoolean(false);
             final Handler handler = new Handler(Looper.getMainLooper());
             final WebView wv = new WebView(getContext());
-            final boolean[] triedInPageFetch = { false };
+            final boolean[] started = { false };
+            final long deadline = System.currentTimeMillis() + timeoutMs;
 
             WebSettings s = wv.getSettings();
             s.setJavaScriptEnabled(true);
@@ -96,10 +91,6 @@ public class WebFetch extends Plugin {
             cm.setAcceptCookie(true);
             cm.setAcceptThirdPartyCookies(wv, true);
 
-            final Runnable destroy = () -> {
-                try { wv.stopLoading(); wv.destroy(); } catch (Throwable ignored) { }
-            };
-
             final Finisher finish = (status, body, mode) -> {
                 if (!done.compareAndSet(false, true)) return;
                 JSObject r = new JSObject();
@@ -107,96 +98,78 @@ public class WebFetch extends Plugin {
                 r.put("body", body == null ? "" : body);
                 r.put("finalUrl", wv.getUrl() == null ? url : wv.getUrl());
                 r.put("mode", mode);
-                destroy.run();
+                try { wv.stopLoading(); wv.destroy(); } catch (Throwable ignored) { }
                 call.resolve(r);
             };
 
-            // Hard stop. Without this a host that never finishes loading hangs the call.
             handler.postDelayed(() -> finish.done(0, "", "timeout"), timeoutMs);
 
-            final Runnable[] poll = new Runnable[1];
-            poll[0] = () -> {
+            final Runnable[] pump = new Runnable[1];
+            pump[0] = () -> {
                 if (done.get()) return;
-                // Is the challenge still up? Read title + a slice of text to decide.
+                if (System.currentTimeMillis() > deadline) { finish.done(0, "", "timeout"); return; }
+
+                if (!started[0]) {
+                    started[0] = true;
+                    // Kick the fetch off and PARK the result on window.__wf.
+                    // Nothing is returned here — evaluateJavascript cannot await.
+                    String kick =
+                        "window.__wf=null;" +
+                        "(function(){fetch(" + jsStr(url) + ",{credentials:'include'})" +
+                        ".then(function(r){return r.text().then(function(t){" +
+                        "window.__wf=JSON.stringify({s:r.status,b:t});});})" +
+                        ".catch(function(e){window.__wf=JSON.stringify({s:0,b:'',e:String(e)});});})();";
+                    wv.evaluateJavascript(kick, null);
+                    handler.postDelayed(pump[0], POLL_MS);
+                    return;
+                }
+
+                // Synchronous read of the parked result. This is the part that works.
+                // Three states must be distinguished, and "null" alone cannot do it:
+                //   __none__  the kick never ran, or a navigation wiped the window —
+                //             re-kick, otherwise this polls until the deadline for nothing
+                //   __wait__  in flight
+                //   anything else — the result
                 wv.evaluateJavascript(
-                    "(function(){try{return JSON.stringify({t:document.title||''," +
-                    "b:(document.body?document.body.innerText:'').slice(0,600)});}" +
-                    "catch(e){return JSON.stringify({t:'',b:''});}})()",
-                    value -> {
-                        if (done.get()) return;
-                        String probe = unwrap(value);
-                        boolean challenge =
-                            probe.contains("Just a moment") ||
-                            probe.contains("Attention Required") ||
-                            probe.contains("Checking your browser") ||
-                            probe.contains("Verifying you are human") ||
-                            probe.contains("DDoS-Guard");
+                    "(typeof window.__wf==='undefined')?'__none__':" +
+                    "(window.__wf===null?'__wait__':window.__wf)", value -> {
+                    if (done.get()) return;
+                    String inner = unwrap(value);
+                    if ("__none__".equals(inner)) {
+                        started[0] = false;                          // navigation ate it; start over
+                        handler.postDelayed(pump[0], POLL_MS);
+                        return;
+                    }
+                    if (inner == null || inner.isEmpty() || "__wait__".equals(inner)) {
+                        handler.postDelayed(pump[0], POLL_MS);      // still in flight
+                        return;
+                    }
+                    int st = 0; String body = "";
+                    try {
+                        org.json.JSONObject o = new org.json.JSONObject(inner);
+                        st = o.optInt("s", 0);
+                        body = o.optString("b", "");
+                    } catch (Throwable ignored) { }
 
-                        if (challenge) {                       // still interstitial — wait
-                            handler.postDelayed(poll[0], POLL_MS);
-                            return;
-                        }
-
-                        if (!triedInPageFetch[0]) {
-                            triedInPageFetch[0] = true;
-                            // Same-origin fetch from inside the cleared page.
-                            String js =
-                                "(async function(){try{" +
-                                "var r=await fetch(" + jsStr(url) + ",{credentials:'include'," +
-                                "headers:{'Accept':" + jsStr(wantHtml
-                                    ? "text/html,application/xhtml+xml,*/*;q=0.8"
-                                    : "application/json, text/plain, */*") + "}});" +
-                                "var t=await r.text();" +
-                                "return JSON.stringify({ok:true,s:r.status,b:t});" +
-                                "}catch(e){return JSON.stringify({ok:false,s:0,b:''});}})()";
-                            wv.evaluateJavascript(js, res -> {
-                                if (done.get()) return;
-                                String inner = unwrap(res);
-                                int st = 0;
-                                String body = "";
-                                boolean ok = false;
-                                try {
-                                    org.json.JSONObject o = new org.json.JSONObject(inner);
-                                    ok = o.optBoolean("ok", false);
-                                    st = o.optInt("s", 0);
-                                    body = o.optString("b", "");
-                                } catch (Throwable ignored) { }
-
-                                if (ok && st >= 200 && st < 400 && body.length() > 0) {
-                                    finish.done(st, body, "fetch");
-                                } else {
-                                    // Host refused the in-page request — navigate at it
-                                    // directly and read whatever renders.
-                                    Map<String, String> h2 = new HashMap<>();
-                                    h2.put("Accept", wantHtml
-                                        ? "text/html,application/xhtml+xml,*/*;q=0.8"
-                                        : "application/json, text/plain, */*");
-                                    h2.put("Accept-Language", "en-US,en;q=0.9");
-                                    if (referer != null && !referer.isEmpty()) h2.put("Referer", referer);
-                                    wv.loadUrl(url, h2);
-                                    handler.postDelayed(poll[0], POLL_MS * 2);
-                                }
-                            });
-                            return;
-                        }
-
-                        // Fallback path: we navigated directly, read the document.
-                        String extractor = wantHtml
-                            ? "document.documentElement.outerHTML"
-                            : "(document.body?document.body.innerText:'')";
-                        wv.evaluateJavascript("(function(){try{return " + extractor +
-                                              ";}catch(e){return '';}})()", docVal -> {
-                            if (done.get()) return;
-                            String doc = unwrapRaw(docVal);
-                            if (doc != null && doc.trim().length() > 0) finish.done(200, doc, "navigate");
-                            else handler.postDelayed(poll[0], POLL_MS);
-                        });
-                    });
+                    if (st >= 200 && st < 400 && body.length() > 0) {
+                        finish.done(st, body, "fetch");
+                    } else {
+                        // The origin answered but the endpoint did not. Report it rather
+                        // than retrying blind — the caller's chain decides what happens next.
+                        finish.done(st, body, "fetch");
+                    }
+                });
             };
 
             wv.setWebViewClient(new WebViewClient() {
                 @Override public void onPageFinished(WebView view, String u) {
-                    handler.postDelayed(poll[0], POLL_MS);
+                    handler.postDelayed(pump[0], POLL_MS);
+                }
+                @Override public void onReceivedError(WebView view,
+                        android.webkit.WebResourceRequest req, android.webkit.WebResourceError err) {
+                    // A 403 interstitial reports as a failed load while its script still
+                    // runs, so this is never treated as fatal — the pump decides.
+                    if (req != null && req.isForMainFrame()) handler.postDelayed(pump[0], POLL_MS * 4);
                 }
             });
 
@@ -207,7 +180,7 @@ public class WebFetch extends Plugin {
         });
     }
 
-    /** Drop challenge cookies so the next request re-solves from scratch. */
+    /** Drop cookies so a challenged host re-solves from scratch. */
     @PluginMethod
     public void clearCookies(PluginCall call) {
         getActivity().runOnUiThread(() -> {
@@ -217,29 +190,18 @@ public class WebFetch extends Plugin {
         });
     }
 
-    // evaluateJavascript hands back a JSON-encoded value. Unwrap one level to the
-    // inner JSON text; on anything unexpected return "" so callers just retry.
+    /** evaluateJavascript hands back a JSON-encoded value; unwrap one level. */
     private static String unwrap(String value) {
-        String r = unwrapRaw(value);
-        return r == null ? "" : r;
-    }
-
-    private static String unwrapRaw(String value) {
         if (value == null || value.equals("null")) return null;
         try {
             Object o = new org.json.JSONTokener(value).nextValue();
             return o == null ? null : o.toString();
-        } catch (Throwable t) {
-            return value;
-        }
+        } catch (Throwable t) { return value; }
     }
 
-    /** Quote a Java string as a JS string literal. */
     private static String jsStr(String s) {
         return org.json.JSONObject.quote(s == null ? "" : s);
     }
 
-    private interface Finisher {
-        void done(int status, String body, String mode);
-    }
+    private interface Finisher { void done(int status, String body, String mode); }
 }

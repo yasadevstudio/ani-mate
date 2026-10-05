@@ -55,6 +55,15 @@
                                 'animepahe.su', 'animepahe.ru', 'animeheaven.me'];
     for (const h of KNOWN_BROWSER_ONLY) if (!hostMode[h]) hostMode[h] = 'browser';
 
+    // Measured 2026-08-25: the CDN that serves the playlists and segments answers a
+    // plain request with 200 and a valid #EXTM3U. It needs no browser stack, and routing
+    // video through one would be wasteful, so it is pinned to the cheap path.
+    // (It sends no Access-Control-Allow-Origin, but that does not matter here — on
+    //  Android CapacitorHttp patches XHR and the request leaves natively, where the
+    //  same-origin policy does not apply. That is what hls-loader-fix.js exists for.)
+    const KNOWN_CHEAP = ['hls.anidb.app'];
+    for (const h of KNOWN_CHEAP) if (!hostMode[h]) hostMode[h] = 'cheap';
+
     function looksLikeWall(body) {
         return !body || body.length < 60 || WALL_RE.test(body.slice(0, 4000));
     }

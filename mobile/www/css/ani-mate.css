@@ -1211,3 +1211,14 @@ body {
     margin-top: 12px; font-family: 'Jura', monospace;
     font-size: 11px; color: var(--text-dim);
 }
+
+/* Message from YASA above the changelog list. Prose, not a bullet. */
+.changelog-modal .changelog-note {
+    font-size: 13px;
+    line-height: 1.5;
+    color: #ffdd00;
+    background: rgba(255, 221, 0, 0.06);
+    border-left: 2px solid #ffdd00;
+    padding: 10px 12px;
+    margin: 0 0 14px 0;
+}

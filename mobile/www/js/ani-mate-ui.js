@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.4.7';
+    const APP_VERSION = '0.5.0';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -1665,12 +1665,15 @@
     }
 
     // === CHANGELOG ===
+    // A note from YASA, shown above the list in the update popup.
+    const CHANGELOG_NOTE = "Sorry this took so long. Some things in my personal life needed my attention and ANI-MATE had to wait. Thanks for being patient with it.";
+
     const CHANGELOG = [
-        'Fixed: search results could not be opened — cards were built with a missing id',
-        'Fixed: the daily list was empty whenever the streaming source was blocked',
-        'Trending now comes from AniList when no streaming source will answer',
-        'An empty search now reports which sources are down instead of just saying no results',
-        'Opening a trending title finds a playable source for it automatically'
+        "Streaming works again. Every source the app had went down at once, and this adds a new one that does not",
+        "Subtitles now come back with the stream, English track included",
+        "The source health screen tells the truth \u2014 it used to report everything fine while nothing could play",
+        "Streams that need a referer are routed correctly instead of silently failing to load",
+        "Android: search and episode lists talk to the source properly again",
     ];
 
     function showChangelog() {
@@ -1681,6 +1684,7 @@
         overlay.innerHTML = `
             <div class="changelog-modal">
                 <div class="changelog-ver">ANI-MATE v${APP_VERSION}</div>
+                <p class="changelog-note">${esc(CHANGELOG_NOTE)}</p>
                 <ul>${CHANGELOG.map(c => `<li>${esc(c)}</li>`).join('')}</ul>
                 <button class="changelog-dismiss">GOT IT</button>
             </div>`;

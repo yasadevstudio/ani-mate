@@ -11,11 +11,115 @@ const fs = require('fs');
 // Fallback streaming providers (AnimePahe, HiAnime via consumet)
 let consumetAnimePahe = null;
 let consumetHiAnime = null;
+
+// ⛔ CONSUMET SHIPS DEAD DOMAINS AND CANNOT BE UPGRADED OUT OF IT.
+// Measured 2026-10-05: consumet pins AnimePahe at `animepahe.si`, which is NXDOMAIN —
+// `getaddrinfo ENOTFOUND animepahe.si` on every call. 1.8.8 IS the latest published
+// release (checked against the npm registry the same day), so there is no version to
+// upgrade to. The domain moved to animepahe.su; animepahe.ru 301s there.
+//
+// These hosts rotate on somebody else's schedule, so they are DATA, not code. Override
+// them here and the next rotation is a one-line edit instead of a dead fallback that
+// reports itself as "loaded".
+const SOURCE_HOSTS = {
+    // ⚠ CHECKED EVERY CANDIDATE 2026-10-05 BEFORE PICKING, because the obvious answer was
+    // wrong twice:
+    //   animepahe.si  NXDOMAIN, and this is what consumet 1.8.8 still pins
+    //   animepahe.ru  301s to animepahe.su, which is a PARKED "This domain is for sale" page
+    //   animepahe.ch  200 but a WordPress squatter page (gmpg.org/xfn/11 profile)
+    //   animepahe.ng  same squatter
+    //   animepahe.com 403 "Just a moment" <- THE REAL SITE, behind Cloudflare
+    // A 200 is not a signal here. Four of five hosts answer 200 and none of those is
+    // AnimePahe. The real one is the one that challenges you.
+    animepahe: process.env.ANI_MATE_ANIMEPAHE || 'https://animepahe.com',
+    hianime: process.env.ANI_MATE_HIANIME || null,   // null = leave consumet's default
+};
+
+// ⛔ AND CONSUMET BRINGS ITS OWN HTTP CLIENT, WHICH ROUTES AROUND THE BRIDGE.
+// This is the same architectural fault electron-net-bridge.js was written for, one layer
+// further down. consumet builds its own axios instance, so its requests leave as bare Node
+// HTTP with no Chromium fingerprint and no shared cookie jar — and AnimePahe answers them
+// with a DDoS-Guard interstitial. Measured 2026-10-05: after the domain fix the error moved
+// from `ENOTFOUND animepahe.si` to `Cannot read properties of undefined (reading 'map')`,
+// which is consumet trying to parse that HTML page as JSON.
+//
+// axios takes a custom adapter, so hand it one that forwards to afetch. Every consumet
+// provider then inherits Chromium's stack and its challenge-solving for free.
+function bridgeAdapter(config) {
+    const url = config.url.startsWith('http')
+        ? config.url
+        : (config.baseURL || '') + config.url;
+    // config.headers is an AxiosHeaders INSTANCE, not a plain object. Electron's net.request
+    // gets it over IPC and rejects it, which comes back as status 0 in about 3ms — fast
+    // enough to look like a config error rather than a network one. Flatten it first.
+    //
+    // AND CHROMIUM REFUSES MOST OF WHAT CONSUMET SENDS. Measured 2026-10-05: forwarding
+    // consumet's header set produced `net::ERR_INVALID_ARGUMENT` from Electron's net stack.
+    // consumet emits HTTP/2 pseudo-headers (`authority`) and other names Chromium owns and
+    // will not accept from a caller. So this is an ALLOWLIST, not a filter: anything not
+    // known-safe is dropped rather than guessed at, because one bad name kills the whole
+    // request rather than being ignored.
+    const SAFE = new Set(['user-agent', 'referer', 'accept', 'accept-language',
+                          'content-type', 'cookie', 'x-requested-with', 'origin-x']);
+    const headers = {};
+    try {
+        const h = config.headers;
+        const src = (h && typeof h.toJSON === 'function') ? h.toJSON() : (h || {});
+        for (const k of Object.keys(src)) {
+            const v = src[k];
+            if (v === undefined || v === null) continue;
+            if (!SAFE.has(String(k).toLowerCase())) continue;
+            headers[k] = String(v);
+        }
+    } catch { /* send none rather than send something unserializable */ }
+
+    return afetch(url, {
+        method: (config.method || 'get').toUpperCase(),
+        headers,
+        body: config.data || null,
+    }).then((r) => {
+        // afetch returns a real Response when headless, {status, body} over the bridge.
+        const read = typeof r.text === 'function' ? r.text() : Promise.resolve(r.body || '');
+        return read.then((body) => {
+            let data = body;
+            if (config.responseType !== 'text') {
+                try { data = JSON.parse(body); } catch { /* leave as text, like axios does */ }
+            }
+            const status = r.status || 0;
+            const res = { data, status, statusText: String(status), headers: {}, config };
+            // axios treats a non-2xx as a rejection, and consumet relies on that.
+            if (status < 200 || status >= 300) {
+                // Carry the bridge's own reason. Without it a Chromium-level failure is
+                // indistinguishable from an HTTP 0 and there is nothing to act on.
+                // afetch returns `sourceError`, NOT `error`. Reading the wrong field meant
+                // every bridge-level failure arrived as a bare "status code 0" with no
+                // reason attached, which is why this took three rounds to diagnose.
+                const why = (r.sourceError || r.error) ? ` (${r.sourceError || r.error})` : '';
+                const err = new Error(`Request failed with status code ${status}${why}`);
+                err.response = res; err.config = config; err.isAxiosError = true;
+                throw err;
+            }
+            return res;
+        });
+    });
+}
+
 try {
     const { ANIME } = require('@consumet/extensions');
-    consumetAnimePahe = new ANIME.AnimePahe();
-    consumetHiAnime = new ANIME.Hianime();
+    // adapter is the SECOND constructor argument (proxyConfig, adapter) — see
+    // @consumet/extensions/dist/models/proxy.js
+    consumetAnimePahe = new ANIME.AnimePahe(undefined, bridgeAdapter);
+    consumetHiAnime = new ANIME.Hianime(undefined, bridgeAdapter);
+    if (SOURCE_HOSTS.animepahe) consumetAnimePahe.baseUrl = SOURCE_HOSTS.animepahe;
+    if (SOURCE_HOSTS.hianime) consumetHiAnime.baseUrl = SOURCE_HOSTS.hianime;
 } catch { /* consumet not available — AllAnime only */ }
+
+// HiAnime.at (2026-10-05) — THE ONLY SOURCE THAT ACTUALLY PRODUCES A STREAM TODAY.
+// Implemented from ani-cli 5.1.5's own script (base_api="https://hianime.at"), verified end
+// to end the same day: search -> episodes -> servers -> embed -> m3u8 -> HTTP 206 video/mp2t.
+// It also returns a WebVTT subtitle track and the MAL id, neither of which this app had.
+// See server/hianime-at.js for the full chain and why its obfuscation is not real crypto.
+let hianimeAt = null;
 
 // AniDB provider (2026-08-22). Every previously-known source is dead: AllAnime 403s behind
 // Cloudflare, animepahe.si has no DNS, HiAnime 522s, and consumet 1.8.8 is the latest
@@ -37,6 +141,9 @@ try { fs.mkdirSync(HIST_DIR, { recursive: true }); } catch {}
 const AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0';
 const ALLANIME_REFR = 'https://allmanga.to';
 const ALLANIME_API = 'https://api.allanime.day/api';
+// Cowboy Bebop. A finished 26-episode series from 1998: it will never be unpublished, so a
+// failure here is always the SOURCE and never a missing episode.
+const HEALTH_PROBE_SHOW = 'PGcK4wGnqDoeihT6n';
 
 // ---------------------------------------------------------------------------
 // afetch — fetch-shaped, but the request travels Chromium's network stack.
@@ -88,7 +195,12 @@ async function afetch(url, opts = {}) {
             method: opts.method || 'GET',
             headers: opts.headers || {},
             body: opts.body || null,
-            challengeOrigin: ALLANIME_REFR
+            // THE ORIGIN TO SOLVE IS THE ONE BEING CALLED, NOT ALLANIME'S.
+            // This was pinned to ALLANIME_REFR, so a Cloudflare challenge from any OTHER
+            // host sent Chromium to solve allmanga.to instead — the clearance cookie landed
+            // on the wrong domain and the retry failed identically. Every non-AllAnime
+            // source was therefore unprotected by the very bridge written to protect it.
+            challengeOrigin: (() => { try { return new URL(url).origin; } catch { return ALLANIME_REFR; } })()
         });
     } catch (e) {
         _netPending.delete(id);
@@ -949,9 +1061,39 @@ async function getFallbackStreamUrl(provider, providerName, title, titleEnglish,
 // Provenance of the last successful resolve. Surfaced by /play so a working stream and a
 // silently-substituted source are distinguishable, and so the next rotation is visible.
 let lastStreamSource = null;
+// Subtitles, referer and MAL id from whichever source answered. The old chain could only
+// return a bare URL, so a source that supplied subtitle tracks had nowhere to put them.
+let lastStreamMeta = null;
+
+function getHiAnimeAt() {
+    if (!hianimeAt) {
+        try { hianimeAt = require('./hianime-at').makeProvider(afetch); }
+        catch (e) { console.error('[hianime.at] load failed:', e.message); hianimeAt = null; }
+    }
+    return hianimeAt;
+}
 
 async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, title, titleEnglish) {
     lastStreamSource = null;
+    lastStreamMeta = null;
+
+    // 0a. HIANIME.AT FIRST. It is the only source measured working on 2026-10-05, and putting
+    // a dead source ahead of it just spends the user's first click on a timeout.
+    {
+        const ha = getHiAnimeAt();
+        if (ha) {
+            for (const t of [title, titleEnglish].filter(Boolean)) {
+                try {
+                    const st = await ha.streamByTitle(t, episodeString, mode);
+                    if (st && st.url) {
+                        lastStreamSource = 'HiAnime.at';
+                        lastStreamMeta = { referer: st.referer, subtitles: st.subtitles, malId: st.malId };
+                        return st.url;
+                    }
+                } catch (e) { console.error('[hianime.at]', e.message); }
+            }
+        }
+    }
     // 0. AniDB shows resolve directly — the tag already told us who owns this id.
     if (String(showId).startsWith('anidb:')) {
         const ad = getAniDB();
@@ -1167,18 +1309,93 @@ const server = http.createServer(async (req, res) => {
                 // whether the source is actually up.
                 // MUST be POST. The app's real AllAnime calls are POST (see v0.4.4);
                 // a GET probe returns 403 and libels a working source as dead.
+                //
+                // ⛔ AND IT MUST BE THE **EPISODE** QUERY, NOT THE SEARCH QUERY.
+                // Measured 2026-10-05: the `shows` search query answers 200 while the `episode`
+                // query — the only one that returns sourceUrls — answers
+                //     {"errors":[{"message":"AA_CRYPTO_MISSING"}],"data":{"episode":null}}
+                // because AllAnime moved to a per-epoch AES-GCM aaReq token. Probing `shows`
+                // therefore reported AllAnime HEALTHY while the app could not play anything at
+                // all, and /health/sources returned ok:true on a completely dead app.
+                //
+                // THIS IS THE CEB FAILURE FROM CLAUDE.md: ALIVE IS NOT HEALTHY. A probe that
+                // asks "does the server answer" instead of "does the feature work" always
+                // eventually says yes about something broken. The probe is now the real thing.
                 const r = await afetch(ALLANIME_API, {
                     method: 'POST',
                     headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        variables: { search: { allowAdult: false, allowUnknown: false, query: 'naruto' }, limit: 1, page: 1, translationType: 'sub', countryOrigin: 'ALL' },
-                        query: 'query( $search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType ) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name __typename } }}'
-                    })
+                        variables: { showId: HEALTH_PROBE_SHOW, translationType: 'sub', episodeString: '1' },
+                        query: 'query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls } }'
+                    }),
+                    signal: AbortSignal.timeout(12000)
                 });
-                out.push({ name: 'AllAnime', ok: !!(r && r.ok), status: r ? r.status : 0, ms: Date.now() - t0 });
+                const body = r && r.ok ? await r.text() : '';
+                let srcCount = 0, gqlErr = null;
+                try {
+                    const j = JSON.parse(body || '{}');
+                    gqlErr = (j.errors && j.errors[0] && (j.errors[0].extensions?.code || j.errors[0].message)) || null;
+                    srcCount = ((j.data && j.data.episode && j.data.episode.sourceUrls) || []).length;
+                } catch (e) { gqlErr = 'unparseable response'; }
+                // ok ONLY when a real stream source came back. HTTP 200 is not the question.
+                out.push({
+                    name: 'AllAnime',
+                    ok: srcCount > 0,
+                    status: r ? r.status : 0,
+                    sources: srcCount,
+                    error: gqlErr || undefined,
+                    ms: Date.now() - t0
+                });
             } catch (e) { out.push({ name: 'AllAnime', ok: false, error: String(e.message || e) }); }
-            out.push({ name: 'AnimePahe', ok: false, note: consumetAnimePahe ? 'loaded (consumet 1.8.8, domain rotated)' : 'not installed' });
-            out.push({ name: 'HiAnime', ok: false, note: consumetHiAnime ? 'loaded (consumet 1.8.8, upstream 522)' : 'not installed' });
+
+            // HIANIME.AT IS PROBED FIRST BECAUSE IT IS THE ONE THAT WORKS. A health check
+            // that omits the only functioning source is the same lie as one that reports a
+            // broken source healthy — it just fails in the other direction.
+            {
+                const t0h = Date.now();
+                try {
+                    const ha = getHiAnimeAt();
+                    if (!ha) throw new Error('provider failed to load');
+                    const hits = await ha.search('cowboy bebop');
+                    const eps = hits.length ? await ha.episodes(hits[0].id) : [];
+                    // ok only if it got all the way to a playable url, not merely to a search hit
+                    const st = eps.length ? await ha.stream(eps[0].id, 'sub') : null;
+                    out.push({
+                        name: 'HiAnime.at', ok: !!(st && st.url),
+                        results: hits.length, episodes: eps.length,
+                        subtitles: st ? (st.subtitles || []).length : 0,
+                        ms: Date.now() - t0h,
+                    });
+                } catch (e) {
+                    out.push({ name: 'HiAnime.at', ok: false, error: String(e.message || e).slice(0, 90), ms: Date.now() - t0h });
+                }
+            }
+
+            // The other three are PROBED, not asserted. The previous version pushed hardcoded
+            // strings here — 'domain rotated', 'upstream 522' — which can never report healthy
+            // and never actually tested anything. Two of four providers had a fake status.
+            for (const prov of [
+                { name: 'AnimePahe', mod: consumetAnimePahe },
+                { name: 'HiAnime',   mod: consumetHiAnime },
+            ]) {
+                const t = Date.now();
+                if (!prov.mod) { out.push({ name: prov.name, ok: false, note: 'not installed' }); continue; }
+                try {
+                    // 45s, not 12s. A FIRST request through the bridge may have to solve a
+                    // Cloudflare interstitial in a hidden window, and solveChallenge alone
+                    // allows 30s. A 12s probe timed out on a request that was working, and
+                    // reported the source dead for it.
+                    const res = await Promise.race([
+                        prov.mod.search('cowboy bebop'),
+                        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout 45s')), 45000)),
+                    ]);
+                    const n = ((res && res.results) || []).length;
+                    out.push({ name: prov.name, ok: n > 0, results: n, ms: Date.now() - t });
+                } catch (e) {
+                    out.push({ name: prov.name, ok: false, error: String(e.message || e).slice(0, 90), ms: Date.now() - t });
+                }
+            }
+
             const anyOk = out.some((o) => o.ok);
             jsonResponse(res, 200, { ok: anyOk, providers: out });
             return;
@@ -1452,12 +1669,21 @@ const server = http.createServer(async (req, res) => {
             } catch { /* non-critical */ }
 
             const playTitle = `${params.title || 'Anime'} - Episode ${params.episode}`;
+            // epUrl is a STRING from some sources and an OBJECT from others. It was read as
+            // an object unconditionally, so any source returning a bare url produced
+            // stream_url: undefined and a player with nothing to play.
+            const asObj = (typeof epUrl === 'string') ? { url: epUrl } : (epUrl || {});
             jsonResponse(res, 200, {
                 status: 'playing', source: lastStreamSource,
-                stream_url: epUrl.url,
-                resolution: epUrl.resolution,
-                provider: epUrl.provider,
-                all_links: epUrl.all_links,
+                stream_url: asObj.url,
+                resolution: asObj.resolution,
+                provider: asObj.provider,
+                all_links: asObj.all_links,
+                // From HiAnime.at: a real subtitle track, the referer its CDN requires, and
+                // the MAL id ani-skip needs. Null from sources that cannot supply them.
+                referer: (lastStreamMeta && lastStreamMeta.referer) || null,
+                subtitles: (lastStreamMeta && lastStreamMeta.subtitles) || [],
+                mal_id: (lastStreamMeta && lastStreamMeta.malId) || null,
                 title: playTitle
             });
             return;
@@ -1939,7 +2165,14 @@ const server = http.createServer(async (req, res) => {
                     'animepahe.si', 'animepahe.ru', 'animepahe.com',
                     'hianime.to', 'aniwatch.to',
                     'megacloud.tv', 'rapid-cloud.co',
-                    'vidcloud9.com', 'vizcloud2.online'
+                    'vidcloud9.com', 'vizcloud2.online',
+                    // HiAnime.at chain, added 2026-10-05. Without these the only source that
+                    // works is blocked by our OWN proxy: /play hands back a url the player
+                    // then cannot fetch, which reads as "the stream is broken".
+                    'hianime.at',        // the API host
+                    'zokoanime.video',   // the embed, and the Referer its CDN demands
+                    'dramahot.top',      // master + variant playlists and the subtitle vtt
+                    'drama1.cfd'         // the segment CDN the variant points at
                 ];
                 const allowed = ALLOWED_PROXY_DOMAINS.some(d => proxyHost === d || proxyHost.endsWith('.' + d));
                 if (!allowed) {
@@ -1953,8 +2186,14 @@ const server = http.createServer(async (req, res) => {
             }
 
             try {
+                // THE REFERER IS PER-SOURCE AND WAS HARDCODED TO ALLANIME'S.
+                // HiAnime.at's CDN (dramahot.top / drama1.cfd) 403s unless the referer is
+                // https://zokoanime.video/. Sending allmanga.to to every host meant the only
+                // working stream could not be proxied, which is what "it almost works but
+                // nothing plays" actually was. /play returns the right one; pass it through.
+                const refr = query.referer || ALLANIME_REFR;
                 const streamResp = await fetch(streamUrl, {
-                    headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
+                    headers: { 'User-Agent': AGENT, 'Referer': refr },
                     signal: AbortSignal.timeout(15000)
                 });
 
@@ -1971,13 +2210,17 @@ const server = http.createServer(async (req, res) => {
                         if (line && !line.startsWith('#')) {
                             // This is a segment URL or sub-playlist
                             const absUrl = line.startsWith('http') ? line : baseUrl + line;
-                            return `/proxy-stream?url=${encodeURIComponent(absUrl)}`;
+                            // Carry the referer down. The variant playlist and every segment
+                            // are separate proxy calls, and each one is checked by the CDN.
+                            return `/proxy-stream?url=${encodeURIComponent(absUrl)}`
+                                 + (query.referer ? `&referer=${encodeURIComponent(query.referer)}` : '');
                         }
                         // Rewrite URI= in EXT-X-KEY and similar tags
                         if (line.includes('URI="')) {
                             line = line.replace(/URI="([^"]+)"/g, (match, uri) => {
                                 const absUri = uri.startsWith('http') ? uri : baseUrl + uri;
-                                return `URI="/proxy-stream?url=${encodeURIComponent(absUri)}"`;
+                                return `URI="/proxy-stream?url=${encodeURIComponent(absUri)}`
+                                     + (query.referer ? `&referer=${encodeURIComponent(query.referer)}` : '') + `"`;
                             });
                         }
                         return line;

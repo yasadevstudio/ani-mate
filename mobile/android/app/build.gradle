@@ -1,5 +1,19 @@
 apply plugin: 'com.android.application'
 
+// Single source of truth for the app version: the project's package.json. Parsed here so
+// there is exactly one number to change at release time.
+def animatePkg = new groovy.json.JsonSlurper().parseText(
+        file("../../../package.json").text)
+def animateVer = animatePkg.version as String
+def animateParts = animateVer.tokenize('.')
+project.ext.animateVersionName = animateVer
+// ⛔ versionCode IS DATE-BASED, NOT DERIVED FROM THE VERSION STRING, AND THAT IS DELIBERATE.
+// The release workflow has always set it with `date +%Y%m%d`, so builds already in the wild
+// carry codes like 20260825. A semver-derived code (0.5.0 -> 500) would be LOWER than what
+// users already have installed, and Android refuses a lower versionCode as a downgrade —
+// every existing install would stop being able to update. Keep the scheme that shipped.
+project.ext.animateVersionCode = (new Date().format('yyyyMMdd')) as int
+
 android {
     namespace = "com.yasa.animate"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +21,16 @@ android {
         applicationId "com.yasa.animate"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // ⛔ THESE USED TO BE HARDCODED AT 1 / "1.0" AND NEVER MOVED.
+        // The release checklist in CLAUDE.md lists six places to bump and this is not one of
+        // them, so the Android app reported 1.0 while package.json said 0.4.7, and every APK
+        // built was named ANI-MATE-1.0-mobile.apk. Read the real version instead, so the
+        // Android build cannot drift from the project again.
+        //
+        // versionCode must INCREASE for Android to accept an update, so it is derived:
+        //   major*10000 + minor*100 + patch   (0.5.0 -> 500)
+        versionCode project.ext.animateVersionCode
+        versionName project.ext.animateVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

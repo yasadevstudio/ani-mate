@@ -34,7 +34,10 @@
  */
 const { net, session, BrowserWindow } = require('electron');
 
-const CHALLENGE_RE = /Just a moment|__cf_chl|cf-browser-verification|Checking your browser|cf_chl_opt/i;
+// Cloudflare's wording, plus DDoS-Guard and the generic interstitials other sources use.
+// Narrow matching meant a challenge we did not have a phrase for looked like a real response
+// and was handed to the parser as if it were data.
+const CHALLENGE_RE = /Just a moment|__cf_chl|cf-browser-verification|Checking your browser|cf_chl_opt|ddos-guard|DDoS-Guard|Verifying you are human|challenge-platform|Enable JavaScript and cookies/i;
 const REQ_TIMEOUT_MS = 20000;
 const CHALLENGE_TIMEOUT_MS = 30000;
 const CHALLENGE_SETTLE_MS = 4000;
@@ -162,9 +165,44 @@ function solveChallenge(origin) {
         }
         // Poll for the clearance cookie. did-fail-load is NOT treated as fatal: a 403
         // interstitial reports as a failed load while still executing its script.
+        // ⛔ DO NOT POLL FOR `cf_clearance` BY NAME. THAT WAS THE BUG.
+        // Measured 2026-10-05: Chromium loaded animepahe.com past its 403 interstitial in
+        // about 8 seconds — the window title read "animepahe :: okay-ish anime website",
+        // which is the real site. solveChallenge still reported FAILED and the whole
+        // request was discarded, because it was waiting for a cookie named cf_clearance
+        // that AnimePahe never sets. Only Cloudflare uses that name. Every non-Cloudflare
+        // gate was therefore solved and then thrown away.
+        //
+        // SUCCESS IS "THE WINDOW IS NO LONGER SHOWING A CHALLENGE", not "a particular
+        // cookie exists". Check the document itself, and keep the cookie as a fast path.
+        let ticks = 0;
         poll = setInterval(async () => {
-            const c = await cookieFor(origin, 'cf_clearance');
-            if (c) finish(true);
+            ticks++;
+            try {
+                if (await cookieFor(origin, 'cf_clearance')) {
+                    console.log(`[bridge] cf_clearance for ${origin} after ${ticks}s`);
+                    return finish(true);
+                }
+            } catch { /* cookie read failed; fall through to the page check */ }
+
+            let title = '', bodyHead = '';
+            try {
+                if (!win || win.isDestroyed()) return finish(false);
+                title = (await win.webContents.executeJavaScript('document.title')) || '';
+                bodyHead = (await win.webContents.executeJavaScript(
+                    '(document.body && document.body.innerText || "").slice(0,400)')) || '';
+            } catch { return; }   // mid-navigation; try again next tick
+
+            const stillChallenged = CHALLENGE_RE.test(title) || CHALLENGE_RE.test(bodyHead);
+            const hasContent = (title.trim().length > 0 || bodyHead.trim().length > 40);
+            if (!stillChallenged && hasContent) {
+                console.log(`[bridge] ${origin} cleared after ${ticks}s, title="${title}"`);
+                // Let the gate's cookies settle before the retry goes out.
+                return setTimeout(() => finish(true), CHALLENGE_SETTLE_MS);
+            }
+            if (ticks % 8 === 0) {
+                console.log(`[bridge] ${origin} unsolved at ${ticks}s, title="${title}"`);
+            }
         }, 1000);
         try {
             const p = win.loadURL(origin);
@@ -185,8 +223,13 @@ function attach(child) {
         let r;
         try {
             r = await netRequest(msg);
-            if (r.status === 403 && CHALLENGE_RE.test(r.body || '')) {
-                const ok = await solveChallenge(msg.challengeOrigin || 'https://allmanga.to');
+            // 503 is as common as 403 for an interstitial, and some serve one on a 200.
+            // Gate on the BODY looking like a challenge, not on a single status code.
+            if (CHALLENGE_RE.test(r.body || '') && [403, 503, 429, 200].includes(r.status)) {
+                const origin = msg.challengeOrigin || 'https://allmanga.to';
+                console.log(`[bridge] challenge from ${origin} (HTTP ${r.status}) — solving`);
+                const ok = await solveChallenge(origin);
+                console.log(`[bridge] solve ${origin}: ${ok ? 'CLEARED' : 'FAILED'}`);
                 if (ok) r = await netRequest(msg);
             }
         } catch (e) {

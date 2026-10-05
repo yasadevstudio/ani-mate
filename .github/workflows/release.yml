@@ -70,11 +70,15 @@ jobs:
       - name: Set version in build files
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          # Android build.gradle
-          sed -i "s/versionCode 1/versionCode $(date +%Y%m%d)/" mobile/android/app/build.gradle
-          sed -i "s/versionName \"1.0\"/versionName \"${VERSION}\"/" mobile/android/app/build.gradle
-          # JS app version constant
+          # build.gradle NO LONGER NEEDS PATCHING. It reads the version from package.json
+          # and computes a date-based versionCode itself, so the two seds that used to live
+          # here are gone. They matched the literals `versionCode 1` and `versionName "1.0"`,
+          # which no longer exist — leaving them would have been a silent no-op that looked
+          # like it was still doing its job.
+          # JS app version constant still needs setting from the tag.
           sed -i "s/const APP_VERSION = '[^']*'/const APP_VERSION = '${VERSION}'/" mobile/www/js/ani-mate-ui.js
+          grep -q "versionName project.ext.animateVersionName" mobile/android/app/build.gradle \
+            || { echo "build.gradle no longer reads the version from package.json"; exit 1; }
 
       - name: Install mobile dependencies
         working-directory: mobile

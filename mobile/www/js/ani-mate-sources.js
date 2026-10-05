@@ -156,8 +156,26 @@
     const AA_API = 'https://api.allanime.day/api';
     const AA_REF = 'https://allmanga.to';
 
+    // ⛔ THE 2026-08-25 NOTE HERE WAS WRONG AND IT COST THE PRIMARY SOURCE.
+    // It read: "api.allanime.day answers 403 with a Cloudflare interstitial ... it is not
+    // slow, it is unsolvable", and shipped this provider disabled.
+    //
+    // RE-MEASURED 2026-10-05, live, same minute:
+    //     GET  https://api.allanime.day/api?variables=...&query=...  -> 403 "Just a moment..."
+    //     POST https://api.allanime.day/api  {variables, query}       -> 200
+    // It was never a challenge. The mobile client was sending GET to an endpoint that only
+    // accepts POST, which DEVELOPMENT.md line 19 has said since April. The desktop server
+    // has used POST since v0.4.4, which is the whole reason desktop worked and mobile did
+    // not. ani-mate-api.js now sends POST, so SEARCH AND EPISODE LISTS WORK AGAIN.
+    //
+    // IT STAYS enabled:true BECAUSE SEARCH IS REAL VALUE ON ITS OWN. What is still broken
+    // is narrower and unrelated: the `episode` query (the only one returning sourceUrls)
+    // answers AA_CRYPTO_MISSING, because AllAnime moved to a per-epoch AES-GCM aaReq token.
+    // So this provider SEARCHES but cannot yet STREAM. Disabling it would throw away the
+    // working half to punish the broken half.
     const allanime = {
         id: 'allanime', name: 'AllAnime', weight: 80, enabled: true,
+        note: 'search works (POST, fixed 2026-10-05); streams blocked by AA_CRYPTO_MISSING',
         async search(query, mode = 'sub') {
             const gql = 'query($search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } } }';
             const params = new URLSearchParams({
