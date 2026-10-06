@@ -1747,6 +1747,41 @@
             state.hlsInstance = null;
         }
 
+        // === SUBTITLES ===
+        // /play has returned a `subtitles` array since v0.5.0. The UI stored it in
+        // state.streamSubtitles and NEVER READ IT AGAIN, so no <track> was ever created and
+        // the app has never displayed a subtitle on any source. The v0.5.0 changenote
+        // ("Subtitles now come back with the stream, English track included") was true of the
+        // SERVER and false of the player, which is the worst shape a release note can take.
+        //
+        // THE SRC MUST GO THROUGH /proxy-stream. Measured on hls.dramahot.top 2026-10-06: the
+        // .vtt is referer-gated exactly like the video is — 403 direct, 200 with the Referer
+        // header — and a browser cannot set Referer on a <track> fetch. The proxy already
+        // answers text/vtt with Access-Control-Allow-Origin, so a proxied track needs nothing
+        // further. Attaching s.src raw gets a silent 403 and an empty subtitle menu, which is
+        // indistinguishable from "this source has no subtitles".
+        Array.from(video.querySelectorAll('track')).forEach(t => t.remove());
+        (state.streamSubtitles || []).forEach((s, i) => {
+            if (!s || !s.src) return;
+            const t = document.createElement('track');
+            t.kind = 'subtitles';
+            t.label = s.label || s.lang || `Track ${i + 1}`;
+            t.srclang = s.lang || 'en';
+            t.src = state.streamReferer
+                ? `/proxy-stream?url=${encodeURIComponent(s.src)}&referer=${encodeURIComponent(state.streamReferer)}`
+                : s.src;
+            if (s.default || i === 0) t.default = true;
+            // `default` only marks which track SHOULD show. Chromium still needs mode set, and
+            // setting it before the cues load is a no-op, so do it again once the track loads.
+            t.addEventListener('load', () => {
+                if (t.track && (s.default || i === 0)) t.track.mode = 'showing';
+            }, { once: true });
+            video.appendChild(t);
+        });
+        if (video.textTracks && video.textTracks.length) {
+            video.textTracks[0].mode = 'showing';
+        }
+
         const isM3u8 = streamUrl.includes('.m3u8') || streamUrl.includes('master.txt');
 
         if (isM3u8 && Hls.isSupported()) {
