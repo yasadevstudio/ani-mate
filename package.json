@@ -7,7 +7,8 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "build:win": "electron-builder --win --x64"
+    "build:win": "electron-builder --win --x64",
+    "build:linux": "electron-builder --linux --x64"
   },
   "dependencies": {
     "@consumet/extensions": "^1.8.8",
@@ -27,6 +28,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "electron-net-bridge.js",
       "server/**/*",
       "ui/**/*"
     ],
@@ -52,6 +54,34 @@
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
       "runAfterFinish": true
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "assets/icon.png",
+      "category": "AudioVideo",
+      "synopsis": "Watch anime",
+      "description": "ANI-MATE streams anime from multiple sources with a local resolver.",
+      "desktop": {
+        "Name": "ANI-MATE",
+        "Comment": "Watch anime",
+        "Categories": "AudioVideo;Video;Player;"
+      },
+      "maintainer": "YASA Development Studio <yasadevstudio@users.noreply.github.com>"
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libsecret-1-0"
+      ]
     }
   }
 }
