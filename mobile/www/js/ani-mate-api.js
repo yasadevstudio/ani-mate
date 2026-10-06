@@ -517,7 +517,12 @@ async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'bes
         const hit = eps.find(e => String(e.number) === String(episodeString)) || null;
         if (hit) {
             const s = await window.SOURCES.stream(hit.id, mode).catch(() => null);
-            if (s) return { url: s.url, referer: s.referer, source: s.providerName || pid };
+            // SUBTITLES MUST BE CARRIED THROUGH. This line used to build a fresh object
+            // with only url/referer/source, which silently dropped the subtitle array the
+            // provider had just resolved — so even a source that returns tracks produced a
+            // player with none, indistinguishable from a source that has none.
+            if (s) return { url: s.url, referer: s.referer, source: s.providerName || pid,
+                            subtitles: s.subtitles || [], malId: s.malId || null };
         }
         return null;
     }

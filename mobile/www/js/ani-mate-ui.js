@@ -504,7 +504,10 @@
             state.watchedMarked = false;
             state.currentPlaybackTime = 0;
 
-            // Launch player
+            // Launch player. Subtitles ride along: the API layer now passes them
+            // through instead of rebuilding a url/referer-only object.
+            state.streamSubtitles = data.subtitles || [];
+            state.streamReferer = data.referer || null;
             showPlayer(data.url);
             toast(`Playing: ${playTitle} EP ${state.selectedEpisode}`, 'success');
         } catch (err) {
@@ -541,6 +544,34 @@
         if (state.hlsInstance) {
             state.hlsInstance.destroy();
             state.hlsInstance = null;
+        }
+
+        // === SUBTITLES ===
+        // Mobile never built a <track> either. Same gap as the desktop player, found the same
+        // day: the field was never carried this far, so there was nothing to attach.
+        //
+        // NOTE ON WHAT THIS DOES AND DOES NOT FIX. Attaching the track is correct and costs
+        // nothing, but every source that currently CARRIES subtitles is referer-gated, and a
+        // webview cannot set Referer (see the hianime note in ani-mate-sources.js). So this
+        // renders subtitles the moment a non-gated source returns them, or the moment mobile
+        // gets a referer-capable media transport — and silently attaches nothing until then.
+        // It is groundwork, not a working feature on mobile today. Do not write it up as one.
+        Array.from(video.querySelectorAll('track')).forEach(t => t.remove());
+        (state.streamSubtitles || []).forEach((sub, i) => {
+            if (!sub || !sub.src) return;
+            const t = document.createElement('track');
+            t.kind = 'subtitles';
+            t.label = sub.label || sub.lang || `Track ${i + 1}`;
+            t.srclang = sub.lang || 'en';
+            t.src = sub.src;
+            if (sub.default || i === 0) t.default = true;
+            t.addEventListener('load', () => {
+                if (t.track && (sub.default || i === 0)) t.track.mode = 'showing';
+            }, { once: true });
+            video.appendChild(t);
+        });
+        if (video.textTracks && video.textTracks.length) {
+            video.textTracks[0].mode = 'showing';
         }
 
         const isM3u8 = streamUrl.includes('.m3u8') || streamUrl.includes('master.txt');
@@ -1670,10 +1701,10 @@
 
     const CHANGELOG = [
         "Streaming works again. Every source the app had went down at once, and this adds a new one that does not",
-        "Subtitles now come back with the stream, English track included",
         "The source health screen tells the truth \u2014 it used to report everything fine while nothing could play",
         "Streams that need a referer are routed correctly instead of silently failing to load",
         "Android: search and episode lists talk to the source properly again",
+        "Android: subtitle support is wired up but not live yet \u2014 the sources that carry subtitles need a referer the mobile player cannot send",
     ];
 
     function showChangelog() {
