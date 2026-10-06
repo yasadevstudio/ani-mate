@@ -231,6 +231,128 @@
         }
     };
 
+    // ── HiAnime.at ────────────────────────────────────────────────────────
+    // PORTED FROM server/hianime-at.js 2026-10-06. It was desktop-only, which meant mobile
+    // was shipping with AllAnime (streams blocked by AA_CRYPTO_MISSING) and AniDB as its only
+    // enabled sources — and HiAnime is BOTH the one that currently resolves a playlist AND the
+    // only one that returns a subtitle track at all. Mobile had no subtitles because it had no
+    // source that carries them.
+    //
+    // TWO THINGS DIFFER FROM THE SERVER COPY, both because this runs in a webview:
+    //   Buffer is not available, so base64 goes through atob() into a Uint8Array and the XOR
+    //   output is decoded with TextDecoder. Doing the XOR on a JS string instead corrupts any
+    //   byte above 0x7F and the JSON fails to parse for non-ASCII titles.
+    //   afetch becomes NET.get, which already picks a transport and can set Referer — the
+    //   chain needs one on every hop and a plain fetch() cannot.
+    const HA_BASE = 'https://hianime.at';
+    const HA_KEY  = new TextEncoder().encode('otaku-embed-v1');
+
+    function haEntities(t) {
+        return String(t).replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+                        .replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&apos;/g, "'");
+    }
+    function haB64Bytes(b64) {
+        const bin = atob(b64);
+        const out = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+        return out;
+    }
+
+    const hianime = {
+        id: 'hianime', name: 'HiAnime.at', weight: 120, enabled: false,
+        // DISABLED ON PURPOSE, AND NOT BECAUSE THE CHAIN IS UNPROVEN — it is the only chain
+        // that resolves on desktop right now. The blocker is transport.
+        //
+        // Measured 2026-10-06 against hls.dramahot.top:
+        //     m3u8 direct, no referer   403        m3u8 with Referer   200
+        //     .vtt direct, no referer   403        .vtt  with Referer  200
+        //
+        // Desktop clears this by routing media through the local /proxy-stream, which can set
+        // Referer. MOBILE HAS NO SUCH PATH: Hls.js loads through the webview, and a browser is
+        // forbidden from setting Referer on XHR/fetch, so NET.get's header support cannot reach
+        // the media layer. Enabling it would make HiAnime the top-weighted provider by weight
+        // and then fail every playback — strictly worse than today.
+        //
+        // TO TURN IT ON, mobile needs a referer-capable media transport (Capacitor HTTP feeding
+        // Hls.js via a loader, or a tiny on-device proxy). That is the real work. Flip `enabled`
+        // the same day that lands, not before.
+        note: 'chain works; blocked on mobile having no referer-capable media transport',
+
+        async search(query) {
+            const r = await NET.get(`${HA_BASE}/search?keyword=${encodeURIComponent(query)}`,
+                                    { referer: HA_BASE + '/', html: true });
+            if (!r.ok) return [];
+            // The top-10 sidebar repeats the result markup. Cut it or every hit doubles.
+            const main = r.body.split('id="main-sidebar"')[0];
+            const re = /<h3 class="film-name">\s*<a href="[^"]*?\/([^"\/]+)"\s*title="([^"]*)"/g;
+            const out = []; let m;
+            while ((m = re.exec(main))) out.push({ id: m[1], name: haEntities(m[2]) });
+            return out;
+        },
+
+        async episodes(slug) {
+            const numericId = String(slug).split('-').pop();
+            const r = await NET.get(`${HA_BASE}/api/theme/episode/list/${numericId}`,
+                                    { referer: HA_BASE + '/' });
+            if (!r.ok) return [];
+            let html = '';
+            try { html = (JSON.parse(r.body).html || ''); } catch { return []; }
+            const re = /data-number="(\d+)"[^>]*data-id="(\d+)"|data-id="(\d+)"[^>]*data-number="(\d+)"/g;
+            const out = []; let m;
+            while ((m = re.exec(html))) {
+                const number = m[1] || m[4], id = m[2] || m[3];
+                if (number && id) out.push({ id, number: String(number), filler: false });
+            }
+            return out;
+        },
+
+        async stream(episodeId, mode = 'sub') {
+            const r = await NET.get(`${HA_BASE}/api/theme/episode/servers?episodeId=${episodeId}`,
+                                    { referer: HA_BASE + '/' });
+            if (!r.ok) return null;
+            let html = '';
+            try { html = (JSON.parse(r.body).html || ''); } catch { return null; }
+
+            // ZokoAnime is the only embed whose config this understands. Taking "any server"
+            // hands back a player page this cannot parse.
+            const re = new RegExp(
+                `data-type="${mode}"[^>]*data-server-name="ZokoAnime"[^>]*data-hash="([^"]*)"`, 'i');
+            const hit = html.replace(/\\"/g, '"').match(re);
+            if (!hit) return null;
+
+            const embed = new TextDecoder().decode(haB64Bytes(hit[1]));
+            if (!/^https?:\/\//.test(embed)) return null;
+            const embedOrigin = embed.replace(/^(https?:\/\/[^/]*).*/, '$1/');
+
+            const page = await NET.get(embed, { referer: HA_BASE + '/', html: true });
+            if (!page.ok) return null;
+            const blob = (page.body.match(/window\.__P="([^"]*)"/) || [])[1];
+            if (!blob) return null;
+
+            // base64, then a repeating XOR against a fixed key. Not a cipher, a scramble.
+            const raw = haB64Bytes(blob);
+            const dec = new Uint8Array(raw.length);
+            for (let i = 0; i < raw.length; i++) dec[i] = raw[i] ^ HA_KEY[i % HA_KEY.length];
+
+            let cfg;
+            try { cfg = JSON.parse(new TextDecoder().decode(dec)); } catch { return null; }
+            if (!cfg.src) return null;
+
+            return {
+                url: cfg.src,
+                referer: embedOrigin,      // the CDN rejects the request without this
+                type: 'hls',
+                subtitles: Array.isArray(cfg.subtitles) ? cfg.subtitles : [],
+                malId: (embed.match(/\/mal\/(\d+)\//) || [])[1] || null,
+            };
+        },
+
+        async probe() {
+            const r = await this.search('one piece');
+            return r.length > 0;
+        }
+    };
+
     // ── providers present but not yet trusted ──────────────────────────────
     // Both hosts answered on 2026-08-25, but neither chain has produced a playlist yet.
     // Shipping a guessed scraper as "redundancy" is how you get a second silent failure,
@@ -240,7 +362,7 @@
     const animeheaven = { id: 'animeheaven', name: 'AnimeHeaven', weight: 50, enabled: false,
                           note: 'animeheaven.me alive, results JS-rendered; chain unconfirmed' };
 
-    const PROVIDERS = [anidb, allanime, animepahe, animeheaven];
+    const PROVIDERS = [hianime, anidb, allanime, animepahe, animeheaven];
 
     // ── public surface ─────────────────────────────────────────────────────
     // Ids are tagged with their provider so episodes() and stream() route home.
