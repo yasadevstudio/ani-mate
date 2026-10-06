@@ -41,7 +41,43 @@ jobs:
           name: windows-build
           path: |
             dist/*.exe
+            dist/*.exe.blockmap
             dist/*.yml
+          retention-days: 1
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Set version from tag
+        run: npm version ${{ steps.version.outputs.VERSION }} --no-git-tag-version --allow-same-version
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Linux packages
+        run: npm run build:linux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/latest-linux.yml
           retention-days: 1
 
   build-android:
@@ -116,7 +152,7 @@ jobs:
           retention-days: 1
 
   release:
-    needs: [build-windows, build-android]
+    needs: [build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -126,6 +162,12 @@ jobs:
         with:
           name: windows-build
           path: dist-win
+
+      - name: Download Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-build
+          path: dist-linux
 
       - name: Download Android build
         uses: actions/download-artifact@v4
@@ -142,9 +184,14 @@ jobs:
         with:
           name: ANI-MATE v${{ steps.version.outputs.VERSION }}
           generate_release_notes: false
+          fail_on_unmatched_files: true
           files: |
             dist-win/ANI-MATE-Setup-${{ steps.version.outputs.VERSION }}.exe
+            dist-win/ANI-MATE-Setup-${{ steps.version.outputs.VERSION }}.exe.blockmap
             dist-win/latest.yml
+            dist-linux/ANI-MATE-${{ steps.version.outputs.VERSION }}.AppImage
+            dist-linux/ani-mate_${{ steps.version.outputs.VERSION }}_amd64.deb
+            dist-linux/latest-linux.yml
             dist-android/ANI-MATE-${{ steps.version.outputs.VERSION }}-mobile.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
