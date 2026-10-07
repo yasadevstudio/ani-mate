@@ -175,7 +175,16 @@ app.whenReady().then(async () => {
 
         // Check for updates after window is ready (non-blocking)
         if (app.isPackaged) {
-            setTimeout(() => autoUpdater.checkForUpdates(), 3000);
+            // CATCH THE RETURNED PROMISE, NOT JUST THE 'error' EVENT. checkForUpdates()
+            // both EMITS 'error' and REJECTS, and only the event was handled, so every launch
+            // that could not reach a feed printed a full UnhandledPromiseRejectionWarning
+            // stack to stderr. It is harmless and it buries real errors in the log, which is
+            // how the net-bridge failure went unread for a whole release.
+            setTimeout(() => {
+                autoUpdater.checkForUpdates().catch((err) => {
+                    console.error('[AutoUpdater] check failed:', err && err.message || err);
+                });
+            }, 3000);
         }
     } catch (err) {
         dialog.showErrorBox('ANI-MATE Startup Error', err.message);

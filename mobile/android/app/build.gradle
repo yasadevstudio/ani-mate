@@ -27,8 +27,13 @@ android {
         // built was named ANI-MATE-1.0-mobile.apk. Read the real version instead, so the
         // Android build cannot drift from the project again.
         //
-        // versionCode must INCREASE for Android to accept an update, so it is derived:
-        //   major*10000 + minor*100 + patch   (0.5.0 -> 500)
+        // versionCode must INCREASE for Android to accept an update. It is the DATE
+        //   (date +%Y%m%d, e.g. 20261006) — see the block above for why, and do not
+        //   replace it with a semver-derived number.
+        // This comment used to describe a semver scheme (0.5.0 -> 500) that this file has
+        // not used since the date scheme shipped, and it directly contradicted the warning
+        // 18 lines above it. A wrong comment next to a correct one is how the wrong one
+        // gets believed.
         versionCode project.ext.animateVersionCode
         versionName project.ext.animateVersionName
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"

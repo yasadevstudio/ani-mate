@@ -82,7 +82,8 @@
         "xdg-utils",
         "libatspi2.0-0",
         "libsecret-1-0"
-      ]
+      ],
+      "afterInstall": "build/deb-after-install.sh"
     }
   }
 }
