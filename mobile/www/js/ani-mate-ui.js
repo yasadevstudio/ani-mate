@@ -522,6 +522,58 @@
         }
     }
 
+    // Blob URLs from the previous episode, revoked on the next attach so they do not leak.
+    let subBlobUrls = [];
+
+    /**
+     * Put the subtitle tracks on the <video>.
+     *
+     * WHY THE CUES ARE FETCHED BY HAND INSTEAD OF SETTING track.src DIRECTLY.
+     * The .vtt is referer-gated exactly like the video — 403 direct, 200 with the header.
+     * The xhrSetup trick used for HLS does not help here: a <track> is fetched by the
+     * browser's own loader, not through XMLHttpRequest, so CapacitorHttp never intercepts
+     * it and no header can be attached. Pointing a track at the raw url yields a silent 403
+     * and an empty subtitle menu, which looks exactly like a source with no subtitles.
+     *
+     * So the text comes through NET.get, which already carries Referer natively, and the
+     * element is handed a blob: url. Blobs are same-origin and need no headers at all.
+     */
+    async function attachSubtitles(video, subs, referer) {
+        Array.from(video.querySelectorAll('track')).forEach(t => t.remove());
+        subBlobUrls.forEach(u => { try { URL.revokeObjectURL(u); } catch (e) {} });
+        subBlobUrls = [];
+        if (!subs.length || !window.NET) return;
+
+        for (let i = 0; i < subs.length; i++) {
+            const sub = subs[i];
+            if (!sub || !sub.src) continue;
+            let url = sub.src;
+            try {
+                const r = await NET.get(sub.src, { referer: referer || '' });
+                if (!r.ok || !/^\s*WEBVTT/.test(r.body)) continue;   // 403 page is not a cue file
+                const blob = new Blob([r.body], { type: 'text/vtt' });
+                url = URL.createObjectURL(blob);
+                subBlobUrls.push(url);
+            } catch (e) { continue; }
+
+            const t = document.createElement('track');
+            t.kind = 'subtitles';
+            t.label = sub.label || sub.lang || `Track ${i + 1}`;
+            t.srclang = sub.lang || 'en';
+            t.src = url;
+            if (sub.default || i === 0) t.default = true;
+            video.appendChild(t);
+            // `default` only marks the track; the mode still has to be set, and setting it
+            // before the cues parse is a no-op.
+            t.addEventListener('load', () => {
+                if (t.track && (sub.default || i === 0)) t.track.mode = 'showing';
+            }, { once: true });
+        }
+        if (video.textTracks && video.textTracks.length) {
+            video.textTracks[0].mode = 'showing';
+        }
+    }
+
     function showPlayer(streamUrl) {
         playerOverlay.classList.remove('hidden');
         $('player-loading').classList.remove('hidden');
@@ -556,28 +608,25 @@
         // renders subtitles the moment a non-gated source returns them, or the moment mobile
         // gets a referer-capable media transport — and silently attaches nothing until then.
         // It is groundwork, not a working feature on mobile today. Do not write it up as one.
-        Array.from(video.querySelectorAll('track')).forEach(t => t.remove());
-        (state.streamSubtitles || []).forEach((sub, i) => {
-            if (!sub || !sub.src) return;
-            const t = document.createElement('track');
-            t.kind = 'subtitles';
-            t.label = sub.label || sub.lang || `Track ${i + 1}`;
-            t.srclang = sub.lang || 'en';
-            t.src = sub.src;
-            if (sub.default || i === 0) t.default = true;
-            t.addEventListener('load', () => {
-                if (t.track && (sub.default || i === 0)) t.track.mode = 'showing';
-            }, { once: true });
-            video.appendChild(t);
-        });
-        if (video.textTracks && video.textTracks.length) {
-            video.textTracks[0].mode = 'showing';
-        }
+        attachSubtitles(video, state.streamSubtitles || [], state.streamReferer);
 
         const isM3u8 = streamUrl.includes('.m3u8') || streamUrl.includes('master.txt');
 
         if (isM3u8 && Hls.isSupported()) {
-            const hls = new Hls();
+            // REFERER ON THE MEDIA REQUESTS. The CDNs behind the working sources answer 403
+            // without it — measured on hls.dramahot.top: m3u8 403 direct, 200 with Referer.
+            //
+            // A browser REFUSES setRequestHeader('Referer', ...) as a forbidden header. This
+            // works anyway because CapacitorHttp (enabled in capacitor.config.json) REPLACES
+            // XMLHttpRequest with a JS shim and sends the request natively, and the forbidden
+            // header list is enforced by the browser's native XHR, not by a shim. The same
+            // path already carries Referer for every scraping call in ani-mate-net.js.
+            const hls = new Hls({
+                xhrSetup: (xhr, url) => {
+                    if (!state.streamReferer) return;
+                    try { xhr.setRequestHeader('Referer', state.streamReferer); } catch (e) {}
+                }
+            });
             state.hlsInstance = hls;
 
             hls.loadSource(streamUrl);
@@ -1701,10 +1750,11 @@
 
     const CHANGELOG = [
         "Streaming works again. Every source the app had went down at once, and this adds a new one that does not",
+        "Subtitles actually display now. They were being fetched and never shown",
         "The source health screen tells the truth \u2014 it used to report everything fine while nothing could play",
         "Streams that need a referer are routed correctly instead of silently failing to load",
         "Android: search and episode lists talk to the source properly again",
-        "Android: subtitle support is wired up but not live yet \u2014 the sources that carry subtitles need a referer the mobile player cannot send",
+        "Android: subtitles work now, and streaming no longer depends on a source that is down",
     ];
 
     function showChangelog() {

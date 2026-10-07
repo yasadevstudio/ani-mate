@@ -259,24 +259,26 @@
     }
 
     const hianime = {
-        id: 'hianime', name: 'HiAnime.at', weight: 120, enabled: false,
-        // DISABLED ON PURPOSE, AND NOT BECAUSE THE CHAIN IS UNPROVEN — it is the only chain
-        // that resolves on desktop right now. The blocker is transport.
+        id: 'hianime', name: 'HiAnime.at', weight: 120, enabled: true,
+        // ENABLED 2026-10-06, after finding mobile CAN send a Referer on media after all.
         //
-        // Measured 2026-10-06 against hls.dramahot.top:
-        //     m3u8 direct, no referer   403        m3u8 with Referer   200
-        //     .vtt direct, no referer   403        .vtt  with Referer  200
+        // An earlier pass shipped this disabled on the reasoning that the CDN is referer-gated
+        // (m3u8 403 direct / 200 with the header) and a webview cannot set Referer. THE SECOND
+        // HALF WAS WRONG. CapacitorHttp is enabled in capacitor.config.json and REPLACES
+        // XMLHttpRequest with a JS shim that sends natively — and the forbidden-header list
+        // that blocks Referer is enforced by the browser's own XHR, not by a shim. Hls.js
+        // xhrSetup therefore reaches native with the header intact, the same path ani-mate-net
+        // has been using for every scraping call since August.
         //
-        // Desktop clears this by routing media through the local /proxy-stream, which can set
-        // Referer. MOBILE HAS NO SUCH PATH: Hls.js loads through the webview, and a browser is
-        // forbidden from setting Referer on XHR/fetch, so NET.get's header support cannot reach
-        // the media layer. Enabling it would make HiAnime the top-weighted provider by weight
-        // and then fail every playback — strictly worse than today.
+        // Subtitles still cannot use that route: a <track> is fetched by the browser's loader,
+        // not XHR, so it is never intercepted. Those are pulled through NET.get and handed to
+        // the element as a blob instead. See attachSubtitles in ani-mate-ui.js.
         //
-        // TO TURN IT ON, mobile needs a referer-capable media transport (Capacitor HTTP feeding
-        // Hls.js via a loader, or a tiny on-device proxy). That is the real work. Flip `enabled`
-        // the same day that lands, not before.
-        note: 'chain works; blocked on mobile having no referer-capable media transport',
+        // NOT YET CONFIRMED ON A DEVICE. The reasoning is sound and the transport is the one
+        // already proven for headers, but nobody has watched an episode on an Android build
+        // with this on. Provider ordering falls through on failure, so the downside if it is
+        // wrong is the app trying the next source, exactly as it does today.
+        note: 'only chain currently resolving a playlist; carries the one subtitle track',
 
         async search(query) {
             const r = await NET.get(`${HA_BASE}/search?keyword=${encodeURIComponent(query)}`,
