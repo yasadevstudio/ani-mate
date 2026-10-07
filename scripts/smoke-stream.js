@@ -112,6 +112,22 @@ async function post(path, payload, ms = 60000) {
             step('/play returns a stream url', !!streamUrl,
                  streamUrl ? `${d.source || '?'} — ${streamUrl.slice(0, 48)}` : `HTTP ${r.status} ${(d.error || '').slice(0, 70)}`);
             if (streamUrl) step('subtitle track offered', subs > 0, `${subs} track(s)`);
+
+            // EXACTLY ONE TRACK MAY BE FLAGGED DEFAULT, AND THIS CHECK EXISTS BECAUSE THE
+            // COUNT ABOVE PASSED WHILE THE PLAYER SHOWED TWO LANGUAGES AT ONCE.
+            // On 2026-10-07 HiAnime returned ten tracks for one show with English flagged at
+            // index 5. The player's `sub.default || i === 0` enabled English AND index 0, so
+            // Brazilian Portuguese rendered over English. The smoke test said "1 track(s)"
+            // on a different show and shipped. Counting what a source OFFERS says nothing
+            // about how many get ENABLED, which was the actual fault.
+            if (streamUrl && subs > 0) {
+                const list = d.subtitles || [];
+                const flagged = list.filter((x) => x && x.default).length;
+                step('exactly one subtitle track is default', flagged <= 1,
+                     flagged === 0 ? 'none flagged, player falls back to English then first'
+                                   : `${flagged} flagged default` +
+                                     (flagged > 1 ? ' — two would render at once' : ''));
+            }
         } catch (e) { step('/play returns a stream url', false, String(e.message || e)); }
     } else {
         step('/play returns a stream url', false, 'no show id');

@@ -544,33 +544,45 @@
         subBlobUrls = [];
         if (!subs.length || !window.NET) return;
 
-        for (let i = 0; i < subs.length; i++) {
-            const sub = subs[i];
-            if (!sub || !sub.src) continue;
-            let url = sub.src;
-            try {
-                const r = await NET.get(sub.src, { referer: referer || '' });
-                if (!r.ok || !/^\s*WEBVTT/.test(r.body)) continue;   // 403 page is not a cue file
-                const blob = new Blob([r.body], { type: 'text/vtt' });
-                url = URL.createObjectURL(blob);
-                subBlobUrls.push(url);
-            } catch (e) { continue; }
+        // ONE TRACK, CHOSEN DELIBERATELY, AND ONLY THAT ONE IS FETCHED.
+        //
+        // The first version attached every track and said `if (sub.default || i === 0)`,
+        // intending index 0 as a fallback when nothing is flagged. HiAnime returns TEN
+        // languages for some shows (pt, fr, ar, es, es-LA, en, de, it, ru, pl) with English
+        // flagged at index 5, so that condition was true for English AND for index 0 and the
+        // player rendered Brazilian Portuguese on top of English.
+        //
+        // Mobile pulls each .vtt over the network to get past the referer gate, so attaching
+        // all ten also meant ten downloads to display one. Pick first, fetch once.
+        const usable = subs.filter(s => s && s.src);
+        let pick = usable.findIndex(s => s.default);
+        if (pick < 0) pick = usable.findIndex(s => /^en/i.test(s.lang || ''));
+        if (pick < 0) pick = 0;
+        const sub = usable[pick];
+        if (!sub) return;
 
-            const t = document.createElement('track');
-            t.kind = 'subtitles';
-            t.label = sub.label || sub.lang || `Track ${i + 1}`;
-            t.srclang = sub.lang || 'en';
-            t.src = url;
-            if (sub.default || i === 0) t.default = true;
-            video.appendChild(t);
-            // `default` only marks the track; the mode still has to be set, and setting it
-            // before the cues parse is a no-op.
-            t.addEventListener('load', () => {
-                if (t.track && (sub.default || i === 0)) t.track.mode = 'showing';
-            }, { once: true });
-        }
-        if (video.textTracks && video.textTracks.length) {
-            video.textTracks[0].mode = 'showing';
+        let url;
+        try {
+            const r = await NET.get(sub.src, { referer: referer || '' });
+            if (!r.ok || !/^\s*WEBVTT/.test(r.body)) return;   // a 403 page is not a cue file
+            url = URL.createObjectURL(new Blob([r.body], { type: 'text/vtt' }));
+            subBlobUrls.push(url);
+        } catch (e) { return; }
+
+        const t = document.createElement('track');
+        t.kind = 'subtitles';
+        t.label = sub.label || sub.lang || 'Subtitles';
+        t.srclang = sub.lang || 'en';
+        t.src = url;
+        t.default = true;
+        video.appendChild(t);
+        // `default` only marks the track; the mode still has to be set, and setting it before
+        // the cues parse is a no-op.
+        t.addEventListener('load', () => { if (t.track) t.track.mode = 'showing'; }, { once: true });
+        if (video.textTracks) {
+            for (let i = 0; i < video.textTracks.length; i++) {
+                video.textTracks[i].mode = (i === 0) ? 'showing' : 'disabled';
+            }
         }
     }
 

@@ -1761,8 +1761,21 @@
         // further. Attaching s.src raw gets a silent 403 and an empty subtitle menu, which is
         // indistinguishable from "this source has no subtitles".
         Array.from(video.querySelectorAll('track')).forEach(t => t.remove());
-        (state.streamSubtitles || []).forEach((s, i) => {
-            if (!s || !s.src) return;
+        const subsList = (state.streamSubtitles || []).filter(s => s && s.src);
+
+        // EXACTLY ONE TRACK IS SHOWN, AND CHOOSING IT IS THE WHOLE PROBLEM.
+        // The first version said `if (s.default || i === 0)`, meaning to fall back to the
+        // first track when a source flags nothing. HiAnime returns TEN tracks for some shows
+        // (pt, fr, ar, es, es-LA, en, de, it, ru, pl) and marks English default at index 5 —
+        // so that condition matched English AND index 0, set both to showing, and the player
+        // rendered Brazilian Portuguese over the top of English at the same time.
+        // Pick one index, then enable only that one. Order: the flagged default, else English,
+        // else the first thing available.
+        let pick = subsList.findIndex(s => s.default);
+        if (pick < 0) pick = subsList.findIndex(s => /^en/i.test(s.lang || ''));
+        if (pick < 0 && subsList.length) pick = 0;
+
+        subsList.forEach((s, i) => {
             const t = document.createElement('track');
             t.kind = 'subtitles';
             t.label = s.label || s.lang || `Track ${i + 1}`;
@@ -1770,16 +1783,19 @@
             t.src = state.streamReferer
                 ? `/proxy-stream?url=${encodeURIComponent(s.src)}&referer=${encodeURIComponent(state.streamReferer)}`
                 : s.src;
-            if (s.default || i === 0) t.default = true;
+            if (i === pick) t.default = true;
             // `default` only marks which track SHOULD show. Chromium still needs mode set, and
             // setting it before the cues load is a no-op, so do it again once the track loads.
             t.addEventListener('load', () => {
-                if (t.track && (s.default || i === 0)) t.track.mode = 'showing';
+                if (t.track) t.track.mode = (i === pick) ? 'showing' : 'disabled';
             }, { once: true });
             video.appendChild(t);
         });
-        if (video.textTracks && video.textTracks.length) {
-            video.textTracks[0].mode = 'showing';
+        // Belt and braces: force every other track off, in case one was enabled before load.
+        if (video.textTracks) {
+            for (let i = 0; i < video.textTracks.length; i++) {
+                video.textTracks[i].mode = (i === pick) ? 'showing' : 'disabled';
+            }
         }
 
         const isM3u8 = streamUrl.includes('.m3u8') || streamUrl.includes('master.txt');
