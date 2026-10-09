@@ -1222,3 +1222,31 @@ body {
     padding: 10px 12px;
     margin: 0 0 14px 0;
 }
+
+
+/* Season strip — other entries in the same franchise */
+.season-strip {
+    display: none;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding: 8px 10px 2px;
+}
+.season-chip {
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.14);
+    color: #cfd6e4;
+    border-radius: 999px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .3px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.season-chip:hover { border-color: rgba(255,255,255,0.4); color: #fff; }
+.season-chip.active {
+    background: var(--accent, #38e0c8);
+    border-color: var(--accent, #38e0c8);
+    color: #05211d;
+}
+

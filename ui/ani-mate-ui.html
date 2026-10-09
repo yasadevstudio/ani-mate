@@ -609,6 +609,22 @@
             color: var(--accent-gold);
         }
 
+        /* Season strip - other entries in the same franchise */
+        .season-strip { display: none; gap: 6px; flex-wrap: wrap; padding: 8px 2px 4px; }
+        .season-chip {
+            background: rgba(255,255,255,0.06);
+            border: 1px solid var(--glass-border, rgba(255,255,255,0.14));
+            color: #cfd6e4; border-radius: 999px; padding: 5px 12px;
+            font-size: 12px; font-weight: 600; letter-spacing: .3px;
+            cursor: pointer; white-space: nowrap;
+        }
+        .season-chip:hover { border-color: rgba(255,255,255,0.45); color: #fff; }
+        .season-chip.active {
+            background: var(--accent, #38e0c8);
+            border-color: var(--accent, #38e0c8);
+            color: #05211d;
+        }
+
         .range-selector {
             display: flex;
             flex-wrap: wrap;
@@ -1393,7 +1409,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.5.0 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.5.1 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -1404,6 +1420,7 @@
                         <div class="selected-anime-count" id="selected-anime-count">--</div>
                     </div>
                     <div class="anime-description" id="anime-description" style="display:none"></div>
+                    <div class="season-strip" id="season-strip" style="display:none"></div>
                     <div class="range-selector" id="range-selector" style="display:none"></div>
                     <div class="episode-grid" id="episode-grid"></div>
                 </div>
@@ -1575,6 +1592,87 @@
         }
     }
 
+
+    // === SEASON STRIP ===
+    // Other entries in the same franchise, shown above the episode grid.
+    // state.selectedAnime.franchiseId was being set and never read; this uses it.
+
+    const franchiseCache = {};   // franchise_id -> array of sibling results
+
+    function seasonLabel(r) {
+        const n = r.name || '';
+        let m = n.match(/(\d+)\s*(?:st|nd|rd|th)\s+Season/i)
+             || n.match(/\bSeason\s*(\d+)/i)
+             || n.match(/\bPart\s*(\d+)/i)
+             || n.match(/\bS(\d+)\b/);
+        if (m) return 'S' + m[1];
+        const c = n.split(':');
+        if (c.length > 1) {
+            const tail = c.slice(1).join(':').trim();
+            if (tail) return tail.length > 16 ? tail.slice(0, 15) + '…' : tail;
+        }
+        const fm = (r.anilist_format || '').toUpperCase();
+        if (['MOVIE','OVA','ONA','SPECIAL'].includes(fm)) return fm;
+        return 'S1';
+    }
+
+    function franchiseSiblings(fid) {
+        const pool = [...(state.results || []), ...(state.dailyResults || []),
+                      ...(state.favorites || []), ...(franchiseCache[fid] || [])];
+        const seen = new Set(); const out = [];
+        for (const r of pool) {
+            if (String(r.franchise_id || '') !== String(fid)) continue;
+            if (!r.id || seen.has(r.id)) continue;
+            seen.add(r.id); out.push(r);
+        }
+        out.sort((a, b) => (a.start_key || 0) - (b.start_key || 0)
+                        || (a.episodes || 0) - (b.episodes || 0));
+        return out;
+    }
+
+    function renderSeasonStrip() {
+        const el = document.getElementById('season-strip');
+        if (!el) return;
+        const sel = state.selectedAnime;
+        if (!sel || !sel.franchiseId) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        const sibs = franchiseSiblings(sel.franchiseId);
+        if (sibs.length < 2) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        el.innerHTML = sibs.map(sb => {
+            const on = String(sb.id) === String(sel.id) ? ' active' : '';
+            return `<button class="season-chip${on}" data-id="${esc(String(sb.id))}"`
+                 + ` data-title="${esc(sb.name)}" data-eps="${sb.episodes || 0}"`
+                 + ` title="${esc(sb.name)}">${esc(seasonLabel(sb))}</button>`;
+        }).join('');
+        el.style.display = 'flex';
+        el.querySelectorAll('.season-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                if (String(chip.dataset.id) === String(state.selectedAnime?.id)) return;
+                loadEpisodes(chip.dataset.id, chip.dataset.title, parseInt(chip.dataset.eps) || 0);
+            });
+        });
+    }
+
+    // Arriving from favourites or history means the siblings were never fetched.
+    // Search once on the season-stripped title and cache what shares the id.
+    async function ensureFranchiseSiblings() {
+        const sel = state.selectedAnime;
+        if (!sel || !sel.franchiseId) return;
+        if (franchiseCache[sel.franchiseId]) return;
+        if (franchiseSiblings(sel.franchiseId).length >= 2) return;
+        const base = (sel.title || '')
+            .replace(/\b(\d+\s*(?:st|nd|rd|th)\s+Season|Season\s*\d+|Part\s*\d+)\b/gi, '')
+            .replace(/\s+/g, ' ').trim();
+        if (!base) return;
+        try {
+            const data = await apiCall(`/search?q=${encodeURIComponent(base)}&mode=${state.mode}&nsfw=${state.nsfw}`);
+            franchiseCache[sel.franchiseId] = (data.results || [])
+                .filter(r => String(r.franchise_id || '') === String(sel.franchiseId));
+            if (state.selectedAnime && state.selectedAnime.franchiseId === sel.franchiseId) {
+                renderSeasonStrip();
+            }
+        } catch { /* the strip just stays hidden */ }
+    }
+
     async function loadEpisodes(animeId, title, epCount) {
         // Close player if open (don't auto-show video when switching anime)
         if (state.isPlaying) hidePlayer();
@@ -1598,6 +1696,8 @@
         const splash = document.getElementById('player-splash');
         splash.style.display = 'none';
         gridContainer.style.display = 'block';
+        renderSeasonStrip();
+        ensureFranchiseSiblings();
 
         document.getElementById('selected-anime-title').textContent = displayTitle;
         document.getElementById('selected-anime-count').textContent = `${epCount} EP`;
@@ -2076,11 +2176,21 @@
             if (members.length === 1) {
                 ungrouped.push(members[0]);
             } else {
-                // Sort: TV format first (main series), then by episode count desc
+                // Sort: TV format first (main series), then CHRONOLOGICALLY.
+                //
+                // This used to order by episode count descending, which is exactly
+                // backwards for a season still airing: it has the fewest episodes,
+                // so it sorted last, and members[0] - the entry the franchise card
+                // opens - was the PREVIOUS season. Apothecary Diaries S3 (1 aired
+                // episode) lost to S2 (24) every time.
+                //
+                // Release date is the only field that orders seasons correctly.
                 members.sort((a, b) => {
                     const aFmt = FORMAT_RANK[a.anilist_format] ?? 99;
                     const bFmt = FORMAT_RANK[b.anilist_format] ?? 99;
                     if (aFmt !== bFmt) return aFmt - bFmt;
+                    const aK = a.start_key || 0, bK = b.start_key || 0;
+                    if (aK !== bK) return aK - bK;
                     return (b.episodes || 0) - (a.episodes || 0);
                 });
                 groups.push({ franchise_id: fid, parent: members[0], members });
@@ -3106,7 +3216,10 @@
 
     // Shared helpers for binding cards and stars
     function bindResultCards(container) {
-        container.querySelectorAll('.result-card').forEach(card => {
+        // NOT '.result-card' on its own. Franchise parents carry that class too and
+        // bindFranchiseToggles() already binds them, so every franchise card was
+        // getting two click handlers and firing loadEpisodes twice per tap.
+        container.querySelectorAll('.result-card:not(.franchise-parent)').forEach(card => {
             card.addEventListener('click', (e) => {
                 if (e.target.closest('.fav-star')) return;
                 document.querySelectorAll('.result-card').forEach(c => c.classList.remove('selected'));
@@ -3165,16 +3278,18 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.5.0';
+    const APP_VERSION = '0.5.1';
     // A note from YASA, shown above the list in the update popup.
     const CHANGELOG_NOTE = "Sorry this took so long. Some things in my personal life needed my attention and ANI-MATE had to wait. Thanks for being patient with it.";
 
     const CHANGELOG = [
-        "Streaming works again. Every source the app had went down at once, and this adds a new one that does not",
-        "Subtitles actually display now. They were being fetched and never shown",
-        "The source health screen tells the truth \u2014 it used to report everything fine while nothing could play",
-        "Streams that need a referer are routed correctly instead of silently failing to load",
-        "Android: search and episode lists talk to the source properly again",
+        "Picking a show opens the right season. A season still airing has the fewest episodes, and the list was ordered by episode count, so tapping the card opened the PREVIOUS season",
+        "Later seasons stopped borrowing season one's cover, description and release date. They were being matched to the wrong entry entirely",
+        "Every season of a show is now one tap away from the episode list, instead of going back to the results",
+        "Search understands what a show is about, not just its title. “pirate crew looking for treasure” finds One Piece",
+        "Search results are ranked. The two sources used to be stuck together in whatever order they arrived, with no scoring at all",
+        "A show no longer turns up twice, once grouped with its seasons and once on its own. A curly apostrophe was making a title not equal itself",
+        "Tapping a franchise card no longer loads the episode list twice",
     ];
 
     function showChangelog() {

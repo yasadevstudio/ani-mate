@@ -3,6 +3,7 @@
 // Anime streaming interface - REST API
 
 const http = require('http');
+const SearchIndex = require('./search-index');
 const { spawn } = require('child_process');
 const url = require('url');
 const path = require('path');
@@ -131,6 +132,15 @@ let anidbProvider = null;
 
 const PKG_VERSION = (() => { try { return require('../package.json').version; } catch { return '0.4.0'; } })();
 const PORT = parseInt(process.env.ANI_MATE_PORT) || 7890;
+// How many AniList-only titles get a secondary AllAnime lookup so they become
+// playable. Was hardcoded to 3.
+const SECONDARY_LOOKUP_CAP = 8;
+// Below this many title matches, fall back to content retrieval over the
+// local index. A title search that found plenty does not need help.
+const CONTENT_FALLBACK_BELOW = 5;
+// Best title-match score below which a query is treated as describing a show
+// rather than naming one.
+const CONTENT_FALLBACK_KW = 45;
 const HIST_DIR = process.env.ANI_MATE_DATA_DIR
     || process.env.ANI_CLI_HIST_DIR
     || `${process.env.XDG_STATE_HOME || `${process.env.HOME || process.env.USERPROFILE}/.local/state`}/ani-cli`;
@@ -591,7 +601,15 @@ async function getAnimeInfo(title) {
         const json = await resp.json();
         const mediaList = json?.data?.Page?.media || [];
         // Prefer non-adult result with matching name
-        const infoNorm = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+        const infoNorm = (s) => (s || '').toLowerCase()
+        // Fold unicode punctuation to ASCII FIRST. AniList writes "Journey’s End" with
+        // U+2019 and AllAnime writes "Journey's End" with an ASCII quote; stripping only
+        // the ASCII one left the two titles unequal, so the same show came back twice,
+        // one copy grouped into its franchise and one orphaned next to it.
+        .replace(/[\u2018\u2019\u201B\u02BC\u2032]/g, "'")
+        .replace(/[\u201C\u201D\u2033]/g, '"')
+        .replace(/[:\-\u2010\u2011\u2012\u2013\u2014\u2015.,'"!?()\uFF08\uFF09\u300C\u300D\u300E\u300F\/\\~\uFF5E\u30FB]/g, ' ')
+        .replace(/\s+/g, ' ').trim();
         const searchNorm = infoNorm(searchTitle);
         const media = mediaList.find(m => !m.isAdult && (infoNorm(m.title?.romaji) === searchNorm || infoNorm(m.title?.english) === searchNorm))
             || mediaList.find(m => !m.isAdult)
@@ -694,7 +712,15 @@ async function withRetry(fn, retries = 1, delayMs = 1000) {
 
 // Fix display names using TITLE_MAP (abbreviations + romaji → English)
 function fixDisplayName(result) {
-    const normName = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+    const normName = (s) => (s || '').toLowerCase()
+        // Fold unicode punctuation to ASCII FIRST. AniList writes "Journey’s End" with
+        // U+2019 and AllAnime writes "Journey's End" with an ASCII quote; stripping only
+        // the ASCII one left the two titles unequal, so the same show came back twice,
+        // one copy grouped into its franchise and one orphaned next to it.
+        .replace(/[\u2018\u2019\u201B\u02BC\u2032]/g, "'")
+        .replace(/[\u201C\u201D\u2033]/g, '"')
+        .replace(/[:\-\u2010\u2011\u2012\u2013\u2014\u2015.,'"!?()\uFF08\uFF09\u300C\u300D\u300E\u300F\/\\~\uFF5E\u30FB]/g, ' ')
+        .replace(/\s+/g, ' ').trim();
     const n = result.name;
     // Check exact alias (case-insensitive)
     const aliasKey = Object.keys(TITLE_MAP).find(k => k.toLowerCase() === n.toLowerCase())
@@ -782,6 +808,161 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
     return results;
 }
 
+
+// Release date as one sortable integer, 0 when the date is unknown. An undated
+// entry sorts to the front rather than disappearing, so ordering stays stable.
+function dateKey(d, seasonYear) {
+    const y = d?.year || seasonYear || 0;
+    if (!y) return 0;
+    return y * 10000 + (d?.month || 0) * 100 + (d?.day || 0);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SEARCH RANKING — keyword and content, blended, over the merged result set.
+//
+// Two signals:
+//   KEYWORD  how well the query matches a TITLE (name, English title, synonyms).
+//            exact > prefix > substring > all-tokens > partial > edit distance.
+//   CONTENT  how well the query matches what the show IS — description, genres
+//            and AniList tags — scored with BM25 across the candidate set.
+//
+// Honest about what this is: lexical-semantic, not embedding-semantic. It matches
+// meaning-bearing TEXT, so "pharmacist in the palace" now finds Apothecary Diaries
+// because the description says exactly that. It will NOT infer that "medicine girl
+// royal court" means the same thing. That needs an embedding model and an index,
+// which is a separate build.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SEARCH_STOP = new Set(['the','a','an','of','and','in','on','to','is','it','for',
+    'with','his','her','its','that','this','be','are','as','at','by','from','or','was',
+    'were','who','what','about','anime','show','series','season']);
+
+function searchTok(s) {
+    return (s || '').toLowerCase()
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&[a-z]+;/g, ' ')
+        .replace(/[^a-z0-9぀-ヿ一-鿿]+/g, ' ')
+        .split(' ')
+        .filter(w => w.length > 1 && !SEARCH_STOP.has(w));
+}
+
+// Levenshtein, capped — anything past the cap is "not close" and the exact
+// distance stops mattering.
+function editDist(a, b, cap = 8) {
+    if (a === b) return 0;
+    if (Math.abs(a.length - b.length) > cap) return cap + 1;
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+        const cur = [i];
+        let best = i;
+        for (let j = 1; j <= b.length; j++) {
+            cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1,
+                              prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+            if (cur[j] < best) best = cur[j];
+        }
+        if (best > cap) return cap + 1;
+        prev = cur;
+    }
+    return prev[b.length];
+}
+
+function keywordScore(q, r, norm) {
+    const qn = norm(q);
+    if (!qn) return 0;
+    const qt = searchTok(q);
+    const titles = [r.name, r.title_english, ...(r.synonyms || [])]
+        .filter(Boolean).map(norm).filter(Boolean);
+    let best = 0;
+    for (const t of titles) {
+        let sc;
+        if (t === qn) sc = 100;
+        else if (t.startsWith(qn)) sc = 80 - Math.min(16, (t.length - qn.length) / 3);
+        else if (t.includes(qn)) sc = 62;
+        else {
+            const tt = new Set(searchTok(t));
+            const hit = qt.filter(w => tt.has(w)).length;
+            if (qt.length && hit === qt.length) sc = 55;
+            else if (hit) sc = 18 + 26 * (hit / qt.length);
+            else {
+                const d = editDist(qn, t);
+                const sim = 1 - d / Math.max(qn.length, t.length, 1);
+                sc = sim > 0.72 ? 32 * sim : 0;
+            }
+        }
+        if (sc > best) best = sc;
+    }
+    return best;
+}
+
+// BM25 over description + genres + tags, across just this result set. A small
+// corpus is fine: the job is to order these candidates, not to search the world.
+function contentScores(q, items) {
+    const qt = [...new Set(searchTok(q))];
+    const docs = items.map(r => searchTok(
+        [r.description, (r.genres || []).join(' '), (r.tags || []).join(' ')].join(' ')));
+    const N = docs.length || 1;
+    const avgdl = docs.reduce((a, d) => a + d.length, 0) / N || 1;
+    const df = Object.create(null);
+    for (const d of docs) for (const w of new Set(d)) df[w] = (df[w] || 0) + 1;
+    const k1 = 1.5, b = 0.75;
+    return docs.map(d => {
+        if (!d.length) return 0;
+        const tf = Object.create(null);
+        for (const w of d) tf[w] = (tf[w] || 0) + 1;
+        let s = 0;
+        for (const w of qt) {
+            const f = tf[w];
+            if (!f) continue;
+            const idf = Math.log(1 + (N - df[w] + 0.5) / (df[w] + 0.5));
+            s += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * d.length / avgdl));
+        }
+        return s;
+    });
+}
+
+// Blend and sort in place.
+//
+// The weighting is ADAPTIVE, and it has to be. A fixed split ranked "Cowboy Bebop"
+// below "Cowboy Bebop: Tengoku no Tobira", because the movie's synopsis repeats the
+// franchise name and the 26-episode series carried no description at all. Two rules
+// come out of that:
+//
+//   1. Content only earns real weight when NO title matched well. If someone typed
+//      a title, titles decide. Content is for queries that describe a show.
+//   2. A missing description is missing DATA, not a zero match. Scoring it 0 punishes
+//      an entry for a gap in the upstream metadata, so it inherits the set's median.
+function rankResults(q, items, norm) {
+    if (!items.length) return items;
+    const content = contentScores(q, items);
+    const hasText = items.map(r =>
+        !!((r.description && r.description.length > 40) || (r.tags || []).length));
+    const maxC = Math.max(1e-9, ...content);
+
+    const kws = items.map(r => keywordScore(q, r, norm));
+    const bestKw = Math.max(0, ...kws);
+    const wC = bestKw >= 70 ? 0.10 : bestKw >= 45 ? 0.30 : 0.60;
+    const wK = 1 - wC;
+
+    const present = content.filter((_, i) => hasText[i]).sort((a, b) => a - b);
+    const medC = present.length ? present[Math.floor(present.length / 2)] : 0;
+
+    items.forEach((r, i) => {
+        const kw = kws[i];
+        const raw = hasText[i] ? content[i] : medC;
+        const cn = 100 * (raw / maxC);
+        // Popularity is a real signal for "which of these did they mean", not just
+        // a tiebreak: the main series is always far more popular than its recap.
+        const pop = Math.log10(1 + (r.popularity || 0)) * 3;
+        r.kw_score = Math.round(kw);
+        r.content_score = Math.round(cn);
+        r.search_score = Math.round(kw * wK + cn * wC + pop);
+    });
+    items.sort((a, b) => b.search_score - a.search_score
+                      || (b.popularity || 0) - (a.popularity || 0));
+    return items;
+}
+
 // AniList search — fuzzy matching, romaji/English, catches misspellings
 async function searchAniList(query, limit = 15) {
     try {
@@ -790,8 +971,12 @@ async function searchAniList(query, limit = 15) {
                 media(search: $search, type: ANIME, sort: [SEARCH_MATCH]) {
                     id title { english romaji } coverImage { medium }
                     description(asHtml: false) format episodes status
-                    genres isAdult
-                    relations { edges { node { id title { romaji english } format episodes } relationType } }
+                    genres isAdult popularity
+                    startDate { year month day } seasonYear
+                    synonyms
+                    tags { name rank isGeneralSpoiler }
+                    relations { edges { node { id title { romaji english } format episodes
+                                               startDate { year month day } seasonYear } relationType } }
                 }
             }
         }`;
@@ -813,9 +998,18 @@ async function searchAniList(query, limit = 15) {
             status: m.status,
             genres: m.genres || [],
             isAdult: m.isAdult || false,
+            popularity: m.popularity || 0,
+            synonyms: m.synonyms || [],
+            // Sortable release key. Franchise ordering used to run on episode count,
+            // which puts a currently-airing season LAST because it has the fewest
+            // episodes. Date is the only field that orders seasons correctly.
+            start_key: dateKey(m.startDate, m.seasonYear),
+            // Tag names above the noise floor, spoilers excluded. Content signal for
+            // the semantic half of search.
+            tags: (m.tags || []).filter(t => !t.isGeneralSpoiler && (t.rank ?? 0) >= 40).map(t => t.name),
             relations: (m.relations?.edges || [])
                 .filter(e => ['SEQUEL', 'PREQUEL', 'SIDE_STORY', 'SPIN_OFF', 'ALTERNATIVE', 'PARENT'].includes(e.relationType))
-                .map(e => ({ id: e.node.id, title_romaji: e.node.title?.romaji, title_english: e.node.title?.english, format: e.node.format, episodes: e.node.episodes, relationType: e.relationType }))
+                .map(e => ({ id: e.node.id, title_romaji: e.node.title?.romaji, title_english: e.node.title?.english, format: e.node.format, episodes: e.node.episodes, start_key: dateKey(e.node.startDate, e.node.seasonYear), relationType: e.relationType }))
         }));
     } catch { return []; }
 }
@@ -983,7 +1177,15 @@ const FALLBACK_CACHE_TTL = 30 * 60 * 1000;
 
 // Normalize title for cross-provider matching
 function normTitle(s) {
-    return (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+    return (s || '').toLowerCase()
+        // Fold unicode punctuation to ASCII FIRST. AniList writes "Journey’s End" with
+        // U+2019 and AllAnime writes "Journey's End" with an ASCII quote; stripping only
+        // the ASCII one left the two titles unequal, so the same show came back twice,
+        // one copy grouped into its franchise and one orphaned next to it.
+        .replace(/[\u2018\u2019\u201B\u02BC\u2032]/g, "'")
+        .replace(/[\u201C\u201D\u2033]/g, '"')
+        .replace(/[:\-\u2010\u2011\u2012\u2013\u2014\u2015.,'"!?()\uFF08\uFF09\u300C\u300D\u300E\u300F\/\\~\uFF5E\u30FB]/g, ' ')
+        .replace(/\s+/g, ' ').trim();
 }
 
 // Search a consumet provider for a title, return best match ID + episode map
@@ -1425,15 +1627,40 @@ const server = http.createServer(async (req, res) => {
                 searchAniList(query.q, 15)
             ]);
 
+            // Everything AniList returned goes into the local content index, so the
+            // corpus grows from ordinary use rather than needing a crawl.
+            try { SearchIndex.upsert(aniListResults); } catch { /* never block a search */ }
+
             const results = allAnimeResults.map(r => fixDisplayName(r));
             const existingNames = new Set(results.map(r => r.name.toLowerCase()));
 
             // Normalize name for fuzzy matching (strip punctuation, collapse whitespace)
-            const normName = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+            const normName = (s) => (s || '').toLowerCase()
+        // Fold unicode punctuation to ASCII FIRST. AniList writes "Journey’s End" with
+        // U+2019 and AllAnime writes "Journey's End" with an ASCII quote; stripping only
+        // the ASCII one left the two titles unequal, so the same show came back twice,
+        // one copy grouped into its franchise and one orphaned next to it.
+        .replace(/[\u2018\u2019\u201B\u02BC\u2032]/g, "'")
+        .replace(/[\u201C\u201D\u2033]/g, '"')
+        .replace(/[:\-\u2010\u2011\u2012\u2013\u2014\u2015.,'"!?()\uFF08\uFF09\u300C\u300D\u300E\u300F\/\\~\uFF5E\u30FB]/g, ' ')
+        .replace(/\s+/g, ' ').trim();
 
             // Strip season/part suffixes for base-title matching
             const stripSeason = (s) => s.replace(/\b(season|part|cour|s)\s*\d+/gi, '').replace(/\b\d+(st|nd|rd|th)\s*(season|part|cour)/gi, '').replace(/\s+(ii|iii|iv|v|vi)$/i, '').replace(/\s+/g, ' ').trim();
 
+
+            // Season number from a title. Absent means season 1, which is what
+            // "Kusuriya no Hitorigoto" vs "... 2nd Season" actually means.
+            const seasonNum = (s) => {
+                const m = s.match(/\b(\d+)\s*(?:st|nd|rd|th)\s+season\b/)
+                       || s.match(/\bseason\s*(\d+)\b/)
+                       || s.match(/\bpart\s*(\d+)\b/)
+                       || s.match(/\bcour\s*(\d+)\b/);
+                if (m) return parseInt(m[1], 10);
+                const rom = s.match(/\s+(ii|iii|iv|v|vi)$/);
+                if (rom) return { ii: 2, iii: 3, iv: 4, v: 5, vi: 6 }[rom[1]];
+                return 1;
+            };
             // Multi-pass AniList matching: exact → base-title → contains
             function findAniMatch(name, aniResults) {
                 const n = normName(name);
@@ -1443,11 +1670,21 @@ const server = http.createServer(async (req, res) => {
                     (a.title_romaji && normName(a.title_romaji) === n) ||
                     (a.title_english && normName(a.title_english) === n));
                 if (m) return m;
-                // Pass 2: base title match (strip season suffixes from both sides)
+                // Pass 2: base title match — but ONLY when the season numbers agree.
+                //
+                // This used to strip the season off both sides and compare the stems,
+                // so "Kusuriya no Hitorigoto Season 3" matched the SEASON 1 AniList
+                // entry and inherited its date, cover and description. Every later
+                // season of every show was being described as its first season.
+                const nSeason = seasonNum(n);
                 m = aniResults.find(a => {
-                    const rBase = stripSeason(normName(a.title_romaji || ''));
-                    const eBase = stripSeason(normName(a.title_english || ''));
-                    return (rBase && rBase === nBase) || (eBase && eBase === nBase);
+                    const rN = normName(a.title_romaji || '');
+                    const eN = normName(a.title_english || '');
+                    const rBase = stripSeason(rN);
+                    const eBase = stripSeason(eN);
+                    if (rBase && rBase === nBase && seasonNum(rN) === nSeason) return true;
+                    if (eBase && eBase === nBase && seasonNum(eN) === nSeason) return true;
+                    return false;
                 });
                 if (m) return m;
                 // Pass 3: one contains the other (min 8 chars to avoid false positives)
@@ -1455,8 +1692,13 @@ const server = http.createServer(async (req, res) => {
                     m = aniResults.find(a => {
                         const r = normName(a.title_romaji || '');
                         const e = normName(a.title_english || '');
-                        return (r.length >= 8 && (r.startsWith(n) || n.startsWith(r))) ||
-                               (e.length >= 8 && (e.startsWith(n) || n.startsWith(e)));
+                        // Same season guard as pass 2: a prefix match across different
+                        // seasons is the same wrong answer by another route.
+                        const okR = r.length >= 8 && (r.startsWith(n) || n.startsWith(r))
+                                    && seasonNum(r) === nSeason;
+                        const okE = e.length >= 8 && (e.startsWith(n) || n.startsWith(e))
+                                    && seasonNum(e) === nSeason;
+                        return okR || okE;
                     });
                 }
                 return m || null;
@@ -1490,6 +1732,11 @@ const server = http.createServer(async (req, res) => {
                     // Set genres, filter Hentai from non-adult matches
                     r.genres = (aniMatch.genres || []).filter(g => aniMatch.isAdult || g !== 'Hentai');
                     r.anilist_id = aniMatch.anilist_id;
+                    // Ordering and scoring signals. start_key is what seasons sort on.
+                    r.start_key = aniMatch.start_key || 0;
+                    r.popularity = aniMatch.popularity || 0;
+                    r.tags = aniMatch.tags || [];
+                    r.synonyms = aniMatch.synonyms || [];
                 }
             }
 
@@ -1500,8 +1747,9 @@ const server = http.createServer(async (req, res) => {
                 return !names.some(n => existingNames.has(n));
             });
 
-            // Search AllAnime for AniList-only titles (parallel, max 3)
-            const secondarySearches = aniListOnly.slice(0, 3).map(async (aniResult) => {
+            // Search AllAnime for AniList-only titles, in parallel. The cap was 3,
+            // which silently truncated the AniList half of a "hybrid" search.
+            const secondarySearches = aniListOnly.slice(0, SECONDARY_LOOKUP_CAP).map(async (aniResult) => {
                 const searchName = aniResult.title_romaji || aniResult.title_english;
                 if (!searchName) return null;
                 try {
@@ -1550,16 +1798,27 @@ const server = http.createServer(async (req, res) => {
             // Build comprehensive name→anilist_id map (search results + ALL relations)
             const nameToAniId = {};
             const aniIdFormat = {};
+            const aniIdStart = {};   // anilist id -> release key, for season ordering
+            const aniIdPop = {};     // anilist id -> popularity, for search ranking
             for (const a of aniListResults) {
                 if (a.title_romaji) nameToAniId[normName(a.title_romaji)] = a.anilist_id;
                 if (a.title_english) nameToAniId[normName(a.title_english)] = a.anilist_id;
+                // Synonyms catch alternate romanisations the two sources disagree on,
+                // which is one way an entry ends up ungrouped next to its own franchise.
+                for (const syn of (a.synonyms || [])) {
+                    const k = normName(syn);
+                    if (k && !nameToAniId[k]) nameToAniId[k] = a.anilist_id;
+                }
                 aniIdFormat[a.anilist_id] = a.format;
+                aniIdStart[a.anilist_id] = a.start_key || 0;
+                aniIdPop[a.anilist_id] = a.popularity || 0;
                 // Also index relation titles so we can match AllAnime results to related anime
                 if (a.relations) {
                     for (const rel of a.relations) {
                         if (rel.title_romaji) nameToAniId[normName(rel.title_romaji)] = rel.id;
                         if (rel.title_english) nameToAniId[normName(rel.title_english)] = rel.id;
                         aniIdFormat[rel.id] = rel.format;
+                        if (rel.start_key) aniIdStart[rel.id] = rel.start_key;
                     }
                 }
             }
@@ -1590,7 +1849,31 @@ const server = http.createServer(async (req, res) => {
                     r.anilist_id = aniId;
                     r.franchise_id = String(ufFind(aniId));
                     if (!r.anilist_format) r.anilist_format = aniIdFormat[aniId] || null;
+                    // A result matched only by id here never went through the enrich
+                    // loop above, so it would otherwise carry no date and sort wrong.
+                    if (!r.start_key) r.start_key = aniIdStart[aniId] || 0;
+                    if (!r.popularity) r.popularity = aniIdPop[aniId] || 0;
                 }
+            }
+
+            // Last-chance franchise grouping: anything still without a franchise_id
+            // whose season-stripped title matches one that HAS a franchise joins it.
+            // Two AllAnime entries for one show (romaji and English) otherwise end
+            // up side by side, one grouped and one orphaned.
+            const baseToFid = {};
+            for (const r of results) {
+                if (!r.franchise_id) continue;
+                const k = stripSeason(normName(r.name));
+                if (k && !baseToFid[k]) baseToFid[k] = r.franchise_id;
+                const ke = r.title_english ? stripSeason(normName(r.title_english)) : null;
+                if (ke && !baseToFid[ke]) baseToFid[ke] = r.franchise_id;
+            }
+            for (const r of results) {
+                if (r.franchise_id) continue;
+                const k = stripSeason(normName(r.name));
+                const ke = r.title_english ? stripSeason(normName(r.title_english)) : null;
+                const fid = baseToFid[k] || (ke && baseToFid[ke]);
+                if (fid) r.franchise_id = fid;
             }
 
             // When NSFW is off, filter out results with Hentai genre
@@ -1598,6 +1881,56 @@ const server = http.createServer(async (req, res) => {
                 if (r.genres && r.genres.includes('Hentai')) return false;
                 return true;
             });
+
+            // ── CONTENT RETRIEVAL FALLBACK ──────────────────────────────────
+            // Both upstream sources match titles only, so a query that describes a
+            // show instead of naming it retrieves NOTHING and there is no result set
+            // to rank. When the title search comes up short, search the local corpus
+            // of descriptions/genres/tags and resolve the hits back to playable
+            // AllAnime entries.
+            // Fire ONLY when the title search genuinely failed to find the thing:
+            // nothing at all, or nothing that matches a title well. Triggering on a
+            // small-but-good result set pads a correct answer with loose content
+            // matches - "apothecary diaries" returned 3 right answers and then
+            // Mirai Nikki, because its synopsis shares some words.
+            const bestTitleKw = finalResults.length
+                ? Math.max(...finalResults.map(r => keywordScore(query.q, r, normName)))
+                : 0;
+            if (finalResults.length === 0 || bestTitleKw < CONTENT_FALLBACK_KW) {
+                try {
+                    const hits = SearchIndex.search(query.q, { limit: 8, nsfw });
+                    const have = new Set(finalResults.map(r => normName(r.name)));
+                    const lookups = hits.map(async (h) => {
+                        const nm = h.entry.romaji || h.entry.english;
+                        if (!nm || have.has(normName(nm))) return null;
+                        const sub = await searchAnime(nm, mode, nsfw).catch(() => []);
+                        if (!sub.length) return null;
+                        const match = fixDisplayName(sub[0]);
+                        if (have.has(normName(match.name))) return null;
+                        match.cover = match.cover || null;
+                        match.description = h.entry.desc;
+                        match.title_english = match.title_english || h.entry.english;
+                        match.genres = h.entry.genres || [];
+                        match.tags = h.entry.tags || [];
+                        match.start_key = h.entry.start || 0;
+                        match.popularity = h.entry.pop || 0;
+                        match.anilist_id = h.entry.id;
+                        match.anilist_format = h.entry.fmt || null;
+                        match.from_content_index = true;
+                        return match;
+                    });
+                    for (const r of (await Promise.all(lookups))) {
+                        if (r && !have.has(normName(r.name))) {
+                            finalResults.push(r);
+                            have.add(normName(r.name));
+                        }
+                    }
+                } catch { /* the title results still stand */ }
+            }
+
+            // Rank the MERGED set. Until now AllAnime's order was kept as-is and
+            // AniList-only titles were appended, with no scoring anywhere.
+            rankResults(query.q, finalResults, normName);
 
             jsonResponse(res, 200, { results: finalResults, query: query.q, mode });
             return;
@@ -1783,7 +2116,15 @@ const server = http.createServer(async (req, res) => {
 
                 if (needsEnrich.size > 0) {
                     let updated = false;
-                    const normName = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+                    const normName = (s) => (s || '').toLowerCase()
+        // Fold unicode punctuation to ASCII FIRST. AniList writes "Journey’s End" with
+        // U+2019 and AllAnime writes "Journey's End" with an ASCII quote; stripping only
+        // the ASCII one left the two titles unequal, so the same show came back twice,
+        // one copy grouped into its franchise and one orphaned next to it.
+        .replace(/[\u2018\u2019\u201B\u02BC\u2032]/g, "'")
+        .replace(/[\u201C\u201D\u2033]/g, '"')
+        .replace(/[:\-\u2010\u2011\u2012\u2013\u2014\u2015.,'"!?()\uFF08\uFF09\u300C\u300D\u300E\u300F\/\\~\uFF5E\u30FB]/g, ' ')
+        .replace(/\s+/g, ' ').trim();
                     for (const [name, entries] of needsEnrich) {
                         try {
                             const results = await searchAniList(name, 3);
@@ -1808,7 +2149,15 @@ const server = http.createServer(async (req, res) => {
                 }
                 // Apply same fixDisplayName + franchise backfill as GET /favorites
                 const fixedFavs = favs.map(f => fixDisplayName(f));
-                const fn2 = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+                const fn2 = (s) => (s || '').toLowerCase()
+        // Fold unicode punctuation to ASCII FIRST. AniList writes "Journey’s End" with
+        // U+2019 and AllAnime writes "Journey's End" with an ASCII quote; stripping only
+        // the ASCII one left the two titles unequal, so the same show came back twice,
+        // one copy grouped into its franchise and one orphaned next to it.
+        .replace(/[\u2018\u2019\u201B\u02BC\u2032]/g, "'")
+        .replace(/[\u201C\u201D\u2033]/g, '"')
+        .replace(/[:\-\u2010\u2011\u2012\u2013\u2014\u2015.,'"!?()\uFF08\uFF09\u300C\u300D\u300E\u300F\/\\~\uFF5E\u30FB]/g, ' ')
+        .replace(/\s+/g, ' ').trim();
                 const pats2 = FRANCHISE_PATTERNS.map(p => fn2(p));
                 function matchPat2(names) {
                     for (const name of names) {
@@ -1900,7 +2249,15 @@ const server = http.createServer(async (req, res) => {
 
         if (pathname === '/favorites' && req.method === 'GET') {
             const rawFavs = loadFavorites();
-            const fn = (s) => (s || '').toLowerCase().replace(/[:\-–—.,'!?()（）「」\/\\]/g, ' ').replace(/\s+/g, ' ').trim();
+            const fn = (s) => (s || '').toLowerCase()
+        // Fold unicode punctuation to ASCII FIRST. AniList writes "Journey’s End" with
+        // U+2019 and AllAnime writes "Journey's End" with an ASCII quote; stripping only
+        // the ASCII one left the two titles unequal, so the same show came back twice,
+        // one copy grouped into its franchise and one orphaned next to it.
+        .replace(/[\u2018\u2019\u201B\u02BC\u2032]/g, "'")
+        .replace(/[\u201C\u201D\u2033]/g, '"')
+        .replace(/[:\-\u2010\u2011\u2012\u2013\u2014\u2015.,'"!?()\uFF08\uFF09\u300C\u300D\u300E\u300F\/\\~\uFF5E\u30FB]/g, ' ')
+        .replace(/\s+/g, ' ').trim();
             const patterns = FRANCHISE_PATTERNS.map(p => fn(p));
             // Helper: find matching pattern for a name (checks all name variants)
             function matchPattern(names) {
@@ -2285,10 +2642,25 @@ const server = http.createServer(async (req, res) => {
     }
 });
 
+// Fill the content index in the background on a fresh install, so a query that
+// describes a show instead of naming it has a corpus to search from the first run.
+// Delayed and fire-and-forget: it must never hold up the server coming online.
+function seedIndexIfEmpty() {
+    setTimeout(() => {
+        try {
+            if (SearchIndex.stats().entries >= 200) return;
+            SearchIndex.seed(12, 50, () => {})
+                .then(n => { if (n) console.log(`[ANI-MATE] content index seeded: ${n} entries`); })
+                .catch(() => {});
+        } catch { /* search still works on titles */ }
+    }, 5000);
+}
+
 server.listen(PORT, () => {
     console.log(`[ANI-MATE] Server online at http://localhost:${PORT}`);
     console.log(`[ANI-MATE] UI available at http://localhost:${PORT}/`);
     console.log(`[ANI-MATE] API endpoints: /search, /episodes, /play, /history, /continue, /download, /status`);
+    seedIndexIfEmpty();
 });
 
 server.on('error', (err) => {
