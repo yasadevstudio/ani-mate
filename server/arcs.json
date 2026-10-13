@@ -1,0 +1,33 @@
+{
+  "_README": [
+    "Story-arc boundaries for long-running series, keyed by AniList id.",
+    "",
+    "WHY A FILE. Neither AllAnime nor AniList exposes arcs. /episodes returns a flat",
+    "list of numbers, so a 131-episode series renders as one undivided grid and there",
+    "is no way to find the Beerus saga. This is the only place arc data can come from.",
+    "",
+    "SOURCING RULE. Use the publisher's own division, not a fan subdivision. For",
+    "Dragon Ball Super that is Toei Animation's promotional arcs as tabulated by",
+    "Wikipedia's List of Dragon Ball Super episodes. An aggregator gave seven finer",
+    "arcs with different boundaries (Beerus 1-15, a separate Copy-Vegeta 42-46, a",
+    "Paradise Plant 75-76); those are fan-wiki splits. Where sources disagree, prefer",
+    "the publisher and record the disagreement here. Checked 2026-10-12.",
+    "",
+    "TO EXTEND. Add \"<anilist_id>\": { \"title\": \"...\", \"source\": \"...\",",
+    "\"arcs\": [{\"name\": \"...\", \"from\": 1, \"to\": 18}] }. Ranges must be",
+    "contiguous and must end at the episode count; the server validates both and",
+    "ignores an entry that fails."
+  ],
+  "21175": {
+    "title": "Dragon Ball Super",
+    "episodes": 131,
+    "source": "Toei Animation promotional arcs, via Wikipedia List of Dragon Ball Super episodes, read 2026-10-12",
+    "arcs": [
+      { "name": "God of Destruction Beerus", "from": 1,  "to": 18  },
+      { "name": "Golden Frieza",             "from": 19, "to": 27  },
+      { "name": "Universe 6 & Duplicate Vegeta", "from": 28, "to": 46 },
+      { "name": "Zamasu",                    "from": 47, "to": 76  },
+      { "name": "Universe Survival",         "from": 77, "to": 131 }
+    ]
+  }
+}

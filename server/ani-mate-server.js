@@ -496,7 +496,7 @@ async function getAniListCovers(titles) {
         return (Date.now() - coverCache[t].at) > ttl;
     });
     if (needed.length === 0) {
-        return titles.reduce((acc, t) => { acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null, title_english: coverCache[t]?.title_english || null }; return acc; }, {});
+        return titles.reduce((acc, t) => { acc[t] = { ...(coverCache[t] || {}), cover: coverCache[t]?.url || null }; return acc; }, {});
     }
 
     // Batch query AniList (5 at a time to avoid rate limits, parameterized variables)
@@ -505,7 +505,16 @@ async function getAniListCovers(titles) {
         try {
             const varDefs = batch.map((_, idx) => `$s${idx}: String`).join(', ');
             const fragments = batch.map((_, idx) => {
-                return `q${idx}: Page(perPage: 1) { media(search: $s${idx}, type: ANIME) { title { english romaji } coverImage { medium } description(asHtml: false) } }`;
+                // id/format/startDate/popularity ride along on the request already
+                // being made for covers. Tightening the pass-3 prefix match stopped
+                // films inheriting the 1986 series' identity, which was right, but it
+                // left anything AniList's paged search had not returned with NO match
+                // at all — "Dragon Ball Super: Super Hero" came back format null, date
+                // null. Searched on its own it resolves fine (MOVIE, 2022, id 133898),
+                // so the data was always there; only the broad query missed it. This
+                // is a targeted per-title lookup, batched 5 at a time and cached, so
+                // it costs no extra round trip. Added 2026-10-12.
+                return `q${idx}: Page(perPage: 1) { media(search: $s${idx}, type: ANIME) { id title { english romaji } coverImage { medium } description(asHtml: false) format startDate { year month day } seasonYear popularity } }`;
             }).join('\n');
             const variables = {};
             batch.forEach((title, idx) => { variables[`s${idx}`] = title; });
@@ -524,7 +533,12 @@ async function getAniListCovers(titles) {
                 const coverUrl = media?.coverImage?.medium || null;
                 const desc = media?.description || null;
                 const titleEnglish = media?.title?.english || null;
-                coverCache[title] = { url: coverUrl, description: desc, title_english: titleEnglish, at: Date.now() };
+                coverCache[title] = { url: coverUrl, description: desc, title_english: titleEnglish,
+                                      anilist_id: media?.id || null,
+                                      format: media?.format || null,
+                                      start_key: media ? dateKey(media.startDate, media.seasonYear) : 0,
+                                      popularity: media?.popularity || 0,
+                                      at: Date.now() };
             });
         } catch {
             // On failure, cache null so we don't retry immediately
@@ -534,7 +548,7 @@ async function getAniListCovers(titles) {
         }
     }
 
-    return titles.reduce((acc, t) => { acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null, title_english: coverCache[t]?.title_english || null }; return acc; }, {});
+    return titles.reduce((acc, t) => { acc[t] = { ...(coverCache[t] || {}), cover: coverCache[t]?.url || null }; return acc; }, {});
 }
 
 // Anime info lookup (AniList primary, Jikan/MAL fallback)
@@ -733,6 +747,36 @@ function fixDisplayName(result) {
 }
 
 // Franchise pattern list — used by search grouping and favorites backfill
+// Story arcs for long-running series, keyed by AniList id. See server/arcs.json.
+// Neither AllAnime nor AniList exposes arcs, so a 131-episode series renders as one
+// undivided grid with no way to find a saga. Validated on load: ranges must be
+// contiguous from 1 and must end at the episode count, or the entry is dropped —
+// a wrong boundary is worse than no boundary. Added 2026-10-12.
+const ARCS = (() => {
+    try {
+        const raw = JSON.parse(require('fs').readFileSync(
+            require('path').join(__dirname, 'arcs.json'), 'utf8'));
+        const ok = {};
+        for (const [id, v] of Object.entries(raw)) {
+            if (id.startsWith('_') || !v || !Array.isArray(v.arcs) || !v.arcs.length) continue;
+            const a = v.arcs;
+            let contiguous = a[0].from === 1;
+            for (let i = 0; i < a.length - 1; i++) {
+                if (a[i + 1].from !== a[i].to + 1) contiguous = false;
+            }
+            if (!contiguous || a[a.length - 1].to !== v.episodes) {
+                console.warn(`[ANI-MATE] arcs.json: ${v.title || id} has non-contiguous or short ranges, ignored`);
+                continue;
+            }
+            ok[id] = v;
+        }
+        return ok;
+    } catch (e) {
+        console.warn('[ANI-MATE] arcs.json not loaded:', e.message);
+        return {};
+    }
+})();
+
 const FRANCHISE_PATTERNS = [
     'jujutsu kaisen', 'one piece', 'attack on titan', 'shingeki no kyojin',
     'demon slayer', 'kimetsu no yaiba', 'my hero academia', 'boku no hero academia',
@@ -1662,6 +1706,25 @@ const server = http.createServer(async (req, res) => {
                 return 1;
             };
             // Multi-pass AniList matching: exact → base-title → contains
+            // A prefix match is only safe if what remains after the shared prefix is
+            // nothing, or a season marker. Without this, normName('Dragon Ball') is
+            // 'dragonball' — ten characters, so it clears the length floor — and every
+            // title in the franchise starts with it. 'dragonballsuperbroly' leaves
+            // 'superbroly', and a 2018 film inherited the 1986 series' date, format,
+            // cover and description. 27 of 40 Dragon Ball results were affected.
+            //
+            // The v0.5.1 season guard does not catch this: none of those titles carry a
+            // season number, so seasonNum() returns 1 for all of them and they "agree".
+            // Measured 2026-10-12.
+            const SEASON_TAIL = /^(?:season|part|cour|s)?(?:\d+|i{1,3}|iv|vi?)$/;
+            const prefixSafe = (long, short) => {
+                if (!long.startsWith(short)) return false;
+                const rest = long.slice(short.length);
+                return rest === '' || SEASON_TAIL.test(rest);
+            };
+            const containsSafe = (a, b) =>
+                a.length >= b.length ? prefixSafe(a, b) : prefixSafe(b, a);
+
             function findAniMatch(name, aniResults) {
                 const n = normName(name);
                 const nBase = stripSeason(n);
@@ -1694,10 +1757,8 @@ const server = http.createServer(async (req, res) => {
                         const e = normName(a.title_english || '');
                         // Same season guard as pass 2: a prefix match across different
                         // seasons is the same wrong answer by another route.
-                        const okR = r.length >= 8 && (r.startsWith(n) || n.startsWith(r))
-                                    && seasonNum(r) === nSeason;
-                        const okE = e.length >= 8 && (e.startsWith(n) || n.startsWith(e))
-                                    && seasonNum(e) === nSeason;
+                        const okR = r.length >= 8 && containsSafe(r, n) && seasonNum(r) === nSeason;
+                        const okE = e.length >= 8 && containsSafe(e, n) && seasonNum(e) === nSeason;
                         return okR || okE;
                     });
                 }
@@ -1777,14 +1838,26 @@ const server = http.createServer(async (req, res) => {
 
             // Attach cover images for results still missing covers
             try {
-                const uncovered = results.filter(r => !r.cover).slice(0, 15).map(r => r.name);
-                if (uncovered.length > 0) {
-                    const anilistData = await getAniListCovers(uncovered);
+                // Anything missing a cover OR an identity. An entry with no AniList
+                // match has no format and no date, which breaks sorting and makes a
+                // film indistinguishable from a season.
+                // 15 was the old cover-only cap. A 40-row franchise search left 25
+                // rows with no identity at all, so it rises to 25 — five batches of
+                // five, which is the rate-limit ceiling worth spending here.
+                const needy = results.filter(r => !r.cover || !r.anilist_id)
+                                     .slice(0, 25).map(r => r.name);
+                if (needy.length > 0) {
+                    const anilistData = await getAniListCovers(needy);
                     for (const r of results) {
-                        if (!r.cover) {
-                            const info = anilistData[r.name];
-                            r.cover = info?.cover || null;
-                            r.description = r.description || info?.description || null;
+                        const info = anilistData[r.name];
+                        if (!info) continue;
+                        if (!r.cover) r.cover = info.cover || null;
+                        if (!r.description) r.description = info.description || null;
+                        if (!r.anilist_id && info.anilist_id) {
+                            r.anilist_id = info.anilist_id;
+                            r.anilist_format = r.anilist_format || info.format || null;
+                            if (!r.start_key) r.start_key = info.start_key || 0;
+                            if (!r.popularity) r.popularity = info.popularity || 0;
                         }
                     }
                 }
@@ -1832,12 +1905,24 @@ const server = http.createServer(async (req, res) => {
             }
 
             // Name-pattern franchise overrides — group results whose normalized names share a common prefix
+            //
+            // patternFid also gives those franchises a STABLE id. ufFind() returns the
+            // smallest AniList id in whatever union this query happened to build, so
+            // the same show came back as franchise 502 from one search and 223 from
+            // another, and anything persisted against it — favourites, history, the
+            // sibling cache — went stale. A pattern name does not vary by query.
+            // Measured 2026-10-12.
+            const patternFid = {};
             for (const pattern of FRANCHISE_PATTERNS) {
                 const pNorm = normName(pattern);
                 const matchingIds = Object.entries(nameToAniId)
                     .filter(([name]) => name.startsWith(pNorm) || name === pNorm)
                     .map(([, id]) => id);
                 for (let i = 1; i < matchingIds.length; i++) ufUnion(matchingIds[0], matchingIds[i]);
+                // Longest pattern wins, so "jojo's bizarre adventure" beats "jojo".
+                for (const id of matchingIds) {
+                    if (!patternFid[id] || pNorm.length > patternFid[id].length) patternFid[id] = pNorm;
+                }
             }
 
             // Assign franchise_id and anilist_format to each result
@@ -1847,13 +1932,41 @@ const server = http.createServer(async (req, res) => {
                 const aniId = nameToAniId[rNorm] || (rEnNorm && nameToAniId[rEnNorm]);
                 if (aniId) {
                     r.anilist_id = aniId;
-                    r.franchise_id = String(ufFind(aniId));
+                    // Stable key where a franchise pattern applies, union-find root
+                    // otherwise. Every member of a union must agree, so the pattern is
+                    // read off the ROOT rather than off this entry.
+                    const root = ufFind(aniId);
+                    r.franchise_id = patternFid[root] ? 'fp:' + patternFid[root]
+                                   : (patternFid[aniId] ? 'fp:' + patternFid[aniId]
+                                                        : String(root));
                     if (!r.anilist_format) r.anilist_format = aniIdFormat[aniId] || null;
                     // A result matched only by id here never went through the enrich
                     // loop above, so it would otherwise carry no date and sort wrong.
                     if (!r.start_key) r.start_key = aniIdStart[aniId] || 0;
                     if (!r.popularity) r.popularity = aniIdPop[aniId] || 0;
                 }
+            }
+
+            // Franchise by NAME PATTERN, independent of AniList.
+            //
+            // Tightening the pass-3 prefix match stopped films inheriting the 1986
+            // series' identity, which was right, but it also left them with no AniList
+            // match at all — and franchise_id was only ever assigned to entries that
+            // had one. "Dragon Ball Super: Super Hero" dropped out of the Dragon Ball
+            // franchise entirely. Franchise membership is a property of the TITLE and
+            // should not require a successful AniList lookup. Added 2026-10-12.
+            for (const r of results) {
+                if (r.franchise_id) continue;
+                const nm = normName(r.name);
+                const en = r.title_english ? normName(r.title_english) : '';
+                let best = null;
+                for (const pattern of FRANCHISE_PATTERNS) {
+                    const pNorm = normName(pattern);
+                    if (nm.startsWith(pNorm) || (en && en.startsWith(pNorm))) {
+                        if (!best || pNorm.length > best.length) best = pNorm;
+                    }
+                }
+                if (best) r.franchise_id = 'fp:' + best;
             }
 
             // Last-chance franchise grouping: anything still without a franchise_id
@@ -1949,7 +2062,15 @@ const server = http.createServer(async (req, res) => {
                 jsonResponse(res, 200, { anime_id: query.id, episodes: [], mode, error: 'Source temporarily unavailable — try again in a moment' });
                 return;
             }
-            jsonResponse(res, 200, { anime_id: query.id, episodes, mode });
+            // Attach arcs when we know them. The id here is an AllAnime id, so the
+            // AniList id has to come from the caller; fall back to matching on count.
+            let arcs = null;
+            const aniKey = query.anilist_id && ARCS[String(query.anilist_id)]
+                ? String(query.anilist_id)
+                : Object.keys(ARCS).find(k => ARCS[k].episodes === episodes.length
+                                           && episodes.length > 0);
+            if (aniKey) arcs = ARCS[aniKey].arcs;
+            jsonResponse(res, 200, { anime_id: query.id, episodes, mode, arcs });
             return;
         }
 

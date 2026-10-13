@@ -389,6 +389,25 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
     // and therefore no date, no franchise and no content text to search on.
     // Passes 2 and 3 require the SEASON NUMBERS TO AGREE, otherwise "... Season 3"
     // matches the season 1 entry and inherits its date, cover and description.
+        // A prefix match is only safe if what remains after the shared prefix is
+        // nothing, or a season marker. Without this, normName('Dragon Ball') is
+        // 'dragonball' — ten characters, so it clears the length floor — and every
+        // title in the franchise starts with it. 'dragonballsuperbroly' leaves
+        // 'superbroly', and a 2018 film inherited the 1986 series' date, format,
+        // cover and description. 27 of 40 Dragon Ball results were affected.
+        //
+        // The v0.5.1 season guard does not catch this: none of those titles carry a
+        // season number, so seasonNum() returns 1 for all of them and they "agree".
+        // Measured 2026-10-12.
+        const SEASON_TAIL = /^(?:season|part|cour|s)?(?:\d+|i{1,3}|iv|vi?)$/;
+        const prefixSafe = (long, short) => {
+            if (!long.startsWith(short)) return false;
+            const rest = long.slice(short.length);
+            return rest === '' || SEASON_TAIL.test(rest);
+        };
+        const containsSafe = (a, b) =>
+            a.length >= b.length ? prefixSafe(a, b) : prefixSafe(b, a);
+
     function findAniMatch(name, aniResults) {
         const n = normName(name);
         const nBase = stripSeason(n);
@@ -408,8 +427,8 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
         if (n.length >= 8) {
             m = aniResults.find(a => {
                 const r = normName(a.title_romaji || ''), e = normName(a.title_english || '');
-                const okR = r.length >= 8 && (r.startsWith(n) || n.startsWith(r)) && seasonNum(r) === nSeason;
-                const okE = e.length >= 8 && (e.startsWith(n) || n.startsWith(e)) && seasonNum(e) === nSeason;
+                const okR = r.length >= 8 && containsSafe(r, n) && seasonNum(r) === nSeason;
+                const okE = e.length >= 8 && containsSafe(e, n) && seasonNum(e) === nSeason;
                 return okR || okE;
             });
         }
@@ -763,12 +782,24 @@ async function searchAniList(query, limit = 15) {
 }
 
 // Get episode list for a show
-async function getEpisodeList(showId, mode = 'sub') {
+// Arc lookup for the episode grid. anilist_id is the stable key; falling back to
+// an exact episode-count match covers the case where the caller does not have it,
+// and a wrong count simply yields no arcs rather than wrong ones.
+function arcsFor(anilistId, epCount) {
+    const T = (typeof window !== 'undefined' && window.ANIMATE_ARCS) || {};
+    const byId = anilistId && T[String(anilistId)];
+    if (byId && byId.episodes === epCount) return byId.arcs;
+    const k = Object.keys(T).find(x => T[x].episodes === epCount && epCount > 0);
+    return k ? T[k].arcs : null;
+}
+
+async function getEpisodeList(showId, mode = 'sub', anilistId = null) {
     if (isTagged(showId) && window.SOURCES) {
         const real = await resolveSearchId(showId, mode);
-        if (!real) return [];
+        if (!real) return { episodes: [], arcs: null };
         const eps = await window.SOURCES.episodes(real, mode).catch(() => []);
-        return eps.map(e => e.number);
+        const nums = eps.map(e => e.number);
+        return { episodes: nums, arcs: arcsFor(anilistId, nums.length) };
     }
     const gql = `query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail } }`;
     const variables = JSON.stringify({ showId });
@@ -784,7 +815,7 @@ async function getEpisodeList(showId, mode = 'sub') {
             episodes = detail[mode].sort((a, b) => parseFloat(a) - parseFloat(b));
         }
     } catch { /* ignore */ }
-    return episodes;
+    return { episodes, arcs: arcsFor(anilistId, episodes.length) };
 }
 
 // Decode provider ID (hex mapping from ani-cli)

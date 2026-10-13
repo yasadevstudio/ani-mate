@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.5.1';
+    const APP_VERSION = '0.5.2';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -165,7 +165,20 @@
                     if (aK !== bK) return aK - bK;
                     return (b.episodes || 0) - (a.episodes || 0);
                 });
-                groups.push({ franchise_id: fid, parent: members[0], members });
+                // members stays chronological — it is the expanded list and the strip.
+                // The CARD, though, must open what the user searched for.
+                //
+                // v0.5.1 made the card open members[0], the oldest, so Apothecary
+                // Diaries would open S1 instead of S2. Right for a three-season show.
+                // Wrong for a franchise: 'dragon ball' is a FRANCHISE_PATTERN prefix
+                // that unions forty years into one card, so searching "Dragon Ball
+                // Super" opened Dragon Ball Z from 1989. rankResults already scored
+                // every row against the query; use it. With no season named, season 1
+                // still scores highest, so the v0.5.1 behaviour is preserved rather
+                // than reverted. Measured 2026-10-12.
+                const byScore = members.reduce((best, m) =>
+                    (m.search_score ?? -1) > (best.search_score ?? -1) ? m : best, members[0]);
+                groups.push({ franchise_id: fid, parent: byScore, members });
             }
         }
         return { groups, ungrouped };
@@ -319,18 +332,40 @@
 
     const franchiseCache = {};   // franchise_id -> array of sibling results
 
-    function seasonLabel(r) {
+    // Label a strip chip. Season number if the title carries one; otherwise the part
+    // of the title that DISTINGUISHES it from its siblings.
+    //
+    // The old fallback returned 'S1' for any TV entry with no season number and no
+    // colon, so the Dragon Ball spine rendered as seven chips all reading "S1" —
+    // Z, GT, Kai, Super and Daima were indistinguishable. A franchise whose entries
+    // are named rather than numbered needs the name. Added 2026-10-12.
+    function commonPrefixWords(names) {
+        if (names.length < 2) return 0;
+        const split = names.map(n => n.split(/\s+/));
+        let i = 0;
+        while (split.every(s => s[i] !== undefined &&
+                                s[i].toLowerCase() === split[0][i].toLowerCase())) i++;
+        return i;
+    }
+
+    function seasonLabel(r, siblings) {
         const n = r.name || '';
         let m = n.match(/(\d+)\s*(?:st|nd|rd|th)\s+Season/i)
              || n.match(/\bSeason\s*(\d+)/i)
              || n.match(/\bPart\s*(\d+)/i)
              || n.match(/\bS(\d+)\b/);
         if (m) return 'S' + m[1];
+        const k = commonPrefixWords((siblings || []).map(s => s.name).filter(Boolean));
+        if (k > 0) {
+            const rest = n.split(/\s+/).slice(k).join(' ').replace(/^[:\-\u2013\u2014]\s*/, '').trim();
+            if (rest) return rest.length > 18 ? rest.slice(0, 17) + '\u2026' : rest;
+            return 'S1';   // this entry IS the shared title: the original
+        }
         // "Show: Arc Name" -> "Arc Name"
         const c = n.split(':');
         if (c.length > 1) {
             const tail = c.slice(1).join(':').trim();
-            if (tail) return tail.length > 16 ? tail.slice(0, 15) + '…' : tail;
+            if (tail) return tail.length > 18 ? tail.slice(0, 17) + '\u2026' : tail;
         }
         const f = (r.anilist_format || '').toUpperCase();
         if (f === 'MOVIE' || f === 'OVA' || f === 'ONA' || f === 'SPECIAL') return f;
@@ -355,19 +390,53 @@
     }
 
     function renderSeasonStrip() {
+        // expansion is per show, not sticky across selections
+        if (state._stripFor !== (state.selectedAnime && state.selectedAnime.id)) {
+            state._stripFor = state.selectedAnime && state.selectedAnime.id;
+            state.seasonStripExpanded = false;
+        }
         const el = document.getElementById('season-strip');
         if (!el) return;
         const sel = state.selectedAnime;
         if (!sel || !sel.franchiseId) { el.style.display = 'none'; el.innerHTML = ''; return; }
-        const sibs = franchiseSiblings(sel.franchiseId);
-        if (sibs.length < 2) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        const all = franchiseSiblings(sel.franchiseId);
+        if (all.length < 2) { el.style.display = 'none'; el.innerHTML = ''; return; }
+
+        // A SEASON strip should list seasons. With a whole franchise under one id,
+        // Dragon Ball Super's strip was twelve chips — three series, five films,
+        // three ONAs and an OVA — with two different chips both reading "S1".
+        // Series form the spine; everything else sits behind one toggle. The entry
+        // currently open is always on the spine, whatever its format.
+        const isSpine = (x) => {
+            const f = (x.anilist_format || '').toUpperCase();
+            return f === 'TV' || f === 'TV_SHORT' || String(x.id) === String(sel.id);
+        };
+        // The label's sibling basis is the SPINE, not every entry. Across all 39
+        // Dragon Ball rows the shared prefix is zero words, because "Super Dragon
+        // Ball Heroes" starts with "Super" — and the labels collapsed back to seven
+        // chips reading "S1". Over the spine the prefix is "Dragon Ball" and the
+        // remainders are Z, GT, Kai, Super, Daima.
+        const spine = all.filter(isSpine);
+        const extra = all.filter(x => !isSpine(x));
+        const sibs = state.seasonStripExpanded ? all : (spine.length >= 2 ? spine : all);
+        if (sibs.length < 2 && !extra.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
         el.innerHTML = sibs.map(s => {
             const on = String(s.id) === String(sel.id) ? ' active' : '';
             return `<button class="season-chip${on}" data-id="${escAttr(String(s.id))}"`
                  + ` data-title="${escAttr(s.name)}" data-eps="${s.episodes || 0}"`
-                 + ` title="${escAttr(s.name)}">${esc(seasonLabel(s))}</button>`;
+                 + ` title="${escAttr(s.name)}">${esc(seasonLabel(s, spine))}</button>`;
         }).join('');
+        if (extra.length && !state.seasonStripExpanded) {
+            el.innerHTML += `<button class="season-chip season-more"`
+                          + ` title="Films, OVAs and specials in this franchise">`
+                          + `+${extra.length} more</button>`;
+        }
         el.style.display = 'flex';
+        const more = el.querySelector('.season-more');
+        if (more) more.addEventListener('click', () => {
+            state.seasonStripExpanded = true;
+            renderSeasonStrip();
+        });
         el.querySelectorAll('.season-chip').forEach(chip => {
             chip.addEventListener('click', () => {
                 if (String(chip.dataset.id) === String(state.selectedAnime?.id)) return;
@@ -383,7 +452,12 @@
         const sel = state.selectedAnime;
         if (!sel || !sel.franchiseId) return;
         if (franchiseCache[sel.franchiseId]) return;
-        if (franchiseSiblings(sel.franchiseId).length >= 2) return;
+        // There used to be an early return here when two siblings were already on
+        // hand. franchiseSiblings() reads from whatever the CURRENT SEARCH returned,
+        // so the strip settled for the two or three most popular entries — which skew
+        // recent — and the earlier seasons were never fetched at all. That is the
+        // reported "you can only see the latest ones". Fetch once per franchise,
+        // always, and cache it. Removed 2026-10-12.
         const base = (sel.title || '')
             .replace(/\b(\d+\s*(?:st|nd|rd|th)\s+Season|Season\s*\d+|Part\s*\d+)\b/gi, '')
             .replace(/\s+/g, ' ').trim();
@@ -449,7 +523,11 @@
         grid.innerHTML = '<div class="loading-indicator">LOADING EPISODES...</div>';
 
         try {
-            state.episodes = await API.getEpisodeList(animeId, state.mode);
+            const epRes = await API.getEpisodeList(animeId, state.mode,
+                                                   matched && matched.anilist_id);
+            // getEpisodeList may return a bare array (older path) or {episodes, arcs}
+            state.episodes = Array.isArray(epRes) ? epRes : (epRes.episodes || []);
+            state.arcs = Array.isArray(epRes) ? null : (epRes.arcs || null);
             renderEpisodeGrid();
 
             // Auto-select pending episode (from Continue tab)
@@ -489,30 +567,43 @@
             return;
         }
 
-        // Range selector for long series
-        if (state.episodes.length > RANGE_SIZE) {
+        // Ranges. When the series has known story arcs, the range buttons ARE the
+        // arcs, so a 131-episode grid splits into "Beerus 1-18" rather than an
+        // arbitrary "1-50". That is the whole arc feature: no second control, no new
+        // CSS, and it answers "where is the Beerus arc". Falls back to fixed blocks
+        // when no arc data exists, which is every series but the few in arcs.json.
+        // Added 2026-10-12.
+        const arcs = Array.isArray(state.arcs) && state.arcs.length ? state.arcs : null;
+        const bands = arcs
+            ? arcs.map(a => ({ from: a.from, to: Math.min(a.to, state.episodes.length),
+                               label: `${a.name} ${a.from}-${Math.min(a.to, state.episodes.length)}` }))
+            : Array.from({ length: Math.ceil(state.episodes.length / RANGE_SIZE) }, (_, i) => {
+                  const from = i * RANGE_SIZE + 1;
+                  const to = Math.min((i + 1) * RANGE_SIZE, state.episodes.length);
+                  return { from, to, label: `${from}-${to}` };
+              });
+
+        if (bands.length > 1) {
             rangeSelector.style.display = 'flex';
-            const totalRanges = Math.ceil(state.episodes.length / RANGE_SIZE);
             rangeSelector.innerHTML = '';
-            for (let i = 0; i < totalRanges; i++) {
-                const start = i * RANGE_SIZE + 1;
-                const end = Math.min((i + 1) * RANGE_SIZE, state.episodes.length);
+            bands.forEach((b, i) => {
                 const btn = document.createElement('button');
-                btn.className = `range-btn ${i === state.currentRange ? 'active' : ''}`;
-                btn.textContent = `${start}-${end}`;
+                btn.className = `range-btn ${i === (state.currentRange || 0) ? 'active' : ''}`;
+                btn.textContent = b.label;
+                btn.title = b.label;
                 btn.addEventListener('click', () => {
                     state.currentRange = i;
                     renderEpisodeGrid();
                 });
                 rangeSelector.appendChild(btn);
-            }
+            });
         } else {
             rangeSelector.style.display = 'none';
         }
 
-        // Slice episodes by current range
-        const start = (state.currentRange || 0) * RANGE_SIZE;
-        const visibleEps = state.episodes.slice(start, start + RANGE_SIZE);
+        // Slice by the active band. Episode numbers are 1-based, the array is not.
+        const band = bands[state.currentRange || 0] || bands[0] || { from: 1, to: state.episodes.length };
+        const visibleEps = state.episodes.slice(band.from - 1, band.to);
 
         // Find watched episodes from history
         const histEntry = state.history.find(h => h.anime_id === state.selectedAnime?.id);
@@ -1861,17 +1952,17 @@
 
     // === CHANGELOG ===
     // A note from YASA, shown above the list in the update popup.
-    const CHANGELOG_NOTE = "Sorry this took so long. Some things in my personal life needed my attention and ANI-MATE had to wait. Thanks for being patient with it.";
+    const CHANGELOG_NOTE = "Dragon Ball broke a lot of this. Forty years of it under one card, and the fixes from last time only covered shows that number their seasons.";
 
     const CHANGELOG = [
-        "Picking a show opens the right season. A season still airing has the fewest episodes, and the list was ordered by episode count, so tapping the card opened the PREVIOUS season",
-        "Later seasons stopped borrowing season one's cover, description and release date. They were being matched to the wrong entry entirely",
-        "Every season of a show is now one tap away from the episode list, instead of going back to the results",
-        "Search understands what a show is about, not just its title. “pirate crew looking for treasure” finds One Piece",
-        "Search results are ranked. The two sources used to be stuck together in whatever order they arrived, with no scoring at all",
-        "A show no longer turns up twice, once grouped with its seasons and once on its own. A curly apostrophe was making a title not equal itself",
-        "Tapping a franchise card no longer loads the episode list twice",
-        "Android: all of the above, plus the content index is kept on the device so search stays fast offline",
+        "Searching a show opens THAT show. \u201cDragon Ball Super\u201d was opening Dragon Ball Z from 1989, because a card covering a whole franchise opened its oldest entry",
+        "Films stopped pretending to be the first series. Broly and Super Hero were both showing as TV episodes from 1986, with the 1986 cover and description. 27 of 40 Dragon Ball entries had the wrong year",
+        "The season row shows seasons. It was listing every film, OVA and spin\u2011off alongside them \u2014 39 of them for Dragon Ball \u2014 and seven different series all labelled \u201cS1\u201d. Films and specials now sit behind a \u201c+N more\u201d button",
+        "Seasons are named when they have names. Z, GT, Kai, Super and Daima are told apart now instead of all reading \u201cS1\u201d",
+        "Older seasons actually load. The season row only ever showed what the current search happened to return, which is why you could only see the recent ones",
+        "Long series split by story arc. Dragon Ball Super now opens on God of Destruction Beerus 1\u201118, Golden Frieza 19\u201127, and so on, instead of 1\u201150 and 51\u2011100",
+        "A show keeps the same franchise for good. It used to change depending on what you searched, which quietly broke favourites and history",
+        "Android: all of the above",
     ];
 
     function showChangelog() {
