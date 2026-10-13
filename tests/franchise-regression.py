@@ -85,7 +85,7 @@ CASES = [
          check=lambda rs: (lambda g: bool(g) and all("Super" in parent["name"]
                                                      for parent, _ in g.values()))(card_opens(rs))),
     dict(id="db-beerus-present", q="dragon ball super", minrows=5,
-         want="the 2026 Beerus release is in the results",
+         want="the 2026 Beerus remake is in the results",
          check=lambda rs: bool(need(rs, "Dragon Ball Super: Beerus"))),
     dict(id="db-dates-not-collapsed", q="dragon ball", minrows=20,
          want="no more than 6 entries share one REAL date (absent != collapsed)",

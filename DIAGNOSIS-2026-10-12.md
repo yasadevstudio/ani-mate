@@ -10,9 +10,27 @@ are one bug.**
 
 ## FINDING 0 — THE REPORTED BUG. Searching "Dragon Ball Super" opens Dragon Ball Z
 
-**`Dragon Ball Super: Beerus` is a new release, not an arc.** TV, 1 episode,
-first aired **2026-10-11**. It is in the data, search returns it, and
-`/episodes` returns episode 1, so it plays.
+**`Dragon Ball Super: Beerus` is a REMAKE, not a new arc and not a sequel.**
+TV, status RELEASING, first aired **2026-10-11**. It is in the data, search
+returns it, and `/episodes` returns episode 1, so it plays.
+
+CORRECTED 2026-10-13 — this file first called it "a new release", which YASA
+flagged. AniList's own relations settle it (id 206814):
+
+    PARENT    Dragon Ball Z: Kami to Kami    MOVIE 2013
+    PARENT    Dragon Ball Super              TV 2015
+    PREQUEL   Dragon Ball Z                  TV 1989
+    PREQUEL   Dragon Ball Kai (2014)         TV 2014
+
+Two PARENTs, both earlier tellings of the same story, and the PREQUELs point at
+Z and Kai rather than at Super. A sequel would have Super as its prequel. It is
+a retelling of the Battle of Gods / Beerus arc.
+
+**No code change follows from this.** The app already handles remakes
+consistently: Dragon Ball Kai is a remake of Z and sits on the spine by air
+date, which is exactly where Beerus sits. Worth knowing for anyone extending
+this: AniList's PARENT edges are the signal if a remake should ever be labelled
+as one in the strip.
 
 The problem is you cannot get to it. Searching `dragon ball super` returns a
 **single franchise card** covering 12 entries, and tapping that card opens:
