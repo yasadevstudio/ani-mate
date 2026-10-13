@@ -576,17 +576,37 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
     }
 
     // Name-pattern franchise overrides (catches series AniList doesn't link)
+    // KEEP IN STEP WITH server/ani-mate-server.js. Mobile had 18 of these while the
+    // server had 36, so half the franchises the desktop grouped did not group here.
+    // Mobile does NOT call our server — it talks to AllAnime and AniList directly —
+    // so every franchise rule has to exist in both files or the two apps disagree.
     const FRANCHISE_PATTERNS = [
         'jujutsu kaisen', 'one piece', 'attack on titan', 'shingeki no kyojin',
         'demon slayer', 'kimetsu no yaiba', 'my hero academia', 'boku no hero academia',
         'sword art online', 'naruto', 'dragon ball', 'bleach', 'hunter x hunter',
         'fullmetal alchemist', 'mob psycho', 're zero', 'overlord', 'konosuba',
+        'jojo', "jojo's bizarre adventure", 'spy x family', 'spy family',
+        'dr stone', 'dr. stone', 'solo leveling', 'ore dake level up',
+        'mushoku tensei', 'that time i got reincarnated as a slime', 'tensei shitara slime',
+        'danmachi', 'is it wrong to try to pick up girls in a dungeon',
+        'chainsaw man', 'vinland saga', 'mashle', 'blue lock', 'frieren',
+        'oshi no ko',
     ];
+    // patternFid gives these franchises a STABLE id. ufFind() returns the smallest
+    // AniList id in whatever union THIS query happened to build, so the same show came
+    // back under different franchise ids from different searches and anything stored
+    // against it went stale. A pattern name does not vary by query.
+    const patternFid = {};
     for (const pattern of FRANCHISE_PATTERNS) {
+        const pNorm = normName(pattern);
         const matchingIds = Object.entries(nameToAniId)
-            .filter(([name]) => name.startsWith(pattern) || name === pattern)
+            .filter(([name]) => name.startsWith(pNorm) || name === pNorm)
             .map(([, id]) => id);
         for (let i = 1; i < matchingIds.length; i++) ufUnion(matchingIds[0], matchingIds[i]);
+        // Longest pattern wins, so "jojo's bizarre adventure" beats "jojo".
+        for (const id of matchingIds) {
+            if (!patternFid[id] || pNorm.length > patternFid[id].length) patternFid[id] = pNorm;
+        }
     }
 
     for (const r of results) {
@@ -595,13 +615,35 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
         const aniId = nameToAniId[rNorm] || (rEnNorm && nameToAniId[rEnNorm]);
         if (aniId) {
             r.anilist_id = aniId;
-            r.franchise_id = String(ufFind(aniId));
+            // Stable key where a pattern applies, union-find root otherwise. Read off
+            // the ROOT so every member of a union agrees.
+            const root = ufFind(aniId);
+            r.franchise_id = patternFid[root] ? 'fp:' + patternFid[root]
+                           : (patternFid[aniId] ? 'fp:' + patternFid[aniId]
+                                                : String(root));
             if (!r.anilist_format) r.anilist_format = aniIdFormat[aniId] || null;
             // A result matched only by id here never went through the enrich loop
             // above, so it would otherwise carry no date and sort wrong.
             if (!r.start_key) r.start_key = aniIdStart[aniId] || 0;
             if (!r.popularity) r.popularity = aniIdPop[aniId] || 0;
         }
+    }
+
+    // Franchise by NAME PATTERN, independent of AniList. Membership is a property of
+    // the TITLE; requiring a successful AniList lookup dropped films and specials out
+    // of their own franchise entirely.
+    for (const r of results) {
+        if (r.franchise_id) continue;
+        const nm = normName(r.name);
+        const en = r.title_english ? normName(r.title_english) : '';
+        let best = null;
+        for (const pattern of FRANCHISE_PATTERNS) {
+            const pNorm = normName(pattern);
+            if (nm.startsWith(pNorm) || (en && en.startsWith(pNorm))) {
+                if (!best || pNorm.length > best.length) best = pNorm;
+            }
+        }
+        if (best) r.franchise_id = 'fp:' + best;
     }
 
     // Last-chance franchise grouping: anything still without a franchise_id whose

@@ -1409,7 +1409,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.5.2 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.5.3 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -1608,10 +1608,14 @@
     // are named rather than numbered needs the name. Added 2026-10-12.
     function commonPrefixWords(names) {
         if (names.length < 2) return 0;
+        // Compare words with trailing punctuation stripped. "Tokyo Revengers" and
+        // "Tokyo Revengers: Seiya Kessen-hen" differ at word 2 only because of the
+        // colon, so the shared prefix collapsed to "Tokyo" and every chip read
+        // "Revengers...". 2026-10-13.
+        const w = (x) => (x || '').toLowerCase().replace(/[:：\-\u2013\u2014,.]+$/, '');
         const split = names.map(n => n.split(/\s+/));
         let i = 0;
-        while (split.every(s => s[i] !== undefined &&
-                                s[i].toLowerCase() === split[0][i].toLowerCase())) i++;
+        while (split.every(s => s[i] !== undefined && w(s[i]) === w(split[0][i]))) i++;
         return i;
     }
 
@@ -1715,9 +1719,24 @@
         // The early return that used to be here let the strip settle for whatever
         // the current search returned, which skews recent — the reported "you can
         // only see the latest ones". Fetch once per franchise, always. 2026-10-12.
-        const base = (sel.title || '')
-            .replace(/\b(\d+\s*(?:st|nd|rd|th)\s+Season|Season\s*\d+|Part\s*\d+)\b/gi, '')
-            .replace(/\s+/g, ' ').trim();
+        // Search the FRANCHISE, not the selected title.
+        //
+        // This used to strip season markers off whatever was open and search that, so
+        // clicking Dragon Ball Super searched "Dragon Ball Super" — which never returns
+        // the 1986 original, GT, Kai or Daima. The strip came back as Z | Super |
+        // Super: Beerus and the earlier series were simply absent. That is the reported
+        // "you can only see the latest ones", and it survived the previous fix because
+        // the previous fix only removed an early return.
+        //
+        // A pattern franchise id carries the franchise's own name ("fp:dragon ball"),
+        // which is exactly the right query. Fall back to the stripped title otherwise.
+        // 2026-10-13.
+        const fid = String(sel.franchiseId);
+        const base = fid.startsWith('fp:')
+            ? fid.slice(3)
+            : (sel.title || '')
+                .replace(/\b(\d+\s*(?:st|nd|rd|th)\s+Season|Season\s*\d+|Part\s*\d+)\b/gi, '')
+                .replace(/\s+/g, ' ').trim();
         if (!base) return;
         try {
             const data = await apiCall(`/search?q=${encodeURIComponent(base)}&mode=${state.mode}&nsfw=${state.nsfw}`);
@@ -1739,9 +1758,19 @@
         const titleEnglish = matched?.title_english || '';
         const franchiseId = matched?.franchise_id || '';
         const cover = matched?.cover || '';
-        state.selectedAnime = { id: animeId, title, epCount, titleEnglish, franchiseId, cover };
+        state.selectedAnime = { id: animeId, title, epCount, titleEnglish, franchiseId, cover,
+                                anilist_id: matched?.anilist_id || null };
         state.selectedEpisode = null;
         state.currentRange = 0;
+        // Clear the PREVIOUS show's arcs and strip before anything renders. Without
+        // this, searching Apothecary Diaries after Dragon Ball left the range buttons
+        // reading "God of Destruction Beerus 1-18" on a completely different series,
+        // because state.arcs persisted and nothing reset it. Caught by driving the
+        // real UI, 2026-10-13 — no function-level test can see it.
+        state.arcs = null;
+        state.episodes = [];
+        const _strip = document.getElementById('season-strip');
+        if (_strip) { _strip.style.display = 'none'; _strip.innerHTML = ''; }
         updatePlayButton();
 
         const displayTitle = (state.preferEnglish && titleEnglish) ? titleEnglish : title;
@@ -2334,7 +2363,38 @@
         });
     }
 
+    // Clear the previously-open show when new results arrive.
+    //
+    // The episode grid, the range buttons, the season strip and state.arcs all
+    // belonged to whatever was open before. Searching Apothecary Diaries after
+    // Dragon Ball left the range buttons reading "God of Destruction Beerus 1-18"
+    // over a different show's episodes. Resetting inside loadEpisodes was not
+    // enough, because that only runs when a selection actually loads — and a click
+    // that only expands a franchise card never reaches it. Caught by driving the
+    // real UI, 2026-10-13.
+    function clearOpenShow() {
+        state.arcs = null;
+        state.episodes = [];
+        state.currentRange = 0;
+        state.selectedEpisode = null;
+        const rs = document.getElementById('range-selector');
+        if (rs) { rs.style.display = 'none'; rs.innerHTML = ''; }
+        const st = document.getElementById('season-strip');
+        if (st) { st.style.display = 'none'; st.innerHTML = ''; }
+        const g = document.getElementById('episode-grid');
+        if (g) g.innerHTML = '';
+        // and the labels, or the panel still names the previous show
+        state.selectedAnime = null;
+        for (const [id, txt] of [['selected-anime-title', '--'], ['selected-anime-count', ''],
+                                 ['np-title', 'No Selection'], ['np-detail', 'Select an anime to begin'],
+                                 ['panel-title', '--'], ['panel-meta', '']]) {
+            const e = document.getElementById(id);
+            if (e) e.textContent = txt;
+        }
+    }
+
     function renderResults() {
+        clearOpenShow();
         const container = document.getElementById('results-container');
         if (state.results.length === 0) {
             container.innerHTML = '<div class="no-results">No results found</div>';
@@ -3355,18 +3415,16 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.5.2';
+    const APP_VERSION = '0.5.3';
     // A note from YASA, shown above the list in the update popup.
-    const CHANGELOG_NOTE = "Dragon Ball broke a lot of this. Forty years of it under one card, and the fixes from last time only covered shows that number their seasons.";
+    const CHANGELOG_NOTE = "These are the ones from yesterday that I got wrong. I was testing the pieces instead of the actual app, so I kept saying it was fixed when it was not.";
 
     const CHANGELOG = [
-        "Searching a show opens THAT show. \u201cDragon Ball Super\u201d was opening Dragon Ball Z from 1989, because a card covering a whole franchise opened its oldest entry",
-        "Films stopped pretending to be the first series. Broly and Super Hero were both showing as TV episodes from 1986, with the 1986 cover and description. 27 of 40 Dragon Ball entries had the wrong year",
-        "The season row shows seasons. It was listing every film, OVA and spin\u2011off alongside them \u2014 39 of them for Dragon Ball \u2014 and seven different series all labelled \u201cS1\u201d. Films and specials now sit behind a \u201c+N more\u201d button",
-        "Seasons are named when they have names. Z, GT, Kai, Super and Daima are told apart now instead of all reading \u201cS1\u201d",
-        "Older seasons actually load. The season row only ever showed what the current search happened to return, which is why you could only see the recent ones",
-        "Long series split by story arc. Dragon Ball Super now opens on God of Destruction Beerus 1\u201118, Golden Frieza 19\u201127, and so on, instead of 1\u201150 and 51\u2011100",
-        "A show keeps the same franchise for good. It used to change depending on what you searched, which quietly broke favourites and history",
+        "The season row shows every series again. Dragon Ball was missing the 1986 original, GT, Kai and Daima entirely \u2014 it was looking up the season you had open instead of the franchise, so it never found the older ones",
+        "Story arcs stop following you around. Searching a new show left the previous show\u2019s arc buttons sitting over it, so Apothecary Diaries episodes were labelled with Dragon Ball\u2019s sagas",
+        "Season names read properly. Tokyo Revengers was showing \u201cRevengers\u201d, \u201cRevengers: Seiya\u2026\u201d, \u201cRevengers: Tenjik\u2026\u201d because a colon in the title confused the shortener",
+        "The panel clears when you search. It kept the previous show\u2019s name and episode count until you picked something new",
+        "Android: the franchise grouping the desktop has had for a while now actually runs on mobile too. It was working from half the list",
     ];
 
     function showChangelog() {
