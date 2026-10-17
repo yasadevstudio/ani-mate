@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.5.3';
+    const APP_VERSION = '0.5.4';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -809,9 +809,31 @@
         // Mobile pulls each .vtt over the network to get past the referer gate, so attaching
         // all ten also meant ten downloads to display one. Pick first, fetch once.
         const usable = subs.filter(s => s && s.src);
-        let pick = usable.findIndex(s => s.default);
-        if (pick < 0) pick = usable.findIndex(s => /^en/i.test(s.lang || ''));
-        if (pick < 0) pick = 0;
+        // DO NOT TRUST THE SOURCE'S `default` FLAG — IT POINTS AT THE FORCED TRACK.
+        // Measured 2026-10-17 on Super no Ura de Yani Suu Futari ep 10 (13 tracks returned):
+        //     English            343 cues   first cue "Everyone's in Christmas mode."
+        //     English (Forced)     23 cues   first cue "MOROMORO"   <- a station sign
+        // Forced carries on-screen signs only, not dialogue, so picking it shows the viewer
+        // almost nothing for a whole episode. Rank instead of trusting the flag; `default` is
+        // only a tiebreak. Same logic as the desktop player.
+        const subScore = (t) => {
+            const label = String(t.label || ''), lang = String(t.lang || '');
+            let n = 0;
+            if (/^en/i.test(lang)) n += 100;
+            if (/forced/i.test(label)) n -= 1000;
+            if (/dubtitle/i.test(label)) n -= 50;
+            if (/sdh/i.test(label)) n -= 10;
+            if (t.default) n += 1;
+            return n;
+        };
+        let pick = 0;
+        if (usable.length) {
+            let best = subScore(usable[0]);
+            for (let i = 1; i < usable.length; i++) {
+                const n = subScore(usable[i]);
+                if (n > best) { best = n; pick = i; }
+            }
+        }
         const sub = usable[pick];
         if (!sub) return;
 
@@ -832,11 +854,29 @@
         video.appendChild(t);
         // `default` only marks the track; the mode still has to be set, and setting it before
         // the cues parse is a no-op.
-        t.addEventListener('load', () => { if (t.track) t.track.mode = 'showing'; }, { once: true });
-        if (video.textTracks) {
-            for (let i = 0; i < video.textTracks.length; i++) {
-                video.textTracks[i].mode = (i === 0) ? 'showing' : 'disabled';
-            }
+        t.addEventListener('load', () => applySubtitleMode(video), { once: true });
+
+        // SUBTITLES DROPPING — SAME BUG AS THE DESKTOP PLAYER. FIXED 2026-10-17.
+        // Setting mode='showing' is what makes hls.js turn the track OFF. hls.js 1.6.15 (the
+        // version in www/lib/) registers onTextTracksChanged on MEDIA_ATTACHED, gated on
+        // `hls.config.renderTextTracksNatively` which defaults to true. That handler scans for
+        // the `showing` track, asks findTrackForTextTrack which of ITS OWN tracks it is, gets
+        // -1 because this is a native <track> on a blob .vtt with no in-band subtitle
+        // playlist, and calls setSubtitleTrack(-1) — its subtitles-off path.
+        //
+        // attachSubtitles() also runs BEFORE new Hls()/attachMedia() here, so the one-shot
+        // load handler was always spent before hls.js had even touched the element. The real
+        // fix is renderTextTracksNatively:false on the Hls config; this re-assert is the belt.
+        applySubtitleMode(video);
+    }
+
+    // Re-assert which subtitle track is showing. Idempotent, so it is safe to call from any
+    // hls.js or media event. Mobile appends exactly one track, so index 0 is the pick.
+    function applySubtitleMode(video) {
+        if (!video || !video.textTracks) return;
+        for (let i = 0; i < video.textTracks.length; i++) {
+            const want = (i === 0) ? 'showing' : 'disabled';
+            if (video.textTracks[i].mode !== want) video.textTracks[i].mode = want;
         }
     }
 
@@ -888,6 +928,10 @@
             // header list is enforced by the browser's native XHR, not by a shim. The same
             // path already carries Referer for every scraping call in ani-mate-net.js.
             const hls = new Hls({
+                // Keep hls.js out of the native text-track business — see the note in
+                // attachSubtitles(). Without this it disables the <track> we just enabled.
+                renderTextTracksNatively: false,
+                subtitleDisplay: false,
                 xhrSetup: (xhr, url) => {
                     if (!state.streamReferer) return;
                     try { xhr.setRequestHeader('Referer', state.streamReferer); } catch (e) {}
@@ -905,7 +949,10 @@
                     state.pendingResumeTime = 0;
                 }
                 video.play().catch(() => {});
+                applySubtitleMode(video);
             });
+            // A level switch re-runs hls.js's track handling, so re-assert after each one.
+            hls.on(Hls.Events.LEVEL_SWITCHED, () => applySubtitleMode(video));
 
             hls.on(Hls.Events.ERROR, (event, data) => {
                 if (data.fatal) {
@@ -2011,15 +2058,11 @@
     }
 
     // === CHANGELOG ===
-    // A note from YASA, shown above the list in the update popup.
-    const CHANGELOG_NOTE = "These are the ones from yesterday that I got wrong. I was testing the pieces instead of the actual app, so I kept saying it was fixed when it was not.";
+    // Optional line shown above the list in the update popup. Empty string hides it.
+    const CHANGELOG_NOTE = "";
 
     const CHANGELOG = [
-        "The season row shows every series again. Dragon Ball was missing the 1986 original, GT, Kai and Daima entirely \u2014 it was looking up the season you had open instead of the franchise, so it never found the older ones",
-        "Story arcs stop following you around. Searching a new show left the previous show\u2019s arc buttons sitting over it, so Apothecary Diaries episodes were labelled with Dragon Ball\u2019s sagas",
-        "Season names read properly. Tokyo Revengers was showing \u201cRevengers\u201d, \u201cRevengers: Seiya\u2026\u201d, \u201cRevengers: Tenjik\u2026\u201d because a colon in the title confused the shortener",
-        "The panel clears when you search. It kept the previous show\u2019s name and episode count until you picked something new",
-        "Android: the franchise grouping the desktop has had for a while now actually runs on mobile too. It was working from half the list",
+        "Some errors were fixed dealing with subtitles not showing for certain episodes",
     ];
 
     function showChangelog() {
@@ -2030,7 +2073,7 @@
         overlay.innerHTML = `
             <div class="changelog-modal">
                 <div class="changelog-ver">ANI-MATE v${APP_VERSION}</div>
-                <p class="changelog-note">${esc(CHANGELOG_NOTE)}</p>
+                ${CHANGELOG_NOTE ? `<p class="changelog-note">${esc(CHANGELOG_NOTE)}</p>` : ''}
                 <ul>${CHANGELOG.map(c => `<li>${esc(c)}</li>`).join('')}</ul>
                 <button class="changelog-dismiss">GOT IT</button>
             </div>`;

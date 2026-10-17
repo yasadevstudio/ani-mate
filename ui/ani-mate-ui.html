@@ -1409,7 +1409,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.5.3 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.5.4 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -1971,9 +1971,42 @@
         // rendered Brazilian Portuguese over the top of English at the same time.
         // Pick one index, then enable only that one. Order: the flagged default, else English,
         // else the first thing available.
-        let pick = subsList.findIndex(s => s.default);
-        if (pick < 0) pick = subsList.findIndex(s => /^en/i.test(s.lang || ''));
-        if (pick < 0 && subsList.length) pick = 0;
+        // ⛔ DO NOT TRUST THE SOURCE'S `default` FLAG. IT POINTS AT THE FORCED TRACK.
+        //
+        // Measured 2026-10-17 on Super no Ura de Yani Suu Futari ep 10, which returns 13
+        // tracks. HiAnime flags `English (Forced)` as default. Fetching both and counting:
+        //
+        //     English            343 cues   first cue "Everyone's in Christmas mode."
+        //     English (Forced)    23 cues   first cue "MOROMORO"   <- a station sign
+        //
+        // A forced track only carries on-screen foreign text and signs, not dialogue. So
+        // picking it loads a track, sets it showing, parses cues, and still shows the viewer
+        // almost nothing across a 24 minute episode — indistinguishable from broken
+        // subtitles, and the reason this looked unfixed after the hls.js work.
+        //
+        // Rank instead of trusting a flag. English dialogue wins; `forced` is last resort;
+        // `default` is only a tiebreak between otherwise equal candidates.
+        const subScore = (t) => {
+            const label = String(t.label || '');
+            const lang = String(t.lang || '');
+            let n = 0;
+            if (/^en/i.test(lang)) n += 100;          // English first
+            if (/forced/i.test(label)) n -= 1000;      // signs only — never unless nothing else
+            if (/dubtitle/i.test(label)) n -= 50;      // written for the dub, not the sub
+            if (/sdh/i.test(label)) n -= 10;           // full dialogue, plus sound description
+            if (t.default) n += 1;                     // tiebreak ONLY
+            return n;
+        };
+        let pick = 0;
+        if (subsList.length) {
+            let best = subScore(subsList[0]);
+            for (let i = 1; i < subsList.length; i++) {
+                const n = subScore(subsList[i]);
+                if (n > best) { best = n; pick = i; }
+            }
+        } else {
+            pick = -1;
+        }
 
         subsList.forEach((s, i) => {
             const t = document.createElement('track');
@@ -2029,8 +2062,11 @@
 
         if (isM3u8 && Hls.isSupported()) {
             const hls = new Hls({
-                // THE ROOT CAUSE OF SUBTITLES DROPPING, READ OUT OF THE BUNDLED
-                // hls.min.js (1.6.15) RATHER THAN GUESSED AT.
+                // ONE OF THREE SUBTITLE DEFECTS FIXED 2026-10-17, READ OUT OF THE BUNDLED
+                // hls.min.js (1.6.15). This one is real but was NOT the cause of the
+                // reported "no subtitles" — that was the track picker selecting the FORCED
+                // track (see the subScore note above). Both are fixed; do not treat this
+                // block as the whole story.
                 //
                 // Its subtitle-track-controller registers `onTextTracksChanged` on
                 // MEDIA_ATTACHED, and that handler is gated on exactly this flag:
@@ -3493,16 +3529,12 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.5.3';
-    // A note from YASA, shown above the list in the update popup.
-    const CHANGELOG_NOTE = "These are the ones from yesterday that I got wrong. I was testing the pieces instead of the actual app, so I kept saying it was fixed when it was not.";
+    const APP_VERSION = '0.5.4';
+    // Optional line shown above the list in the update popup. Empty string hides it.
+    const CHANGELOG_NOTE = "";
 
     const CHANGELOG = [
-        "The season row shows every series again. Dragon Ball was missing the 1986 original, GT, Kai and Daima entirely \u2014 it was looking up the season you had open instead of the franchise, so it never found the older ones",
-        "Story arcs stop following you around. Searching a new show left the previous show\u2019s arc buttons sitting over it, so Apothecary Diaries episodes were labelled with Dragon Ball\u2019s sagas",
-        "Season names read properly. Tokyo Revengers was showing \u201cRevengers\u201d, \u201cRevengers: Seiya\u2026\u201d, \u201cRevengers: Tenjik\u2026\u201d because a colon in the title confused the shortener",
-        "The panel clears when you search. It kept the previous show\u2019s name and episode count until you picked something new",
-        "Android: the franchise grouping the desktop has had for a while now actually runs on mobile too. It was working from half the list",
+        "Some errors were fixed dealing with subtitles not showing for certain episodes",
     ];
 
     function showChangelog() {
@@ -3513,7 +3545,7 @@
         overlay.innerHTML = `<div class="changelog-modal">
             <h2>ANI-MATE UPDATED</h2>
             <div class="changelog-ver">v${APP_VERSION}</div>
-            <p class="changelog-note">${CHANGELOG_NOTE}</p>
+            ${CHANGELOG_NOTE ? `<p class="changelog-note">${CHANGELOG_NOTE}</p>` : ''}
             <ul>${CHANGELOG.map(c => `<li>${c}</li>`).join('')}</ul>
             <button class="changelog-dismiss" id="changelog-dismiss">GOT IT</button>
         </div>`;

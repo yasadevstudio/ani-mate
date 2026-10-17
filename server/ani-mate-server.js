@@ -1498,7 +1498,24 @@ function serveStatic(res, filePath, contentType) {
         const content = fs.readFileSync(filePath);
         res.writeHead(200, {
             'Content-Type': contentType,
-            'Access-Control-Allow-Origin': '*'
+            'Access-Control-Allow-Origin': '*',
+            // NO-STORE ON THE UI, AND IT IS NOT AN OPTIMISATION QUESTION. ADDED 2026-10-17.
+            //
+            // This handler sent no Cache-Control, no ETag and no Last-Modified. With none of
+            // the three, Chromium falls back to HEURISTIC caching: it may reuse a cached
+            // response without revalidating, and its disk cache survives an app restart. So
+            // an edited ani-mate-ui.html could sit on disk, correct, while the Electron window
+            // kept rendering the previous build — a fix that looks like it did nothing, with
+            // no way to tell from the outside.
+            //
+            // Measured: `curl -I http://localhost:7890/` returned Content-Type, CORS, Date,
+            // Connection and Keep-Alive. Nothing else. There was no cache directive at all.
+            //
+            // The server is localhost and the whole UI is ~700 KB, so there is no bandwidth
+            // argument for caching it. Correctness wins outright.
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'Pragma': 'no-cache',
+            'Expires': '0'
         });
         res.end(content);
     } catch {
