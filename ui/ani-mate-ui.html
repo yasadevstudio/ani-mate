@@ -1935,6 +1935,18 @@
             state.hlsInstance = null;
         }
 
+        // Re-assert which subtitle track is showing. Idempotent and cheap, so it can be
+        // called from hls.js events, media events and the track `load` handler alike.
+        // See the long note below for why once was not enough.
+        function applySubtitleMode() {
+            const pickIdx = (typeof state.subtitlePick === 'number') ? state.subtitlePick : -1;
+            if (!video.textTracks || pickIdx < 0) return;
+            for (let i = 0; i < video.textTracks.length; i++) {
+                const want = (i === pickIdx) ? 'showing' : 'disabled';
+                if (video.textTracks[i].mode !== want) video.textTracks[i].mode = want;
+            }
+        }
+
         // === SUBTITLES ===
         // /play has returned a `subtitles` array since v0.5.0. The UI stored it in
         // state.streamSubtitles and NEVER READ IT AGAIN, so no <track> was ever created and
@@ -1974,22 +1986,76 @@
             if (i === pick) t.default = true;
             // `default` only marks which track SHOULD show. Chromium still needs mode set, and
             // setting it before the cues load is a no-op, so do it again once the track loads.
-            t.addEventListener('load', () => {
-                if (t.track) t.track.mode = (i === pick) ? 'showing' : 'disabled';
-            }, { once: true });
+            t.addEventListener('load', () => applySubtitleMode(), { once: true });
             video.appendChild(t);
         });
-        // Belt and braces: force every other track off, in case one was enabled before load.
-        if (video.textTracks) {
-            for (let i = 0; i < video.textTracks.length; i++) {
-                video.textTracks[i].mode = (i === pick) ? 'showing' : 'disabled';
-            }
+
+        // SUBTITLES DROPPING MID-EPISODE — FIXED 2026-10-17. THE MODE HAS TO BE RE-ASSERTED,
+        // NOT SET ONCE.
+        //
+        // The previous version set `track.mode = 'showing'` exactly twice: once in a
+        // `{ once: true }` load handler, and once immediately after appending. Both fire
+        // BEFORE hls.js has finished with the media element. hls.js 1.6.15 ships a
+        // timeline-controller that manages `video.textTracks` itself whenever
+        // `renderTextTracksNatively` is true (its default) — it enumerates the element's text
+        // tracks on attach, on manifest parse and on level switch, and sets the mode of any
+        // track it does not own to `disabled`.
+        //
+        // So the sequence was: we append the track and show it -> hls.js attaches and disables
+        // it -> the `once` handler has already been spent, so nothing ever turns it back on.
+        // Subtitles appear for a second or two and then vanish, which is exactly the reported
+        // symptom. A quality/level switch mid-episode does the same thing again.
+        //
+        // `pick` is captured on `state` so the re-assert does not depend on this closure
+        // still being alive, and the function is idempotent so it is safe to call from any
+        // number of events.
+        state.subtitlePick = pick;
+        applySubtitleMode();
+
+        // One media-event net as well, because a seek or a source change can reset the mode
+        // without any hls.js event firing. The handler is stored on `state` so the previous
+        // one can actually be removed — `applySubtitleMode` is a fresh closure on every call
+        // of this function, so `removeEventListener` with a new reference would not match and
+        // the listeners would pile up one per episode.
+        if (state.subtitleModeHandler) {
+            video.removeEventListener('playing', state.subtitleModeHandler);
+            video.removeEventListener('seeked', state.subtitleModeHandler);
         }
+        state.subtitleModeHandler = () => applySubtitleMode();
+        video.addEventListener('playing', state.subtitleModeHandler);
+        video.addEventListener('seeked', state.subtitleModeHandler);
 
         const isM3u8 = streamUrl.includes('.m3u8') || streamUrl.includes('master.txt');
 
         if (isM3u8 && Hls.isSupported()) {
             const hls = new Hls({
+                // THE ROOT CAUSE OF SUBTITLES DROPPING, READ OUT OF THE BUNDLED
+                // hls.min.js (1.6.15) RATHER THAN GUESSED AT.
+                //
+                // Its subtitle-track-controller registers `onTextTracksChanged` on
+                // MEDIA_ATTACHED, and that handler is gated on exactly this flag:
+                //
+                //   if (media && hls.config.renderTextTracksNatively) {
+                //     for (...) if ("hidden"===t[i].mode) e=t[i];
+                //               else if ("showing"===t[i].mode) { e=t[i]; break }
+                //     var n = findTrackForTextTrack(e);
+                //     if (subtitleTrack !== n) setSubtitleTrack(n);
+                //   }
+                //
+                // So it scans for whichever track is `showing` — ours — then asks
+                // `findTrackForTextTrack` which of ITS OWN tracks that is. Our track is a
+                // native <track> pointed at a .vtt through /proxy-stream and this stream
+                // carries no in-band subtitle playlist, so the lookup finds nothing and
+                // returns -1. hls.js then calls `setSubtitleTrack(-1)`, which is its
+                // "subtitles off" path, and the track goes dark.
+                //
+                // THE TRAP: setting mode='showing' is itself what TRIGGERS the handler that
+                // turns it off. So re-asserting the mode on a timer or on every event would
+                // have fought hls.js in a loop and made this worse, not better. This flag is
+                // the load-bearing fix; the re-asserts below are only a belt for seeks and
+                // level switches.
+                renderTextTracksNatively: false,
+                subtitleDisplay: false,
                 xhrSetup: (xhr, url) => {
                     // If URL is already proxied, leave it
                     if (url.startsWith('/proxy-stream')) return;
@@ -2014,7 +2080,10 @@
                     state.pendingResumeTime = 0;
                 }
                 video.play().catch(() => {});
+                applySubtitleMode();
             });
+            // A level switch re-runs hls.js's track handling, so re-assert after each one.
+            hls.on(Hls.Events.LEVEL_SWITCHED, () => applySubtitleMode());
 
             hls.on(Hls.Events.ERROR, (event, data) => {
                 if (data.fatal) {
@@ -2028,7 +2097,14 @@
                         hls.destroy();
                         const proxyUrl = `/proxy-stream?url=${encodeURIComponent(streamUrl)}`
                             + (state.streamReferer ? `&referer=${encodeURIComponent(state.streamReferer)}` : '');
-                        const hls2 = new Hls();
+                        // Same text-track opt-out as the primary instance. Without it this
+                        // retry path silently killed subtitles even when the first attempt
+                        // had them working — destroy() + a fresh attachMedia() re-ran hls.js's
+                        // track handling with nothing left to turn them back on.
+                        const hls2 = new Hls({
+                            renderTextTracksNatively: false,
+                            subtitleDisplay: false
+                        });
                         state.hlsInstance = hls2;
                         hls2.loadSource(proxyUrl);
                         hls2.attachMedia(video);
@@ -2039,7 +2115,9 @@
                                 state.pendingResumeTime = 0;
                             }
                             video.play().catch(() => {});
+                            applySubtitleMode();
                         });
+                        hls2.on(Hls.Events.LEVEL_SWITCHED, () => applySubtitleMode());
                         hls2.on(Hls.Events.ERROR, (ev, d2) => {
                             if (d2.fatal) {
                                 loading.style.display = 'none';
