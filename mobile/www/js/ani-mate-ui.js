@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.5.4';
+    const APP_VERSION = '0.5.5';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -2059,10 +2059,10 @@
 
     // === CHANGELOG ===
     // Optional line shown above the list in the update popup. Empty string hides it.
-    const CHANGELOG_NOTE = "";
+    const CHANGELOG_NOTE = "Subtitles were showing as a few on-screen signs instead of the actual script on some episodes.";
 
     const CHANGELOG = [
-        "Some errors were fixed dealing with subtitles not showing for certain episodes",
+        "Subtitle fix: a track that existed but carried only signs is no longer accepted as the subtitles",
     ];
 
     function showChangelog() {

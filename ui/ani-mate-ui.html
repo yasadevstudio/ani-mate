@@ -1409,7 +1409,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.5.4 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.5.5 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -3529,12 +3529,12 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.5.4';
+    const APP_VERSION = '0.5.5';
     // Optional line shown above the list in the update popup. Empty string hides it.
-    const CHANGELOG_NOTE = "";
+    const CHANGELOG_NOTE = "Subtitles were showing as a few on-screen signs instead of the actual script on some episodes.";
 
     const CHANGELOG = [
-        "Some errors were fixed dealing with subtitles not showing for certain episodes",
+        "Subtitle fix: a track that existed but carried only signs is no longer accepted as the subtitles",
     ];
 
     function showChangelog() {
