@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.5.5';
+    const APP_VERSION = '0.5.6';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -2059,10 +2059,10 @@
 
     // === CHANGELOG ===
     // Optional line shown above the list in the update popup. Empty string hides it.
-    const CHANGELOG_NOTE = "Subtitles were showing as a few on-screen signs instead of the actual script on some episodes.";
+    const CHANGELOG_NOTE = "A wrong season could play under the right name. Beastars Season 2 was serving Final Season Part 2 episodes.";
 
     const CHANGELOG = [
-        "Subtitle fix: a track that existed but carried only signs is no longer accepted as the subtitles",
+        "Episode picker now matches the SHOW before judging the subtitles, so "Season 2" can no longer resolve to a different entry in the same series",
     ];
 
     function showChangelog() {

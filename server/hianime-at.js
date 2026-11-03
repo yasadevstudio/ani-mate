@@ -166,6 +166,54 @@ function makeProvider(afetch) {
      */
     const MIN_CUES = 40;
 
+    /* ── MATCH THE SHOW BEFORE JUDGING THE TRACK. Added 2026-11-03. ──────────────
+     * The cue check above, added 2026-11-01, made cue count the tiebreaker between
+     * listings. That is a USABILITY test being used as an IDENTITY test, and it put
+     * the wrong series on screen:
+     *
+     *   search("Beastars Season 2") ->
+     *     "Beastars Final Season Part 2"  malId 61114  ep2 = 421 cues   <- was picked
+     *     "Beastars 2nd Season"           malId 40935  ep2 = 300 cues   <- the real one
+     *
+     *   The final season has MORE dialogue in that episode, so it won. Episode 1 only
+     *   came out right by luck: the wrong listing happened to have 7 cues there and
+     *   got skipped. A whole season of the wrong show played before anyone noticed,
+     *   and it spoils the series it is impersonating.
+     *
+     * So the order is: WHICH SHOW first, then is the track readable. Cue count only
+     * ever separates listings that are already the same show.
+     *
+     * "Season 2" and "2nd Season" are the same thing and must normalise together, or
+     * the correct listing loses to a wrong one that happens to be worded like the
+     * query. Extra qualifiers the caller did not ask for -- final, part, movie, ova,
+     * special -- are what distinguish a different entry in the same franchise, so
+     * they are penalised hard rather than ignored.
+     */
+    function normTitle(s) {
+        return String(s || '').toLowerCase()
+            .replace(/[^a-z0-9]+/g, ' ')
+            .replace(/\b(\d+)(?:st|nd|rd|th)\s+season\b/g, 'season $1')
+            .replace(/\bseason\s+(\d+)\b/g, 'season $1')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    const EXTRA = ['final', 'part', 'movie', 'ova', 'special', 'recap', 'uncensored'];
+
+    function titleScore(hitName, wanted) {
+        const a = normTitle(hitName), b = normTitle(wanted);
+        if (a === b) return 1000;                       // same show, say so
+        const at = a.split(' '), bt = b.split(' ');
+        const shared = bt.filter((w) => at.includes(w)).length;
+        let n = shared * 10 - Math.abs(at.length - bt.length);
+        // a qualifier the caller never asked for means a DIFFERENT entry, not a near miss
+        for (const w of EXTRA) if (at.includes(w) && !bt.includes(w)) n -= 60;
+        // a season number that disagrees is disqualifying
+        const sa = (a.match(/season (\d+)/) || [])[1], sb = (b.match(/season (\d+)/) || [])[1];
+        if (sa && sb && sa !== sb) n -= 200;
+        return n;
+    }
+
     /* The track the player would actually choose, mirroring the UI's ranking so the
      * file counted here is the file shown. Forced last, English first. */
     function bestTrack(subs) {
@@ -190,8 +238,15 @@ function makeProvider(afetch) {
     }
 
     async function streamByTitle(title, episodeNumber, mode = 'sub') {
-        const hits = await search(title);
+        let hits = await search(title);
         if (!hits.length) return null;
+
+        // Best title match first. hianime's own ordering put "Beastars Final Season
+        // Part 2" ahead of "Beastars 2nd Season" for the query "Beastars Season 2".
+        hits = hits
+            .map((h) => ({ h, s: titleScore(h.name, title) }))
+            .sort((x, y) => y.s - x.s)
+            .map((x) => x.h);
 
         let silent = null;      // playable, but no subtitle track. Held as the fallback.
         let silentFrom = '';
