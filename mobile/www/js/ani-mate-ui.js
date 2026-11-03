@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.5.6';
+    const APP_VERSION = '0.5.7';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -2062,7 +2062,7 @@
     const CHANGELOG_NOTE = "A wrong season could play under the right name. Beastars Season 2 was serving Final Season Part 2 episodes.";
 
     const CHANGELOG = [
-        "Episode picker now matches the SHOW before judging the subtitles, so "Season 2" can no longer resolve to a different entry in the same series",
+        "Episode picker now matches the SHOW before judging the subtitles, so a season can no longer resolve to a different entry in the same series",
     ];
 
     function showChangelog() {
