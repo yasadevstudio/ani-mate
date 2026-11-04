@@ -2092,6 +2092,39 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (pathname === '/play' && req.method === 'POST') {
+            /* ⛔ SUBTITLES MUST GO THROUGH OUR OWN PROXY OR THEY 403. 2026-11-04.
+             *
+             * This is why "no subtitles" kept coming back across 0.5.4 to 0.5.8. Every
+             * one of those fixes worked on WHICH TRACK to choose. None of them checked
+             * whether the player could FETCH the one it chose.
+             *
+             * Measured on the Beastars FINAL SEASON Part 1 vtt:
+             *     with a Referer header  -> HTTP 200, text/vtt, 15856 bytes, 250 cues
+             *     without one            -> HTTP 403
+             *
+             * dramahot.top demands a Referer of zokoanime.video. A browser <track>
+             * element CANNOT send a third-party Referer, so the file is forbidden in
+             * the player every single time while being perfectly fetchable from a
+             * terminal. Every test I ran set the header by hand and therefore passed
+             * against a request the player never makes.
+             *
+             * /proxy-stream already solves exactly this for video and dramahot.top is
+             * already on its allow-list, with a comment naming the subtitle vtt. The
+             * subtitle src simply was never routed through it. */
+            // eslint-disable-next-line no-inner-declarations
+            function proxiedSubtitles(meta) {
+                const subs = (meta && meta.subtitles) || [];
+                const refr = (meta && meta.referer) || '';
+                if (!refr) return subs;
+                return subs.map((s) => {
+                    if (!s || !s.src || String(s.src).startsWith('/')) return s;
+                    const q = '/proxy-stream?url=' + encodeURIComponent(s.src)
+                            + '&referer=' + encodeURIComponent(refr);
+                    // keep the original so anything that needs the true URL still has it
+                    return Object.assign({}, s, { src: q, origin_src: s.src });
+                });
+            }
+
             const params = safeJsonParse(await readBody(req));
             if (!params || !params.anime_id || !params.episode) {
                 jsonResponse(res, 400, { error: 'Missing anime_id or episode' });
@@ -2153,7 +2186,7 @@ const server = http.createServer(async (req, res) => {
                 // From HiAnime.at: a real subtitle track, the referer its CDN requires, and
                 // the MAL id ani-skip needs. Null from sources that cannot supply them.
                 referer: (lastStreamMeta && lastStreamMeta.referer) || null,
-                subtitles: (lastStreamMeta && lastStreamMeta.subtitles) || [],
+                subtitles: proxiedSubtitles(lastStreamMeta),
                 mal_id: (lastStreamMeta && lastStreamMeta.malId) || null,
                 title: playTitle
             });

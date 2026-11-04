@@ -1409,7 +1409,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.5.8 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.5.9 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -3529,12 +3529,12 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.5.8';
+    const APP_VERSION = '0.5.9';
     // Optional line shown above the list in the update popup. Empty string hides it.
-    const CHANGELOG_NOTE = "Picking an episode now verifies WHICH SHOW before anything else. A season or part could resolve to a different entry in the same series.";
+    const CHANGELOG_NOTE = "Subtitles could not load at all: the file was being requested in a way the host refuses. They now come through the app instead of direct.";
 
     const CHANGELOG = [
-        "Episode source is now matched by identity first: a wrong season can no longer win because its subtitles are better, and a show missing from search results is found by widening the query",
+        "Subtitle files are fetched through ANI-MATE itself, so the host stops rejecting them and tracks actually appear",
     ];
 
     function showChangelog() {
