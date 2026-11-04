@@ -208,10 +208,67 @@ function makeProvider(afetch) {
         let n = shared * 10 - Math.abs(at.length - bt.length);
         // a qualifier the caller never asked for means a DIFFERENT entry, not a near miss
         for (const w of EXTRA) if (at.includes(w) && !bt.includes(w)) n -= 60;
-        // a season number that disagrees is disqualifying
-        const sa = (a.match(/season (\d+)/) || [])[1], sb = (b.match(/season (\d+)/) || [])[1];
-        if (sa && sb && sa !== sb) n -= 200;
+        // a season OR part number that disagrees is disqualifying. Part was missing
+        // and "Final Season Part 1" happily matched "Final Season Part 2" on it.
+        for (const kind of ['season', 'part', 'cour']) {
+            const re = new RegExp(kind + ' (\\d+)');
+            const na = (a.match(re) || [])[1], nb = (b.match(re) || [])[1];
+            if (na && nb && na !== nb) n -= 200;
+        }
         return n;
+    }
+
+    /* Is this hit plausibly the show that was asked for, or just the closest thing
+     * the host happened to return? RANKING CANNOT ANSWER THAT. Sorting a list of
+     * one still yields a first place, which is how "BEASTARS FINAL SEASON Part 1"
+     * came back as Part 2: the search returned exactly one hit, it was wrong, and
+     * ranking it changed nothing.
+     */
+    function titleAcceptable(hitName, wanted) {
+        const a = normTitle(hitName), b = normTitle(wanted);
+        if (a === b) return true;
+        for (const kind of ['season', 'part', 'cour']) {
+            const re = new RegExp(kind + ' (\\d+)');
+            const na = (a.match(re) || [])[1], nb = (b.match(re) || [])[1];
+            if (na && nb && na !== nb) return false;      // different entry, full stop
+        }
+        // the hit must not introduce a qualifier the caller never asked for
+        for (const w of EXTRA) if (a.split(' ').includes(w) && !b.split(' ').includes(w)) return false;
+        /* AND NOTHING ABOUT WORD OVERLAP. A first draft also demanded the hit share
+         * 60% of the requested words, which looks sensible and is wrong: hosts list
+         * shows under whichever language they prefer. "Kusuriya no Hitorigoto 3rd
+         * Season" is listed as "The Apothecary Diaries Season 3" and shares ZERO
+         * words with it, so the overlap rule refused a perfectly correct match and
+         * made the show unplayable. The host returned this hit FOR this query, so
+         * relatedness is already implied; what actually has to be checked is that it
+         * is not a DIFFERENT ENTRY, which the number and qualifier tests above do. */
+        return true;
+    }
+
+    /* Progressively broader queries. The host's own search is the weak link: asking
+     * it for the EXACT title can return fewer and worse hits than asking for less.
+     * Measured 2026-11-04:
+     *   "BEASTARS FINAL SEASON Part 1" -> 1 hit,  Final Season Part 2        (wrong)
+     *   "Beastars Final Season"        -> 2 hits, incl. "Beastars Final Season" (right)
+     *   "Beastars"                     -> 4 hits, the whole franchise
+     * Part 1 is listed as plain "Beastars Final Season" with no "Part" in it, so the
+     * more precisely we asked, the worse the answer got. */
+    function queryLadder(title) {
+        const out = [title];
+        const t = String(title || '').trim();
+        const drop = [
+            /\s+(part|cour)\s*\d+\s*$/i,          // "... Part 1"
+            /\s+(season\s*\d+|\d+(st|nd|rd|th)\s+season)\s*$/i,
+            /\s+(final|the final)\s+season\s*$/i,
+        ];
+        let cur = t;
+        for (const re of drop) {
+            const next = cur.replace(re, '').trim();
+            if (next && next !== cur) { out.push(next); cur = next; }
+        }
+        const first = t.split(/[:\-]/)[0].trim();
+        if (first && !out.includes(first)) out.push(first);
+        return out.filter((x, i) => x && out.indexOf(x) === i);
     }
 
     /* The track the player would actually choose, mirroring the UI's ranking so the
@@ -238,15 +295,62 @@ function makeProvider(afetch) {
     }
 
     async function streamByTitle(title, episodeNumber, mode = 'sub') {
-        let hits = await search(title);
+        // Widen the net until an ACCEPTABLE listing appears, then rank. Asking the
+        // host for the exact title can return fewer and worse hits than asking for
+        // less, so a single wrong hit is not a reason to stop looking.
+        let hits = [];
+        const seen = new Set();
+        /* RUN THE WHOLE LADDER, do not stop at the first acceptable name. Stopping
+         * early put "Tokyo Revengers: Santen Sensou-hen" on an 8-cue signs track:
+         * the exact query returns exactly ONE listing, its name is acceptable, so
+         * the search stopped there and the cue walk below had nothing to walk to.
+         * The broader query "Tokyo Revengers" surfaces a listing with 380 cues.
+         * A name being plausible is not the same as that listing being usable, and
+         * only collecting every candidate first lets the cue check do its job. */
+        for (const q of queryLadder(title)) {
+            let got = [];
+            try { got = await search(q); } catch { continue; }
+            for (const h of got) if (!seen.has(h.id)) { seen.add(h.id); hits.push(h); }
+        }
         if (!hits.length) return null;
 
-        // Best title match first. hianime's own ordering put "Beastars Final Season
-        // Part 2" ahead of "Beastars 2nd Season" for the query "Beastars Season 2".
-        hits = hits
-            .map((h) => ({ h, s: titleScore(h.name, title) }))
-            .sort((x, y) => y.s - x.s)
-            .map((x) => x.h);
+        // Keep only listings that are plausibly the show asked for. If ranking is
+        // allowed to pick from a list containing nothing correct, it will still
+        // return something, and that something plays.
+        const ok = hits.filter((h) => titleAcceptable(h.name, title));
+        if (!ok.length) {
+            console.error(`[hianime.at] no listing matches "${title}" ` +
+                          `(saw: ${hits.map((h) => h.name).join(', ')}). Refusing to ` +
+                          `play a different entry in the same series.`);
+            return null;
+        }
+        /* ⛔ IDENTITY IS A CONSTRAINT, NOT A SCORE. This is the whole lesson of
+         * 0.5.5 through 0.5.7 and it has to be stated once, here.
+         *
+         * Rank, then keep ONLY the best-matching tier and walk inside it. Letting
+         * the cue check roam the full ranked list means a listing with better
+         * subtitles can outrank the correct show, which is exactly how:
+         *   - "Beastars Season 2" played Final Season Part 2 (more cues), and
+         *   - "FINAL SEASON Part 2" played Part 1 (7 cues vs 250).
+         *
+         * A signs-only track on the RIGHT show beats a full script from the wrong
+         * one. Subtitles are a preference. Which show is playing is not.
+         */
+        /* The tier is a BAND, not an exact tie. Requiring s === best was too tight:
+         * duplicate listings of the SAME show are named slightly differently
+         * (a word more, a colon, a romanisation) and scored a few points apart,
+         * so the walk was left with one candidate and no alternative when that
+         * one carried a dead track. Cowboy Bebop fell to a 1-cue file and
+         * "Super no Ura de Yani Suu Futari" stopped resolving at all.
+         *
+         * TIER_SLACK sits well under the penalties that mark a DIFFERENT entry
+         * (-60 for an unasked-for qualifier, -200 for a season or part mismatch),
+         * so near-identical names stay together and other seasons stay out. */
+        const TIER_SLACK = 25;
+        const scored = ok.map((h) => ({ h, s: titleScore(h.name, title) }))
+                         .sort((x, y) => y.s - x.s);
+        const best = scored[0].s;
+        hits = scored.filter((x) => x.s >= best - TIER_SLACK).map((x) => x.h);
 
         let silent = null;      // playable, but no subtitle track. Held as the fallback.
         let silentFrom = '';

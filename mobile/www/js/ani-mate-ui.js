@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.5.7';
+    const APP_VERSION = '0.5.8';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -2059,10 +2059,10 @@
 
     // === CHANGELOG ===
     // Optional line shown above the list in the update popup. Empty string hides it.
-    const CHANGELOG_NOTE = "A wrong season could play under the right name. Beastars Season 2 was serving Final Season Part 2 episodes.";
+    const CHANGELOG_NOTE = "Picking an episode now verifies WHICH SHOW before anything else. A season or part could resolve to a different entry in the same series.";
 
     const CHANGELOG = [
-        "Episode picker now matches the SHOW before judging the subtitles, so a season can no longer resolve to a different entry in the same series",
+        "Episode source is now matched by identity first: a wrong season can no longer win because its subtitles are better, and a show missing from search results is found by widening the query",
     ];
 
     function showChangelog() {
