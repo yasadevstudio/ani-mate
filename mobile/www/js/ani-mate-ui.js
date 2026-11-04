@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.5.9';
+    const APP_VERSION = '0.5.10';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -2059,10 +2059,10 @@
 
     // === CHANGELOG ===
     // Optional line shown above the list in the update popup. Empty string hides it.
-    const CHANGELOG_NOTE = "Subtitles could not load at all: the file was being requested in a way the host refuses. They now come through the app instead of direct.";
+    const CHANGELOG_NOTE = "Subtitles were failing to load because the file address was being wrapped twice. Fixed.";
 
     const CHANGELOG = [
-        "Subtitle files are fetched through ANI-MATE itself, so the host stops rejecting them and tracks actually appear",
+        "Subtitle tracks load again: the address was being routed through the app twice, which the host rejected",
     ];
 
     function showChangelog() {
