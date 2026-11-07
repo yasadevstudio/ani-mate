@@ -374,7 +374,10 @@ async function getDailyPopular(mode = 'sub') {
 }
 
 async function getAniListTrending() {
-    const gql = `query { Page(page: 1, perPage: 20) { media(type: ANIME, sort: [TRENDING_DESC]) { id title { romaji english } coverImage { medium } format episodes } } }`;
+    // genres/startDate/popularity are here for the rail's filters and the card facts.
+    // Without them DAILY had no genre chips and no year, because the trending query
+    // asked for a third of what /search already returns for the same shows.
+    const gql = `query { Page(page: 1, perPage: 20) { media(type: ANIME, sort: [TRENDING_DESC]) { id title { romaji english } coverImage { large color } format episodes genres popularity startDate { year month day } seasonYear } } }`;
     const resp = await fetch('https://graphql.anilist.co', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -386,7 +389,10 @@ async function getAniListTrending() {
         const name = m.title?.romaji || m.title?.english || 'Unknown';
         const eps = m.episodes || 0;
         const type = eps === 1 ? 'movie' : eps <= 12 ? 'short' : 'series';
-        return fixDisplayName({ id: null, name, title_english: m.title?.english || null, cover: m.coverImage?.medium || null, episodes: eps, type, anilist_id: m.id });
+        return fixDisplayName({ id: null, name, title_english: m.title?.english || null, cover: m.coverImage?.large || null, cover_color: m.coverImage?.color || null, episodes: eps, type, anilist_id: m.id,
+                                genres: m.genres || [], popularity: m.popularity || 0,
+                                anilist_format: m.format || null,
+                                start_key: dateKey(m.startDate, m.seasonYear) });
     });
 }
 
@@ -449,7 +455,7 @@ async function getAiringSchedule(dateStr, tzOffsetMin = 0) {
             pageInfo { hasNextPage }
             airingSchedules(airingAt_greater: $gt, airingAt_lesser: $lt, sort: [TIME]) {
                 episode airingAt media {
-                    id title { romaji english } coverImage { medium } format episodes status
+                    id title { romaji english } coverImage { large color } format episodes status genres popularity
                 }
             }
         }
@@ -474,7 +480,11 @@ async function getAiringSchedule(dateStr, tzOffsetMin = 0) {
         title_romaji: s.media?.title?.romaji,
         episode: s.episode,
         airingAt: s.airingAt,
-        cover: s.media?.coverImage?.medium,
+        cover: s.media?.coverImage?.large,
+        cover_color: s.media?.coverImage?.color || null,
+        genres: s.media?.genres || [],
+        popularity: s.media?.popularity || 0,
+        anilist_format: s.media?.format || null,
         format: s.media?.format,
         totalEpisodes: s.media?.episodes
     }));
@@ -496,7 +506,7 @@ async function getAniListCovers(titles) {
         return (Date.now() - coverCache[t].at) > ttl;
     });
     if (needed.length === 0) {
-        return titles.reduce((acc, t) => { acc[t] = { ...(coverCache[t] || {}), cover: coverCache[t]?.url || null }; return acc; }, {});
+        return titles.reduce((acc, t) => { acc[t] = { ...(coverCache[t] || {}), cover: coverCache[t]?.url || null, cover_color: coverCache[t]?.color || null }; return acc; }, {});
     }
 
     // Batch query AniList (5 at a time to avoid rate limits, parameterized variables)
@@ -514,7 +524,7 @@ async function getAniListCovers(titles) {
                 // so the data was always there; only the broad query missed it. This
                 // is a targeted per-title lookup, batched 5 at a time and cached, so
                 // it costs no extra round trip. Added 2026-10-12.
-                return `q${idx}: Page(perPage: 1) { media(search: $s${idx}, type: ANIME) { id title { english romaji } coverImage { medium } description(asHtml: false) format startDate { year month day } seasonYear popularity } }`;
+                return `q${idx}: Page(perPage: 1) { media(search: $s${idx}, type: ANIME) { id title { english romaji } coverImage { large color } description(asHtml: false) format startDate { year month day } seasonYear popularity genres } }`;
             }).join('\n');
             const variables = {};
             batch.forEach((title, idx) => { variables[`s${idx}`] = title; });
@@ -530,10 +540,12 @@ async function getAniListCovers(titles) {
 
             batch.forEach((title, idx) => {
                 const media = json?.data?.[`q${idx}`]?.media?.[0];
-                const coverUrl = media?.coverImage?.medium || null;
+                const coverUrl = media?.coverImage?.large || null;
+                const coverColor = media?.coverImage?.color || null;
                 const desc = media?.description || null;
                 const titleEnglish = media?.title?.english || null;
-                coverCache[title] = { url: coverUrl, description: desc, title_english: titleEnglish,
+                coverCache[title] = { url: coverUrl, color: coverColor, description: desc, title_english: titleEnglish,
+                                      genres: media?.genres || [],
                                       anilist_id: media?.id || null,
                                       format: media?.format || null,
                                       start_key: media ? dateKey(media.startDate, media.seasonYear) : 0,
@@ -548,7 +560,7 @@ async function getAniListCovers(titles) {
         }
     }
 
-    return titles.reduce((acc, t) => { acc[t] = { ...(coverCache[t] || {}), cover: coverCache[t]?.url || null }; return acc; }, {});
+    return titles.reduce((acc, t) => { acc[t] = { ...(coverCache[t] || {}), cover: coverCache[t]?.url || null, cover_color: coverCache[t]?.color || null }; return acc; }, {});
 }
 
 // Anime info lookup (AniList primary, Jikan/MAL fallback)
@@ -605,7 +617,7 @@ async function getAnimeInfo(title) {
 
     // Try AniList first
     try {
-        const gql = `query ($search: String) { Page(perPage: 3) { media(search: $search, type: ANIME) { description(asHtml: false) coverImage { large } bannerImage genres averageScore isAdult title { romaji english } } } }`;
+        const gql = `query ($search: String) { Page(perPage: 3) { media(search: $search, type: ANIME) { description(asHtml: false) coverImage { extraLarge large color } bannerImage genres averageScore isAdult title { romaji english } } } }`;
         const resp = await fetch('https://graphql.anilist.co', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
@@ -629,7 +641,7 @@ async function getAnimeInfo(title) {
             || mediaList.find(m => !m.isAdult)
             || mediaList[0];
         if (media?.description) {
-            const result = { description: media.description, cover: media.coverImage?.large || null, banner: media.bannerImage || null, genres: (media.genres || []).filter(g => media.isAdult || g !== 'Hentai'), score: media.averageScore, source: 'anilist', at: Date.now() };
+            const result = { description: media.description, cover: media.coverImage?.extraLarge || media.coverImage?.large || null, cover_color: media.coverImage?.color || null, banner: media.bannerImage || null, genres: (media.genres || []).filter(g => media.isAdult || g !== 'Hentai'), score: media.averageScore, source: 'anilist', at: Date.now() };
             infoCache[title] = result;
             return result;
         }
@@ -1013,7 +1025,7 @@ async function searchAniList(query, limit = 15) {
         const gql = `query ($search: String, $perPage: Int) {
             Page(page: 1, perPage: $perPage) {
                 media(search: $search, type: ANIME, sort: [SEARCH_MATCH]) {
-                    id title { english romaji } coverImage { medium }
+                    id title { english romaji } coverImage { large color }
                     description(asHtml: false) format episodes status
                     genres isAdult popularity
                     startDate { year month day } seasonYear
@@ -1035,7 +1047,8 @@ async function searchAniList(query, limit = 15) {
             anilist_id: m.id,
             title_english: m.title?.english || null,
             title_romaji: m.title?.romaji || null,
-            cover: m.coverImage?.medium || null,
+            cover: m.coverImage?.large || null,
+            cover_color: m.coverImage?.color || null,
             description: m.description || null,
             format: m.format,
             episodes: m.episodes,
@@ -1058,7 +1071,26 @@ async function searchAniList(query, limit = 15) {
     } catch { return []; }
 }
 
-async function getEpisodeList(showId, mode = 'sub') {
+/* ── WHEN ALLANIME HAS NEVER HEARD OF THE SHOW. Added 2026-11-07. ────────────────
+ * AllAnime's catalog and AniList's are not the same catalog, and search merges
+ * both. A show AniList knows and AllAnime does not comes back with an id that this
+ * query answers `show: null` for, so the episode list is EMPTY, the grid renders
+ * "No episodes available", and there is nothing on screen to click. From outside it
+ * looks exactly like the title does not stream.
+ *
+ * Measured 2026-11-07:
+ *     Black Clover  id kibfyvtiFpKCGGoSD  -> 171 episodes   (in AllAnime)
+ *     Overflow      id PwqFKA4oYhY6TMEA6  ->   0 episodes   (AniList only)
+ * And yet /play resolved Overflow to a working m3u8, because PLAY goes by TITLE
+ * through hianime while the EPISODE LIST went by id through AllAnime. The stream was
+ * always there; the list of things to click was not.
+ *
+ * This hits adult titles hardest -- almost none are in AllAnime's catalog -- which
+ * is why the 18+ toggle looked like it returned shows that refuse to play. Probed on
+ * 2026-11-07: hianime carries 11 of 11 sampled adult titles, several with a separate
+ * (Uncensored) listing. The source was never missing.
+ */
+async function getEpisodeList(showId, mode = 'sub', title = '', opts = {}) {
     // Route by provider tag. AniDB show ids are numeric and unrelated to AllAnime's,
     // so the tag applied at search time decides which source answers.
     if (String(showId).startsWith('anidb:')) {
@@ -1094,7 +1126,36 @@ async function getEpisodeList(showId, mode = 'sub') {
             episodes = detail[mode].sort((a, b) => parseFloat(a) - parseFloat(b));
         }
     } catch { /* ignore */ }
+
+    // Nothing from AllAnime: ask the source that is actually going to serve the video.
+    if (!episodes.length && title) {
+        episodes = await hianimeEpisodeList(title, mode, opts);
+        if (episodes.length) {
+            console.error(`[episodes] AllAnime has no "${title}"; hianime lists ` +
+                          `${episodes.length} episodes`);
+        }
+    }
     return episodes;
+}
+
+/** Episode numbers for a title straight from hianime, used when AllAnime has no row. */
+async function hianimeEpisodeList(title, mode = 'sub', opts = {}) {
+    const ha = getHiAnimeAt();
+    if (!ha) return [];
+    try {
+        const hits = await ha.search(title);
+        if (!hits.length) return [];
+        /* Same identity rule the stream chain uses, so the episode COUNT shown cannot
+         * come from a different entry than the one that will play. */
+        const { acceptableTier } = require('./title-match');
+        const tier = acceptableTier(hits, title, opts);
+        const pick = (tier.length ? tier : hits)[0];
+        const eps = await ha.episodes(pick.id);
+        return eps.map((e) => String(e.number));
+    } catch (e) {
+        console.error('[episodes] hianime fallback failed:', e.message);
+        return [];
+    }
 }
 
 // Decode provider ID (hex mapping from ani-cli latest)
@@ -1428,7 +1489,8 @@ async function addExternalSubtitles(st, title, episodeNumber) {
  * the walk so a /play failure can name what was tried without a second list going stale. */
 const STREAM_CHAIN = ['HiAnime.at', 'AniDB', 'Gogoanime.by', 'AniDB (title match)'];
 
-async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, title, titleEnglish) {
+async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, title, titleEnglish,
+                                          opts = {}) {
     lastStreamSource = null;
     lastStreamMeta = null;
 
@@ -1439,7 +1501,7 @@ async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, 
         if (ha) {
             for (const t of [title, titleEnglish].filter(Boolean)) {
                 try {
-                    let st = await ha.streamByTitle(t, episodeString, mode);
+                    let st = await ha.streamByTitle(t, episodeString, mode, opts);
                     if (st && st.url) {
                         // Subtitles are a SEPARATE question from the stream. Only runs when
                         // this episode's own tracks turned out to be signs-only or absent.
@@ -1499,7 +1561,7 @@ async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, 
         if (gg) {
             for (const t of [title, titleEnglish].filter(Boolean)) {
                 try {
-                    const st = await gg.streamByTitle(t, episodeString);
+                    const st = await gg.streamByTitle(t, episodeString, opts);
                     if (st && st.url) {
                         lastStreamSource = 'Gogoanime.by';
                         lastStreamMeta = {
@@ -1992,6 +2054,7 @@ const server = http.createServer(async (req, res) => {
                         const match = subResults[0];
                         if (!existingNames.has(match.name.toLowerCase())) {
                             match.cover = aniResult.cover;
+                            match.cover_color = aniResult.cover_color || null;
                             match.description = aniResult.description;
                             match.title_english = aniResult.title_english;
                             return match;
@@ -2025,6 +2088,7 @@ const server = http.createServer(async (req, res) => {
                         const info = anilistData[r.name];
                         if (!info) continue;
                         if (!r.cover) r.cover = info.cover || null;
+                        if (!r.cover_color) r.cover_color = info.cover_color || null;
                         if (!r.description) r.description = info.description || null;
                         if (!r.anilist_id && info.anilist_id) {
                             r.anilist_id = info.anilist_id;
@@ -2230,7 +2294,8 @@ const server = http.createServer(async (req, res) => {
             const mode = query.mode || 'sub';
             let episodes = [];
             try {
-                episodes = await getEpisodeList(query.id, mode);
+                episodes = await getEpisodeList(query.id, mode, query.title || '',
+                                                { allowUncensored: query.nsfw === 'true' });
             } catch {
                 jsonResponse(res, 200, { anime_id: query.id, episodes: [], mode, error: 'Source temporarily unavailable — try again in a moment' });
                 return;
@@ -2261,7 +2326,10 @@ const server = http.createServer(async (req, res) => {
             // Get episode URL via AllAnime + fallback providers
             const epUrl = await getEpisodeUrlWithFallbacks(
                 params.anime_id, params.episode.toString(), mode, quality,
-                params.title || '', params.title_english || ''
+                params.title || '', params.title_english || '',
+                // the user's own 18+ switch. On, an (Uncensored) listing is the one that
+                // was asked for; off, it stays disqualified exactly as before.
+                { allowUncensored: params.nsfw === true || params.nsfw === 'true' }
             );
             if (!epUrl) {
                 /* ⚠ THIS LIST WAS HARDCODED AND WENT STALE THE MOMENT THE CHAIN CHANGED. It named
@@ -2587,6 +2655,29 @@ const server = http.createServer(async (req, res) => {
                 if (!rawFavs[i].franchise_id || !favPat[i]) continue;
                 if (!patToId[favPat[i]]) patToId[favPat[i]] = rawFavs[i].franchise_id;
             }
+            /* FOURTH PASS: the metadata the browse grid needs. A stored favorite is
+             * {id,name,episodes,cover} and nothing else, so on the FAVS tab every card
+             * had no genres, no year and no format -- the rail showed zero genre chips
+             * and the cards were bare next to the identical cards on DAILY. This reads
+             * from the SAME cached AniList lookup the search backfill uses, so it is
+             * one round trip the first time and free afterwards. */
+            try {
+                const needy = rawFavs.filter(f => !f.genres || !f.start_key).map(f => f.name);
+                if (needy.length) {
+                    const info = await getAniListCovers(needy.slice(0, 25));
+                    for (const f of rawFavs) {
+                        const d = info[f.name];
+                        if (!d) continue;
+                        if (!f.genres) f.genres = d.genres || [];
+                        if (!f.start_key) f.start_key = d.start_key || 0;
+                        if (!f.anilist_format) f.anilist_format = d.format || null;
+                        if (!f.popularity) f.popularity = d.popularity || 0;
+                        if (!f.cover) f.cover = d.cover || null;
+                        if (!f.cover_color) f.cover_color = d.cover_color || null;
+                    }
+                }
+            } catch { /* the list still renders without it */ }
+
             // Third pass: apply fixDisplayName + assign franchise_id
             const favs = rawFavs.map((f, i) => {
                 const fixed = fixDisplayName(f);
@@ -2695,7 +2786,10 @@ const server = http.createServer(async (req, res) => {
             // Get stream URL first (with fallback providers)
             const epUrl = await getEpisodeUrlWithFallbacks(
                 params.anime_id, params.episode.toString(), mode, quality,
-                params.title || '', params.title_english || ''
+                params.title || '', params.title_english || '',
+                // the user's own 18+ switch. On, an (Uncensored) listing is the one that
+                // was asked for; off, it stays disqualified exactly as before.
+                { allowUncensored: params.nsfw === true || params.nsfw === 'true' }
             );
             if (!epUrl) {
                 jsonResponse(res, 404, { error: 'No streams available for download. Try again later.', retryable: true });

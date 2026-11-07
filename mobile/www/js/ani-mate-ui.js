@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.6.0';
+    const APP_VERSION = '0.7.0';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -2061,14 +2061,17 @@
 
     // === CHANGELOG ===
     // Optional line shown above the list in the update popup. Empty string hides it.
-    const CHANGELOG_NOTE = "Episodes that played silently now find a full script on the same episode's other servers. Beastars Final Season Part 2 episode 1 went from 7 on-screen signs to 336 lines of dialogue.";
+    const CHANGELOG_NOTE = "Browsing is a poster wall now instead of a list of thumbnails, with filters that work on every tab. Adult titles finally play. And the phone and the desktop run the same backend, so a fix lands on both at once.";
 
     const CHANGELOG = [
-        "Subtitles are now read from an episode's dub servers as well as its sub servers. It is the same episode and the same encode, so the timing cannot drift, and on episodes that carried only on-screen signs the dub servers have the full script",
-        "Added Gogoanime.by as a second stream source. It runs on different infrastructure from the main one instead of being another door into the same backend, and its episodes have the subtitles burned into the picture",
-        "Removed AllAnime, AnimePahe and the old HiAnime connector. All three stopped resolving, and each one spent a timeout on your first click before the working source was reached",
-        "Added OpenSubtitles as a last resort for episodes where no server has anything at all. Those tracks say which episode they came from and are never picked automatically, because a derived episode number can be wrong",
-        "Subtitle files in SubRip and SubStation Alpha format are now supported, and the adverts that uploaders inject as real cues are stripped out",
+        "Browse is a full-width poster grid. Posters are more than twice the size they were, and each card shows the year, the format and its genres",
+        "A filter rail with sort, type and genre. The genres are built from whatever is on screen, so it works the same on search, continue, daily, releases and favorites",
+        "Franchise navigation. Opening a show gives you a labeled season bar and a way back to what you were browsing, instead of three small chips that looked like episode numbers",
+        "Favorites group by franchise, name the franchise rather than its newest season, and can be filtered and sorted like everything else",
+        "Adult titles play. Their episode list came back empty because it was looked up somewhere that does not carry them, so there was nothing on screen to tap even though the stream was there",
+        "With the 18+ switch on you get the uncensored cut. It was being refused for carrying a word the search did not ask for",
+        "The phone and the desktop now use one shared backend for search, episodes and playback, so mobile gets every fix at the same time instead of waiting for a second implementation",
+        "The on-screen scanlines are gone. They sat on top of everything including the video",
     ];
 
     function showChangelog() {

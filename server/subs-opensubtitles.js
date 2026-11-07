@@ -59,7 +59,13 @@
  *      an .srt handed straight to the player loads with zero cues and looks like a 403.
  */
 
-const zlib = require('zlib');
+/* `node:` PREFIXED, DELIBERATELY. This file runs in two runtimes now: Node on the
+ * desktop and a Cloudflare Worker. Under the Worker bundler the bare specifier
+ * 'zlib' resolves to an empty shim, so gunzipSync was undefined, fetchVtt caught the
+ * TypeError and returned null, and external subtitles silently did nothing on the
+ * edge while working perfectly on the desktop. The prefixed form resolves correctly
+ * in BOTH. Node has supported it since 14. */
+const zlib = require('node:zlib');
 
 const BASE = process.env.ANI_MATE_OPENSUBS || 'https://rest.opensubtitles.org';
 const AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +

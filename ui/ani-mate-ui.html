@@ -19,7 +19,24 @@
             --glass-border: rgba(0, 255, 255, 0.15);
             --glass-hover: rgba(0, 255, 255, 0.08);
             --text-primary: #e0e0e0;
-            --text-dim: #888;
+            --text-dim: #8a93a8;
+            /* ── SENTINEL DESIGN TOKENS. Added 2026-11-07 for v0.7.0. ──────────────
+             * Ported from CLAUDE EXTERNAL BRAIN SCRIPTS/process-monitor.html, which
+             * already used this file's own --glass-* names. The gap was never the
+             * palette, it was radius, padding and a third text level: the romaji
+             * subtitles were --text-dim on glass and read as grey mush.
+             */
+            --text-muted: #4a5068;
+            --surface-1: #0a0d14;
+            --surface-2: #0f131d;
+            --surface-3: #141a26;
+            --radius: 12px;
+            --radius-sm: 8px;
+            --pad: 20px;
+            --pad-sm: 12px;
+            /* the "floating" look: a soft lift plus a faint inner edge */
+            --lift: 0 6px 24px rgba(0, 0, 0, 0.45);
+            --lift-hi: 0 10px 34px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(0, 255, 255, 0.18);
             --danger: #ff3333;
             --success: #00ff88;
         }
@@ -42,8 +59,12 @@
             pointer-events: none;
         }
 
-        /* === CRT SCANLINES === */
-        .crt-overlay {
+        /* === CRT SCANLINES — REMOVED 2026-11-07 ===
+         * This sat at z-index 9999, which is ON TOP OF EVERYTHING, laying dark bars
+         * across every poster, every subtitle and the video itself. The rule is kept
+         * because the look may be wanted somewhere it is not over content; nothing
+         * carries the class any more. */
+        .crt-overlay-disabled {
             position: fixed;
             top: 0; left: 0;
             width: 100%; height: 100%;
@@ -64,7 +85,8 @@
             border: 1px solid var(--glass-border);
             backdrop-filter: blur(12px);
             -webkit-backdrop-filter: blur(12px);
-            border-radius: 4px;
+            border-radius: var(--radius);
+            box-shadow: var(--lift);
         }
 
         .glass:hover {
@@ -78,7 +100,7 @@
             z-index: 1;
             display: grid;
             grid-template-rows: 48px 1fr;
-            grid-template-columns: 320px 1fr 280px;
+            grid-template-columns: 236px 1fr 280px;
             grid-template-areas:
                 "header header header"
                 "left center right";
@@ -241,22 +263,129 @@
         }
 
         /* === RESULTS LIST === */
+        /* ── THE RAIL ───────────────────────────────────────────────────────────── */
+        .rail {
+            margin: 0 var(--pad-sm) var(--pad-sm);
+            padding: var(--pad-sm);
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            flex-shrink: 0;
+        }
+        .rail-section { display: flex; flex-direction: column; gap: 6px; }
+        .rail-label {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 8px;
+            letter-spacing: 2px;
+            color: var(--accent-gold);
+            text-transform: uppercase;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .rail-clear {
+            color: var(--text-muted); cursor: pointer; letter-spacing: 1px;
+            font-size: 7px; transition: color .15s;
+        }
+        .rail-clear:hover { color: var(--accent-cyan); }
+        .rail-select { width: 100%; font-size: 10px; }
+        .rail-genres { display: flex; flex-wrap: wrap; gap: 4px; max-height: 190px; overflow-y: auto; }
+        .genre-chip {
+            font-family: 'Jura', sans-serif;
+            font-size: 9px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            border: 1px solid var(--glass-border);
+            background: rgba(0,0,0,.35);
+            color: var(--text-dim);
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all .15s;
+            user-select: none;
+        }
+        .genre-chip:hover { color: var(--text-primary); border-color: var(--accent-cyan); }
+        .genre-chip.on {
+            color: #000; background: var(--accent-cyan);
+            border-color: var(--accent-cyan); font-weight: 700;
+        }
+        .rail-count { font-size: 9px; color: var(--text-muted); letter-spacing: 1px; }
+        /* "the more info on them the better" -- year, format, episode count and the
+         * first three genres, all from data the results already carried. */
+        .card-facts {
+            font-family: 'Share Tech Mono', monospace;
+            font-size: 9px;
+            letter-spacing: 1px;
+            color: var(--accent-cyan);
+            opacity: .75;
+            margin-top: 5px;
+        }
+        .card-genres {
+            font-size: 9px;
+            color: var(--text-muted);
+            margin-top: 3px;
+            display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        /* a card the rail has filtered out. display:none, not opacity -- the grid must
+           reflow and close the gap, which visibility/opacity would not do. */
+        .result-card.rail-hidden { display: none !important; }
+
+        /* ── THE BROWSE GRID. 2026-11-07. ──────────────────────────────────────────
+         * This was a 320px column of 36x50 thumbnails. The posters themselves were
+         * 100x141 source, so even the column was not the binding limit -- both had to
+         * change together or the other one still showed.
+         *
+         * The card MARKUP is untouched. Search, continue, daily, releases and favs all
+         * render the same .result-card into this one container, so restyling the
+         * container restyles all five and no render function changed.
+         */
         .results-container {
             flex: 1;
             overflow-y: auto;
-            padding: 0 8px 8px;
+            padding: var(--pad);
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+            gap: 18px;
+            align-content: start;
         }
+        /* section labels and the empty state span the whole grid rather than
+         * occupying one cell and leaving a hole next to them */
+        .results-container > .section-label,
+        .results-container > .no-results { grid-column: 1 / -1; }
 
         .results-container::-webkit-scrollbar { width: 4px; }
         .results-container::-webkit-scrollbar-track { background: transparent; }
         .results-container::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 2px; }
 
         .result-card {
-            padding: 10px 12px;
-            margin-bottom: 4px;
+            padding: 0;
+            margin-bottom: 0;
             cursor: pointer;
-            transition: all 0.2s;
-            border-left: 2px solid transparent;
+            transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+            border-left: none;
+            overflow: hidden;
+            position: relative;
+        }
+        /* the lift. --cover-color is set per card from AniList's own dominant color,
+         * so each poster glows in its own palette instead of a uniform cyan wash. */
+        .result-card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--lift-hi),
+                        0 10px 30px color-mix(in srgb, var(--cover-color, #00ffff) 28%, transparent);
+            border-color: color-mix(in srgb, var(--cover-color, #00ffff) 55%, transparent);
+            z-index: 2;
+        }
+        .result-card.selected {
+            border-color: var(--accent-gold);
+            box-shadow: var(--lift-hi);
+        }
+        .result-card .fav-star {
+            position: absolute;
+            top: 6px; right: 6px;
+            z-index: 3;
+            background: rgba(0, 0, 0, 0.55);
+            border-radius: 50%;
+            width: 26px; height: 26px;
+            line-height: 1;
+            backdrop-filter: blur(4px);
         }
 
         .result-card:hover {
@@ -302,6 +431,9 @@
 
         .franchise-entry:hover { opacity: 1; }
 
+        .result-info {
+            padding: 10px 12px 12px;
+        }
         .result-title {
             font-family: 'Jura', sans-serif;
             font-size: 13px;
@@ -309,6 +441,12 @@
             color: var(--text-primary);
             margin-bottom: 4px;
             line-height: 1.3;
+            /* "The Laid-Off Cheat-Granting Mage Enjoys a Second Lease on Life" ran to
+             * four lines and then pushed seven more lines of romaji under it. Two. */
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
         }
 
         .result-meta {
@@ -346,23 +484,28 @@
 
         /* === TAB BAR === */
         .tab-bar {
-            display: flex;
-            gap: 2px;
-            padding: 6px 8px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+            padding: var(--pad-sm);
             border-bottom: 1px solid rgba(255, 221, 0, 0.1);
         }
+        /* SEARCH is the primary action and gets the full row */
+        .tab-bar .tab-btn:first-child { grid-column: 1 / -1; }
 
         .tab-btn {
-            flex: 1;
-            padding: 6px 2px;
+            flex: none;
+            padding: 9px 4px;
             background: rgba(0, 0, 0, 0.4);
             border: 1px solid var(--glass-border);
             border-radius: 2px;
             color: var(--text-dim);
             font-family: 'Orbitron', sans-serif;
-            font-size: 8px;
+            font-size: 9px;
             text-transform: uppercase;
             letter-spacing: 1px;
+            border-radius: var(--radius-sm);
+            white-space: nowrap;
             cursor: pointer;
             transition: all 0.3s;
             text-align: center;
@@ -390,10 +533,13 @@
         .fav-star:hover { color: var(--accent-gold); }
         .fav-star.active { color: var(--accent-gold); text-shadow: 0 0 8px rgba(255, 221, 0, 0.5); }
 
+        /* was display:flex with the 36x50 thumbnail beside the text. The poster grid
+         * stacks them instead: poster on top, title under it. Left as the single
+         * definition rather than overriding it earlier in the file, because two rules
+         * for one selector is how the first attempt silently lost to source order. */
         .result-card-row {
-            display: flex;
-            align-items: flex-start;
-            gap: 6px;
+            display: block;
+            position: relative;
         }
 
         .result-card-row .result-info { flex: 1; min-width: 0; }
@@ -555,8 +701,10 @@
         .episode-grid-container {
             flex: 1;
             overflow-y: auto;
-            padding: 12px;
-            display: none;
+            padding: var(--pad);
+            /* starts hidden via the inline attribute in the markup, NOT here: this
+               rule is what setCenterView('episodes') restores it to. */
+            display: block;
             min-height: 0;
         }
 
@@ -611,13 +759,55 @@
 
         /* Season strip - other entries in the same franchise */
         .season-strip { display: none; gap: 6px; flex-wrap: wrap; padding: 8px 2px 4px; }
-        .season-chip {
-            background: rgba(255,255,255,0.06);
-            border: 1px solid var(--glass-border, rgba(255,255,255,0.14));
-            color: #cfd6e4; border-radius: 999px; padding: 5px 12px;
-            font-size: 12px; font-weight: 600; letter-spacing: .3px;
-            cursor: pointer; white-space: nowrap;
+        /* ── FRANCHISE NAVIGATION ─────────────────────────────────────────────────
+         * An .episode-btn is 11px Orbitron, 2px radius, in a dense numeric grid. A
+         * .season-chip used to be 12px, 999px radius, sitting immediately above it --
+         * close enough that "S1 S2 S3" read as three more episode numbers. Different
+         * size, different weight, its own labeled bar, and a gold active state that
+         * the episode grid never uses. */
+        .season-nav {
+            margin: 0 0 var(--pad);
+            padding: var(--pad-sm) var(--pad);
+            background: rgba(255, 221, 0, 0.04);
+            border: 1px solid rgba(255, 221, 0, 0.18);
+            border-radius: var(--radius);
         }
+        .season-nav-label {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 8px; letter-spacing: 2px;
+            color: var(--accent-gold);
+            margin-bottom: 9px;
+        }
+        .season-strip { display: flex; flex-wrap: wrap; gap: 8px; }
+        .season-chip {
+            background: rgba(0, 0, 0, 0.45);
+            border: 1px solid var(--glass-border);
+            color: var(--text-primary);
+            border-radius: var(--radius-sm);
+            padding: 9px 16px;
+            font-family: 'Jura', sans-serif;
+            font-size: 13px; font-weight: 700; letter-spacing: .5px;
+            cursor: pointer; white-space: nowrap;
+            transition: all .15s;
+        }
+        .season-chip:hover { border-color: var(--accent-cyan); color: var(--accent-cyan); }
+        .season-chip.active {
+            background: var(--accent-gold); border-color: var(--accent-gold);
+            color: #000; cursor: default;
+        }
+        .season-chip .chip-eps {
+            display: block; font-size: 9px; font-weight: 400;
+            opacity: .7; letter-spacing: 1px; margin-top: 2px;
+        }
+        .show-back-btn {
+            background: none; border: 1px solid var(--glass-border);
+            border-radius: var(--radius-sm);
+            color: var(--text-dim);
+            font-family: 'Orbitron', sans-serif; font-size: 9px; letter-spacing: 2px;
+            padding: 7px 14px; margin-bottom: var(--pad-sm);
+            cursor: pointer; transition: all .15s;
+        }
+        .show-back-btn:hover { color: var(--accent-cyan); border-color: var(--accent-cyan); }
         .season-chip:hover { border-color: rgba(255,255,255,0.45); color: #fff; }
         .season-chip.active {
             background: var(--accent, #38e0c8);
@@ -977,14 +1167,16 @@
 
         /* === RELEASE CARDS === */
         .release-cover-wrap {
-            width: 36px;
-            height: 50px;
+            width: 100%;
+            aspect-ratio: 2 / 3;
             flex-shrink: 0;
-            border-radius: 2px;
+            border-radius: 0;
             overflow: hidden;
-            border: 1px solid var(--glass-border);
-            margin-right: 8px;
+            border: none;
+            margin-right: 0;
+            background: var(--surface-2);
         }
+        .result-card:not(:has(.release-cover-wrap)) .result-info { padding-top: 14px; }
         .release-cover {
             width: 100%;
             height: 100%;
@@ -1177,10 +1369,14 @@
         /* === ENGLISH TITLE SUBTITLE === */
         .result-title-en {
             font-size: 10px;
-            color: var(--text-dim);
-            font-style: italic;
-            margin-top: 1px;
-            line-height: 1.2;
+            color: var(--text-muted);
+            font-style: normal;
+            margin-top: 2px;
+            line-height: 1.25;
+            display: -webkit-box;
+            -webkit-line-clamp: 1;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
         }
 
         /* === FAVORITES BADGE === */
@@ -1307,7 +1503,6 @@
 </head>
 <body>
     <canvas id="neural-canvas"></canvas>
-    <div class="crt-overlay"></div>
 
     <div class="app-container">
         <!-- HEADER -->
@@ -1341,8 +1536,37 @@
                     <button class="mode-btn" data-mode="dub" id="mode-dub" title="Search for dubbed (English audio) anime">DUB</button>
                 </div>
             </div>
-            <div class="results-container" id="results-container">
-                <div class="no-results">Enter a search query to find anime</div>
+            <!-- ── THE RAIL. 2026-11-07. ────────────────────────────────────────────
+                 Filters and sort for whatever is currently in the grid. Everything here
+                 is CLIENT-SIDE over data the results already carry (genres, format,
+                 episode count, release key), so it costs no request and works the same
+                 on search, continue, daily, releases and favs. -->
+            <div class="rail glass" id="rail">
+                <div class="rail-section">
+                    <div class="rail-label">SORT</div>
+                    <select class="control-select rail-select" id="rail-sort" title="Reorder what is on screen">
+                        <option value="default">DEFAULT</option>
+                        <option value="pop">MOST POPULAR</option>
+                        <option value="new">NEWEST</option>
+                        <option value="old">OLDEST</option>
+                        <option value="az">A &ndash; Z</option>
+                        <option value="eps">MOST EPISODES</option>
+                    </select>
+                </div>
+                <div class="rail-section">
+                    <div class="rail-label">TYPE</div>
+                    <select class="control-select rail-select" id="rail-type" title="Series, movies or shorts">
+                        <option value="">ALL</option>
+                        <option value="series">SERIES</option>
+                        <option value="movie">MOVIES</option>
+                        <option value="short">SHORTS</option>
+                    </select>
+                </div>
+                <div class="rail-section" id="rail-genre-section">
+                    <div class="rail-label">GENRE <span class="rail-clear" id="rail-genre-clear" title="Clear genre filter">CLEAR</span></div>
+                    <div class="rail-genres" id="rail-genres"></div>
+                </div>
+                <div class="rail-count" id="rail-count"></div>
             </div>
         </div>
 
@@ -1403,15 +1627,23 @@
                     </div>
                     <video id="video-player" controls></video>
                 </div>
+                <!-- BROWSE GRID. Moved out of the 320px left rail on 2026-11-07.
+                     Every browse surface -- search, continue, daily, releases, favs --
+                     renders into this one container, so moving the ELEMENT moved all
+                     five at once without touching a single render function. -->
+                <div class="results-container" id="results-container">
+                    <div class="no-results">Enter a search query to find anime</div>
+                </div>
                 <div class="player-splash" id="player-splash">
                     <a href="https://yasa.work" target="_blank" class="player-splash-link" title="Visit YASA Development Studio website">YASA Development Studio</a>
                     <div class="player-splash-presents">PRESENTS</div>
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.6.0 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.7.0 // YASA SYSTEMS ACTIVE</div>
                 </div>
-                <div class="episode-grid-container glass" id="episode-grid-container">
+                <div class="episode-grid-container glass" id="episode-grid-container" style="display:none">
+                    <button class="show-back-btn" id="show-back-btn" title="Back to what you were browsing">&laquo; BACK TO RESULTS</button>
                     <div class="selected-anime-header">
                         <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1">
                             <div class="selected-anime-title" id="selected-anime-title" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">--</div>
@@ -1419,8 +1651,16 @@
                         </div>
                         <div class="selected-anime-count" id="selected-anime-count">--</div>
                     </div>
+                    <!-- SEASONS SIT ABOVE THE SHOW, NOT BETWEEN ITS DESCRIPTION AND ITS
+                         EPISODE NUMBERS. The strip was logically correct since October and
+                         still read as "no navigation", because it rendered as small pills
+                         directly on top of the episode buttons and nothing said what they
+                         were. Same data, moved and labeled. 2026-11-07. -->
+                    <div class="season-nav" id="season-nav" style="display:none">
+                        <div class="season-nav-label">SEASONS IN THIS FRANCHISE</div>
+                        <div class="season-strip" id="season-strip"></div>
+                    </div>
                     <div class="anime-description" id="anime-description" style="display:none"></div>
-                    <div class="season-strip" id="season-strip" style="display:none"></div>
                     <div class="range-selector" id="range-selector" style="display:none"></div>
                     <div class="episode-grid" id="episode-grid"></div>
                 </div>
@@ -1509,7 +1749,10 @@
     }
 
     // Initialize particles
-    for (let i = 0; i < 80; i++) {
+    // 50, not 80. The connection pass below is O(n^2): 80 particles is 3,160
+    // distance calculations EVERY FRAME, forever, behind content nobody is
+    // looking at. 50 is 1,225 pairs, a 2.6x cut, and visually the same field.
+    for (let i = 0; i < 50; i++) {
         particles.push(new Particle());
     }
 
@@ -1539,6 +1782,215 @@
         requestAnimationFrame(animateParticles);
     }
     animateParticles();
+
+    /* ── THE CENTER PANEL HOLDS FOUR VIEWS AND ONLY ONE AT A TIME. 2026-11-07. ──
+     * browse    the poster grid (search / continue / daily / releases / favs)
+     * splash    the logo, shown only before anything has been browsed
+     * episodes  the episode grid for one show
+     * The player sits on top of whichever is current and is not switched here.
+     *
+     * Before this, the splash was set to display:none exactly once and never
+     * restored, so the three states were really "logo until you click something,
+     * then the episode grid forever". Adding a fourth view to that would have made
+     * the next person guess which combination was legal.
+     */
+    function setCenterView(view) {
+        const map = {
+            browse: 'results-container',
+            splash: 'player-splash',
+            episodes: 'episode-grid-container',
+        };
+        for (const [name, id] of Object.entries(map)) {
+            const el = document.getElementById(id);
+            if (!el) continue;
+            /* '' not 'block'. An inline display beats the stylesheet, and setting
+             * 'block' here silently overrode .results-container's display:grid --
+             * the grid rendered as one full-width poster per row and looked like the
+             * CSS had not applied at all. Let each element's own rule decide. */
+            el.style.display = (name === view) ? '' : 'none';
+        }
+    }
+
+    /* ══ THE RAIL: FILTER + SORT OVER WHATEVER IS IN THE GRID ══════════════════
+     * 2026-11-07.
+     *
+     * SIX FUNCTIONS BUILD CARDS -- renderFranchiseCard, renderResultGroup, renderDaily,
+     * renderContinue, renderReleases and renderFavorites. Editing all six to carry
+     * filter data would mean six places to forget, and the next tab added would be the
+     * seventh. So nothing here touches a renderer.
+     *
+     * Instead a MutationObserver watches the one container they all write to, and a
+     * single pass reads each card's id back against the state arrays that already hold
+     * genres, format, popularity and release date. One hook, every tab, now and later.
+     *
+     * Filtering is display:none rather than opacity, because the grid has to REFLOW and
+     * close the gap. Sorting sets CSS `order`, which grid items honour, so neither one
+     * re-renders anything or loses scroll position.
+     */
+    const rail = { genres: new Set(), type: '', sort: 'default' };
+
+    /** Every object the app currently knows about, for id -> metadata lookup. */
+    function knownItems() {
+        return [].concat(
+            state.results || [], state.dailyResults || [], state.favorites || [],
+            state.continueResults || [], state.releasesResults || []
+        ).filter(Boolean);
+    }
+
+    function yearOf(it) {
+        const k = Number(it.start_key || 0);
+        return k > 10000000 ? Math.floor(k / 10000) : 0;
+    }
+
+    /* Tag each card with what the rail needs, and put the useful part on screen.
+     * "the more info on them the better" -- year, format and episode count are the
+     * three a person actually scans a poster wall for. */
+    function enrichCards() {
+        const byId = new Map();
+        for (const it of knownItems()) if (it && it.id) byId.set(String(it.id), it);
+        document.querySelectorAll('#results-container .result-card').forEach(card => {
+            const it = byId.get(String(card.dataset.id || ''));
+            if (!it) return;
+            const genres = (it.genres || []).join('|');
+            card.dataset.genres = genres;
+            card.dataset.type = it.type || '';
+            card.dataset.pop = String(it.popularity || 0);
+            card.dataset.year = String(yearOf(it));
+            card.dataset.eps = String(it.episodes || 0);
+            card.dataset.name = (it.title_english || it.name || '').toLowerCase();
+            if (card.querySelector('.card-facts')) return;      // already enriched
+            const info = card.querySelector('.result-info');
+            if (!info) return;
+            const y = yearOf(it);
+            const fmt = (it.anilist_format || '').replace(/_/g, ' ');
+            const bits = [y || null, fmt || null].filter(Boolean);
+            if (bits.length) {
+                const el = document.createElement('div');
+                el.className = 'card-facts';
+                el.textContent = bits.join('  ·  ');
+                info.appendChild(el);
+            }
+            if (genres) {
+                const g = document.createElement('div');
+                g.className = 'card-genres';
+                g.textContent = (it.genres || []).slice(0, 3).join(' · ');
+                info.appendChild(g);
+            }
+        });
+    }
+
+    /** Genre chips are built from what is ACTUALLY on screen, not a fixed list. */
+    function rebuildGenreChips() {
+        const box = document.getElementById('rail-genres');
+        if (!box) return;
+        const counts = new Map();
+        document.querySelectorAll('#results-container .result-card').forEach(c => {
+            if (c.closest('.franchise-entries')) return;      // hidden group members
+            for (const g of (c.dataset.genres || '').split('|')) {
+                if (g) counts.set(g, (counts.get(g) || 0) + 1);
+            }
+        });
+        const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+        // drop a selected genre that no longer exists here, or it filters to nothing
+        for (const g of [...rail.genres]) if (!counts.has(g)) rail.genres.delete(g);
+        box.innerHTML = sorted.map(([g, n]) =>
+            `<span class="genre-chip ${rail.genres.has(g) ? 'on' : ''}" data-genre="${esc(g)}">${esc(g)} ${n}</span>`
+        ).join('') || '<span class="rail-count">nothing to filter</span>';
+        document.getElementById('rail-genre-section').style.display = sorted.length ? '' : 'none';
+    }
+
+    function applyRail() {
+        /* ⚠ TOP-LEVEL CARDS ONLY. A franchise group holds its members in a nested
+         * display:none container, and querySelectorAll finds hidden nodes perfectly
+         * well -- so FAVS read "11 of 11 shown" above four visible posters, and the
+         * genre counts were inflated the same way. Scope to cards that are not inside
+         * a collapsed group. */
+        const cards = [...document.querySelectorAll('#results-container .result-card')]
+            .filter(c => !c.closest('.franchise-entries'));
+        let shown = 0;
+        for (const c of cards) {
+            const gs = (c.dataset.genres || '').split('|').filter(Boolean);
+            const okGenre = !rail.genres.size || gs.some(g => rail.genres.has(g));
+            const okType = !rail.type || c.dataset.type === rail.type;
+            const vis = okGenre && okType;
+            c.classList.toggle('rail-hidden', !vis);
+            if (vis) shown++;
+        }
+        if (rail.sort === 'default') {
+            cards.forEach(c => { c.style.order = ''; });
+        } else {
+            const key = {
+                pop: c => -Number(c.dataset.pop || 0),
+                new: c => -Number(c.dataset.year || 0),
+                old: c => Number(c.dataset.year || 9999),
+                eps: c => -Number(c.dataset.eps || 0),
+            }[rail.sort];
+            const ranked = cards.slice().sort(
+                rail.sort === 'az'
+                    ? (a, b) => (a.dataset.name || '').localeCompare(b.dataset.name || '')
+                    : (a, b) => key(a) - key(b));
+            ranked.forEach((c, i) => { c.style.order = String(i + 1); });
+        }
+        const n = document.getElementById('rail-count');
+        if (n) n.textContent = cards.length
+            ? `${shown} of ${cards.length} shown`
+            : '';
+    }
+
+    function refreshRail() { enrichCards(); rebuildGenreChips(); applyRail(); }
+
+    /* ONE OBSERVER INSTEAD OF SIX CALLS. Any renderer writing into the container
+     * triggers this, including ones that do not exist yet. */
+    (function wireRail() {
+        const box = document.getElementById('results-container');
+        if (!box) return;
+        let pending = null;
+        new MutationObserver(() => {
+            clearTimeout(pending);
+            pending = setTimeout(refreshRail, 60);   // renders arrive in bursts
+        }).observe(box, { childList: true, subtree: true });
+
+        document.getElementById('rail-genres').addEventListener('click', (e) => {
+            const chip = e.target.closest('.genre-chip');
+            if (!chip) return;
+            const g = chip.dataset.genre;
+            if (rail.genres.has(g)) rail.genres.delete(g); else rail.genres.add(g);
+            chip.classList.toggle('on', rail.genres.has(g));
+            applyRail();
+        });
+        document.getElementById('rail-genre-clear').addEventListener('click', () => {
+            rail.genres.clear();
+            document.querySelectorAll('.genre-chip.on').forEach(c => c.classList.remove('on'));
+            applyRail();
+        });
+        document.getElementById('rail-type').addEventListener('change', (e) => {
+            rail.type = e.target.value; applyRail();
+        });
+        document.getElementById('rail-sort').addEventListener('change', (e) => {
+            rail.sort = e.target.value; applyRail();
+        });
+    })();
+
+    /* BACK TO WHAT YOU WERE LOOKING AT. Opening a show replaced the grid and the only
+     * way out was to click a tab, which re-ran the search. The browse grid is still in
+     * the DOM untouched -- this just shows it again. */
+    (function wireShowBack() {
+        const b = document.getElementById('show-back-btn');
+        if (!b) return;
+        b.addEventListener('click', () => {
+            if (state.isPlaying) hidePlayer();
+            setCenterView('browse');
+        });
+    })();
+
+    /* A franchise card named "The Apothecary Diaries Season 3" is the newest member's
+     * name, not the franchise's. Strip the season marker so the poster reads as the
+     * thing it stands for; the season bar inside names the individual entries. */
+    function franchiseName(n) {
+        return String(n || '')
+            .replace(/\s*[:\-]?\s*\b(?:\d+\s*(?:st|nd|rd|th)\s+Season|Season\s*\d+|Part\s*\d+|Final Season|The Final Season|2nd Season|3rd Season)\b/gi, '')
+            .replace(/\s{2,}/g, ' ').replace(/[\s:\-]+$/, '').trim() || n;
+    }
 
     // === UTILITIES ===
     const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -1657,6 +2109,14 @@
         return out;
     }
 
+    /* The LABELED BAR is what appears or disappears, not the bare strip -- a visible
+     * "SEASONS IN THIS FRANCHISE" header with nothing under it is worse than no bar. */
+    function navOff(el) {
+        el.innerHTML = '';
+        const nav = document.getElementById('season-nav');
+        if (nav) nav.style.display = 'none';
+    }
+
     function renderSeasonStrip() {
         if (state._stripFor !== (state.selectedAnime && state.selectedAnime.id)) {
             state._stripFor = state.selectedAnime && state.selectedAnime.id;
@@ -1665,9 +2125,9 @@
         const el = document.getElementById('season-strip');
         if (!el) return;
         const sel = state.selectedAnime;
-        if (!sel || !sel.franchiseId) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        if (!sel || !sel.franchiseId) { navOff(el); return; }
         const all = franchiseSiblings(sel.franchiseId);
-        if (all.length < 2) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        if (all.length < 2) { navOff(el); return; }
         // A SEASON strip lists seasons. Dragon Ball Super's was twelve chips — three
         // series, five films, three ONAs, an OVA — with two chips both reading "S1".
         // Series form the spine; the rest sit behind one toggle. Whatever is open now
@@ -1684,12 +2144,14 @@
         const spine = all.filter(isSpine);
         const extra = all.filter(x => !isSpine(x));
         const sibs = state.seasonStripExpanded ? all : (spine.length >= 2 ? spine : all);
-        if (sibs.length < 2 && !extra.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        if (sibs.length < 2 && !extra.length) { navOff(el); return; }
         el.innerHTML = sibs.map(sb => {
             const on = String(sb.id) === String(sel.id) ? ' active' : '';
             return `<button class="season-chip${on}" data-id="${esc(String(sb.id))}"`
                  + ` data-title="${esc(sb.name)}" data-eps="${sb.episodes || 0}"`
-                 + ` title="${esc(sb.name)}">${esc(seasonLabel(sb, spine))}</button>`;
+                 + ` title="${esc(sb.name)}">${esc(seasonLabel(sb, spine))}`
+                   + (sb.episodes ? `<span class="chip-eps">${sb.episodes} EP</span>` : '')
+                   + `</button>`;
         }).join('');
         if (extra.length && !state.seasonStripExpanded) {
             el.innerHTML += `<button class="season-chip season-more"`
@@ -1697,6 +2159,8 @@
                           + `+${extra.length} more</button>`;
         }
         el.style.display = 'flex';
+        const nav = document.getElementById('season-nav');
+        if (nav) nav.style.display = '';
         const more = el.querySelector('.season-more');
         if (more) more.addEventListener('click', () => {
             state.seasonStripExpanded = true;
@@ -1710,7 +2174,7 @@
         });
     }
 
-    // Arriving from favourites or history means the siblings were never fetched.
+    // Arriving from favorites or history means the siblings were never fetched.
     // Search once on the season-stripped title and cache what shares the id.
     async function ensureFranchiseSiblings() {
         const sel = state.selectedAnime;
@@ -1779,8 +2243,7 @@
 
         const gridContainer = document.getElementById('episode-grid-container');
         const splash = document.getElementById('player-splash');
-        splash.style.display = 'none';
-        gridContainer.style.display = 'block';
+        setCenterView('episodes');
         renderSeasonStrip();
         ensureFranchiseSiblings();
 
@@ -1814,8 +2277,12 @@
 
         try {
             const _aniId = (state.selectedAnime && state.selectedAnime.anilist_id) || '';
+            // the TITLE goes too: AllAnime has no row for a lot of what AniList search
+            // returns, and the server falls back to hianime by name when that happens.
             const data = await apiCall(`/episodes?id=${encodeURIComponent(animeId)}&mode=${state.mode}`
-                                     + (_aniId ? `&anilist_id=${encodeURIComponent(_aniId)}` : ''));
+                                     + (_aniId ? `&anilist_id=${encodeURIComponent(_aniId)}` : '')
+                                     + `&title=${encodeURIComponent(title || '')}`
+                                     + (state.nsfw ? '&nsfw=true' : ''));
             state.episodes = data.episodes || [];
             state.arcs = data.arcs || null;
             renderEpisodeGrid();
@@ -2268,7 +2735,8 @@
                     title_english: state.selectedAnime.titleEnglish || null,
                     quality,
                     sub_or_dub: audio,
-                    total_episodes: state.selectedAnime.epCount || null
+                    total_episodes: state.selectedAnime.epCount || null,
+                    nsfw: !!state.nsfw
                 })
             });
 
@@ -2422,7 +2890,7 @@
                 // S1. Right for three seasons, wrong for a franchise: searching
                 // "Dragon Ball Super" opened Dragon Ball Z from 1989. search_score is
                 // already computed per row. With no season named, season 1 still wins,
-                // so v0.5.1's behaviour survives. 2026-10-12.
+                // so v0.5.1's behavior survives. 2026-10-12.
                 const byScore = members.reduce((best, m) =>
                     (m.search_score ?? -1) > (best.search_score ?? -1) ? m : best, members[0]);
                 groups.push({ franchise_id: fid, parent: byScore, members });
@@ -2446,8 +2914,8 @@
                     <button class="fav-star ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${esc(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${esc(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}" data-fav-cover="${esc(r.cover || '')}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#9733;' : '&#9734;'}</button>
                     ${coverHtml}
                     <div class="result-info">
-                        <div class="result-title">${esc(primaryTitle)}</div>
-                        <div class="result-meta"><span class="result-type series">FRANCHISE</span>${count} entries <span class="franchise-toggle">&#9660;</span></div>
+                        <div class="result-title">${esc(franchiseName(primaryTitle))}</div>
+                        <div class="result-meta"><span class="result-type series">${count} SEASONS</span></div>
                     </div>
                 </div>
             </div>
@@ -2531,6 +2999,7 @@
 
     function renderResults() {
         clearOpenShow();
+        setCenterView('browse');      // a new search always returns to the grid
         const container = document.getElementById('results-container');
         if (state.results.length === 0) {
             container.innerHTML = '<div class="no-results">No results found</div>';
@@ -2582,7 +3051,11 @@
             const hasEnglish = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
             const primaryTitle = (state.preferEnglish && hasEnglish) ? r.title_english : r.name;
             const secondaryTitle = (state.preferEnglish && hasEnglish) ? r.name : (hasEnglish ? r.title_english : null);
+            // AniList ships the poster's own dominant color. Using it per card is what
+            // makes the grid feel lit rather than uniformly cyan. Falls back in CSS.
+            const accent = /^#[0-9a-f]{3,8}$/i.test(r.cover_color || '') ? r.cover_color : '';
             return `<div class="result-card glass ${state.selectedAnime?.id === r.id ? 'selected' : ''}"
+                 ${accent ? `style="--cover-color:${accent}"` : ''}
                  data-id="${r.id}" data-title="${esc(r.name)}" data-eps="${r.episodes}" data-franchise="${r.franchise_id || ''}" title="${hoverText}">
                 <div class="result-card-row">
                     <button class="fav-star ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${esc(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${esc(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}" data-fav-cover="${esc(r.cover || '')}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}">${isFav ? '&#9733;' : '&#9734;'}</button>
@@ -3031,6 +3504,8 @@
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
         const searchBox = document.querySelector('.search-box');
         const container = document.getElementById('results-container');
+        // picking a tab means browsing, whatever was on screen before
+        setCenterView('browse');
 
         if (tab === 'search') {
             searchBox.style.display = 'block';
@@ -3391,8 +3866,8 @@
                         <button class="fav-star active" data-fav-id="${parent.id}" data-fav-name="${esc(parent.name)}" data-fav-eps="${parent.episodes}" data-fav-english="${esc(parent.title_english || '')}" data-fav-franchise="${fid}" data-fav-cover="${esc(parent.cover || '')}" title="Remove from favorites">&#9733;</button>
                         ${parent.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${esc(parent.cover)}" loading="lazy" alt=""></div>` : ''}
                         <div class="result-info">
-                            <div class="result-title">${esc(primary)}${franchiseDot}</div>
-                            <div class="result-meta"><span class="result-type series">FRANCHISE</span>${members.length} entries <span class="franchise-toggle">&#9660;</span></div>
+                            <div class="result-title">${esc(franchiseName(primary))}${franchiseDot}</div>
+                            <div class="result-meta"><span class="result-type series">${members.length} SEASONS</span></div>
                         </div>
                     </div>
                 </div>
@@ -3551,16 +4026,19 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.6.0';
+    const APP_VERSION = '0.7.0';
     // Optional line shown above the list in the update popup. Empty string hides it.
-    const CHANGELOG_NOTE = "Episodes that played silently now find a full script on the same episode's other servers. Beastars Final Season Part 2 episode 1 went from 7 on-screen signs to 336 lines of dialogue.";
+    const CHANGELOG_NOTE = "Browsing is a poster wall now instead of a list of thumbnails, with filters that work on every tab. Adult titles finally play. And the phone and the desktop run the same backend, so a fix lands on both at once.";
 
     const CHANGELOG = [
-        "Subtitles are now read from an episode's dub servers as well as its sub servers. It is the same episode and the same encode, so the timing cannot drift, and on episodes that carried only on-screen signs the dub servers have the full script",
-        "Added Gogoanime.by as a second stream source. It runs on different infrastructure from the main one instead of being another door into the same backend, and its episodes have the subtitles burned into the picture",
-        "Removed AllAnime, AnimePahe and the old HiAnime connector. All three stopped resolving, and each one spent a timeout on your first click before the working source was reached",
-        "Added OpenSubtitles as a last resort for episodes where no server has anything at all. Those tracks say which episode they came from and are never picked automatically, because a derived episode number can be wrong",
-        "Subtitle files in SubRip and SubStation Alpha format are now supported, and the adverts that uploaders inject as real cues are stripped out",
+        "Browse is a full-width poster grid. Posters are more than twice the size they were, and each card shows the year, the format and its genres",
+        "A filter rail with sort, type and genre. The genres are built from whatever is on screen, so it works the same on search, continue, daily, releases and favorites",
+        "Franchise navigation. Opening a show gives you a labeled season bar and a way back to what you were browsing, instead of three small chips that looked like episode numbers",
+        "Favorites group by franchise, name the franchise rather than its newest season, and can be filtered and sorted like everything else",
+        "Adult titles play. Their episode list came back empty because it was looked up somewhere that does not carry them, so there was nothing on screen to tap even though the stream was there",
+        "With the 18+ switch on you get the uncensored cut. It was being refused for carrying a word the search did not ask for",
+        "The phone and the desktop now use one shared backend for search, episodes and playback, so mobile gets every fix at the same time instead of waiting for a second implementation",
+        "The on-screen scanlines are gone. They sat on top of everything including the video",
     ];
 
     function showChangelog() {

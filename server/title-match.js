@@ -32,14 +32,34 @@ function normTitle(s) {
  * franchise, so they are penalized hard rather than ignored. */
 const EXTRA = ['final', 'part', 'movie', 'ova', 'special', 'recap', 'uncensored'];
 
-function titleScore(hitName, wanted) {
+/* ⚠ EXCEPT "uncensored", WHICH IS A DIFFERENT CUT OF THE SAME ENTRY, NOT A DIFFERENT ENTRY.
+ *
+ * Treating it like the others quietly broke the 18+ feature. hianime lists both
+ * "Overflow (TV ver.)" and "Overflow (Uncensored)"; a search for "Overflow" REFUSED the
+ * uncensored one for introducing a qualifier nobody asked for, so the adult toggle returned
+ * the broadcast-safe cut. Correct for a general search, pointless for the reason the toggle
+ * exists.
+ *
+ * So it is now conditional. opts.allowUncensored comes from the user's own 18+ switch:
+ * off, it disqualifies exactly as before; on, it is allowed AND preferred, because someone
+ * who asked for adult content and got the censored version has not been served.
+ */
+function extrasFor(opts) {
+    return (opts && opts.allowUncensored)
+        ? EXTRA.filter((w) => w !== 'uncensored')
+        : EXTRA;
+}
+
+function titleScore(hitName, wanted, opts) {
     const a = normTitle(hitName), b = normTitle(wanted);
     if (a === b) return 1000;                       // same show, say so
     const at = a.split(' '), bt = b.split(' ');
     const shared = bt.filter((w) => at.includes(w)).length;
     let n = shared * 10 - Math.abs(at.length - bt.length);
     // a qualifier the caller never asked for means a DIFFERENT entry, not a near miss
-    for (const w of EXTRA) if (at.includes(w) && !bt.includes(w)) n -= 60;
+    for (const w of extrasFor(opts)) if (at.includes(w) && !bt.includes(w)) n -= 60;
+    // asked for adult content: the uncensored cut is the one that was wanted
+    if (opts && opts.allowUncensored && at.includes('uncensored')) n += 40;
     // a season OR part number that disagrees is disqualifying. Part was missing once and
     // "Final Season Part 1" happily matched "Final Season Part 2" on it.
     for (const kind of ['season', 'part', 'cour']) {
@@ -55,7 +75,7 @@ function titleScore(hitName, wanted) {
  * place, which is how "BEASTARS FINAL SEASON Part 1" came back as Part 2: the search returned
  * exactly one hit, it was wrong, and ranking it changed nothing.
  */
-function titleAcceptable(hitName, wanted) {
+function titleAcceptable(hitName, wanted, opts) {
     const a = normTitle(hitName), b = normTitle(wanted);
     if (a === b) return true;
     for (const kind of ['season', 'part', 'cour']) {
@@ -64,7 +84,7 @@ function titleAcceptable(hitName, wanted) {
         if (na && nb && na !== nb) return false;      // different entry, full stop
     }
     // the hit must not introduce a qualifier the caller never asked for
-    for (const w of EXTRA) if (a.split(' ').includes(w) && !b.split(' ').includes(w)) return false;
+    for (const w of extrasFor(opts)) if (a.split(' ').includes(w) && !b.split(' ').includes(w)) return false;
     /* AND NOTHING ABOUT WORD OVERLAP. A first draft also demanded the hit share 60% of the
      * requested words, which looks sensible and is wrong: hosts list shows under whichever
      * language they prefer. "Kusuriya no Hitorigoto 3rd Season" is listed as "The Apothecary
@@ -131,10 +151,10 @@ const TIER_SLACK = 25;
  * best-scoring tier. Returns [] when nothing is acceptable, which callers must treat as
  * "refuse to play" rather than "pick the first one anyway".
  */
-function acceptableTier(hits, title) {
-    const ok = (hits || []).filter((h) => titleAcceptable(h.name, title));
+function acceptableTier(hits, title, opts) {
+    const ok = (hits || []).filter((h) => titleAcceptable(h.name, title, opts));
     if (!ok.length) return [];
-    const scored = ok.map((h) => ({ h, s: titleScore(h.name, title) }))
+    const scored = ok.map((h) => ({ h, s: titleScore(h.name, title, opts) }))
                      .sort((x, y) => y.s - x.s);
     const best = scored[0].s;
     return scored.filter((x) => x.s >= best - TIER_SLACK).map((x) => x.h);

@@ -350,7 +350,7 @@ function makeProvider(afetch) {
         return st;
     }
 
-    async function streamByTitle(title, episodeNumber, mode = 'sub') {
+    async function streamByTitle(title, episodeNumber, mode = 'sub', opts = {}) {
         // Widen the net until an ACCEPTABLE listing appears, then rank. Asking the
         // host for the exact title can return fewer and worse hits than asking for
         // less, so a single wrong hit is not a reason to stop looking.
@@ -380,7 +380,7 @@ function makeProvider(afetch) {
         // Keep only listings that are plausibly the show asked for. If ranking is
         // allowed to pick from a list containing nothing correct, it will still
         // return something, and that something plays.
-        const tier = acceptableTier(hits, title);
+        const tier = acceptableTier(hits, title, opts);
         if (!tier.length) {
             console.error(`[hianime.at] no listing matches "${title}" ` +
                           `(saw: ${hits.map((h) => h.name).join(', ')}). Refusing to ` +

@@ -124,7 +124,7 @@ function makeProvider(afetch) {
     }
 
     /** Title -> stream, the shape getEpisodeUrlWithFallbacks wants. */
-    async function streamByTitle(title, episodeNumber) {
+    async function streamByTitle(title, episodeNumber, opts = {}) {
         let hits = [];
         const seen = new Set();
         for (const q of queryLadder(title)) {
@@ -137,7 +137,7 @@ function makeProvider(afetch) {
         /* Same identity rule as every other provider, from the same module. A different
          * entry in the same franchise is not a near miss, and this host lists parts
          * separately exactly like hianime does. */
-        const tier = acceptableTier(hits, title);
+        const tier = acceptableTier(hits, title, opts);
         if (!tier.length) {
             console.error(`[gogoanime.by] no listing matches "${title}" ` +
                           `(saw: ${hits.map((h) => h.name).join(', ')}). Refusing to play ` +

@@ -778,7 +778,7 @@ async function searchAniList(query, limit = 15) {
         const gql = `query ($search: String, $perPage: Int) {
             Page(page: 1, perPage: $perPage) {
                 media(search: $search, type: ANIME, sort: [SEARCH_MATCH]) {
-                    id title { english romaji } coverImage { medium }
+                    id title { english romaji } coverImage { large color }
                     description(asHtml: false) format episodes status
                     genres isAdult popularity
                     startDate { year month day } seasonYear
@@ -800,7 +800,7 @@ async function searchAniList(query, limit = 15) {
             anilist_id: m.id,
             title_english: m.title?.english || null,
             title_romaji: m.title?.romaji || null,
-            cover: m.coverImage?.medium || null,
+            cover: m.coverImage?.large || null,
             description: m.description || null,
             format: m.format,
             episodes: m.episodes,
@@ -1107,7 +1107,7 @@ async function getAiringSchedule(dateStr) {
             pageInfo { hasNextPage }
             airingSchedules(airingAt_greater: $gt, airingAt_lesser: $lt, sort: [TIME]) {
                 episode airingAt media {
-                    id title { romaji english } coverImage { medium } format episodes status
+                    id title { romaji english } coverImage { large color } format episodes status
                 }
             }
         }
@@ -1132,7 +1132,7 @@ async function getAiringSchedule(dateStr) {
         title_romaji: s.media?.title?.romaji,
         episode: s.episode,
         airingAt: s.airingAt,
-        cover: s.media?.coverImage?.medium,
+        cover: s.media?.coverImage?.large,
         format: s.media?.format,
         totalEpisodes: s.media?.episodes
     }));
@@ -1150,7 +1150,10 @@ async function getAniListCovers(titles) {
     });
     if (needed.length === 0) {
         return titles.reduce((acc, t) => {
-            acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null, title_english: coverCache[t]?.title_english || null };
+            acc[t] = { ...(coverCache[t] || {}), cover: coverCache[t]?.url || null,
+                       cover_color: coverCache[t]?.color || null,
+                       description: coverCache[t]?.description || null,
+                       title_english: coverCache[t]?.title_english || null };
             return acc;
         }, {});
     }
@@ -1160,7 +1163,10 @@ async function getAniListCovers(titles) {
         try {
             const varDefs = batch.map((_, idx) => `$s${idx}: String`).join(', ');
             const fragments = batch.map((_, idx) => {
-                return `q${idx}: Page(perPage: 1) { media(search: $s${idx}, type: ANIME) { title { english romaji } coverImage { medium } description(asHtml: false) } }`;
+                // AniList's field names are offset from their paths: medium -> /small/ 100x141,
+                // large -> /medium/ 230x325. We were asking for `medium` and rendering
+                // 100px posters. The rest rides along on a request already being made.
+                return `q${idx}: Page(perPage: 1) { media(search: $s${idx}, type: ANIME) { id title { english romaji } coverImage { large color } description(asHtml: false) genres format popularity startDate { year month day } seasonYear } }`;
             }).join('\n');
             const variables = {};
             batch.forEach((title, idx) => { variables[`s${idx}`] = title; });
@@ -1176,10 +1182,17 @@ async function getAniListCovers(titles) {
 
             batch.forEach((title, idx) => {
                 const media = json?.data?.[`q${idx}`]?.media?.[0];
-                const coverUrl = media?.coverImage?.medium || null;
+                const coverUrl = media?.coverImage?.large || null;
                 const desc = media?.description || null;
                 const titleEnglish = media?.title?.english || null;
-                coverCache[title] = { url: coverUrl, description: desc, title_english: titleEnglish, at: Date.now() };
+                coverCache[title] = { url: coverUrl, description: desc, title_english: titleEnglish,
+                                      color: media?.coverImage?.color || null,
+                                      genres: media?.genres || [],
+                                      anilist_id: media?.id || null,
+                                      format: media?.format || null,
+                                      popularity: media?.popularity || 0,
+                                      start_key: dateKey(media?.startDate, media?.seasonYear),
+                                      at: Date.now() };
             });
         } catch {
             batch.forEach(title => {
@@ -1189,7 +1202,10 @@ async function getAniListCovers(titles) {
     }
 
     return titles.reduce((acc, t) => {
-        acc[t] = { cover: coverCache[t]?.url || null, description: coverCache[t]?.description || null, title_english: coverCache[t]?.title_english || null };
+        acc[t] = { ...(coverCache[t] || {}), cover: coverCache[t]?.url || null,
+                   cover_color: coverCache[t]?.color || null,
+                   description: coverCache[t]?.description || null,
+                   title_english: coverCache[t]?.title_english || null };
         return acc;
     }, {});
 }
