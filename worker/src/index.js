@@ -60,6 +60,7 @@ async function afetch(url, opt = {}) {
 const json = (body, status = 200) => new Response(JSON.stringify(body), {
     status,
     headers: {
+        ...(status === 429 ? { 'retry-after': '60' } : {}),
         'content-type': 'application/json; charset=utf-8',
         /* Open on purpose. Every caller is someone's own ANI-MATE install on their own
          * device; there is no cookie, no session and nothing user-specific on these
@@ -71,12 +72,50 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
     },
 });
 
+/* ── RATE LIMITING ────────────────────────────────────────────────────────────────
+ * ⚠ THIS SHIPPED WITHOUT IT ONCE. v0.7.0 went public with no limiter and the gap was
+ * written down as a caveat instead of being closed, which is worth naming: a risk you
+ * have NAMED is not a risk you have HANDLED.
+ *
+ * Keyed on the caller's IP, which for this app is one person's device. The buckets are
+ * sized off measured cost (see wrangler.toml), and the point is less about abuse than
+ * about not getting the whole Cloudflare range banned by an upstream -- AniList has
+ * already done exactly that to Workers, and hianime could.
+ *
+ * Fails OPEN. If the binding is missing or throws, requests are served rather than
+ * refused: a limiter that breaks must not take the app down with it.
+ */
+async function limited(env, req, p) {
+    const ip = req.headers.get('cf-connecting-ip') || 'unknown';
+    const bucket = p === '/api/play' ? env.RL_PLAY : env.RL_READ;
+    if (!bucket || typeof bucket.limit !== 'function') return null;
+    try {
+        const { success } = await bucket.limit({ key: ip });
+        if (success) return null;
+        return json({
+            error: 'rate limited',
+            detail: p === '/api/play'
+                ? 'Too many playback requests. This endpoint makes up to nine upstream ' +
+                  'requests each, so it is capped at 20 a minute per device.'
+                : 'Too many requests. Capped at 120 a minute per device.',
+            retry_after: 60,
+        }, 429);
+    } catch { return null; }      // fail open, never fail closed
+}
+
 export default {
     async fetch(req, env) {
         const url = new URL(req.url);
         const p = url.pathname.replace(/\/+$/, '') || '/';
         const q = url.searchParams;
         if (req.method === 'OPTIONS') return json({});
+
+        /* /health stays free so a client can always ask whether the backend is alive,
+         * including while it is being rate limited on everything else. */
+        if (p !== '/' && p !== '/health') {
+            const blocked = await limited(env, req, p);
+            if (blocked) return blocked;
+        }
 
         try {
             if (p === '/' || p === '/health') {

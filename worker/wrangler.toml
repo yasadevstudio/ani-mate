@@ -2,3 +2,39 @@ name = "ani-mate"
 main = "src/index.js"
 compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
+
+# ── RATE LIMITING ────────────────────────────────────────────────────────────────
+# Cloudflare's own limiter, which costs nothing and needs no storage. Two buckets
+# because the endpoints are not remotely the same weight. MEASURED, not invented:
+#
+#   /health         0.26s   1 upstream call
+#   /api/search     0.36s   1
+#   /api/episodes   0.66s   1-2
+#   /api/play       2.97s   up to ~9 upstream requests per listing walked
+#
+# ⚠ THE LIMITER IS PER-COLO, NOT GLOBAL. Cloudflare counts at the edge location that
+# served the request, so a client spread across colos gets more than the number below.
+# That made a 150-request parallel burst look like the limiter was dead -- 150/150 served
+# against a 120/min bucket -- when it was simply never concentrated anywhere. Proved it
+# live by deploying a temporary limit of 5: 12 sequential requests returned
+# 200 429 429 200 429 429 429 429 429 429 429 429. A PARALLEL BURST IS NOT A VALID PROBE
+# OF A PER-COLO LIMIT; send them sequentially from one client.
+#
+# This matters little in practice -- one person's device lands on one colo -- and the
+# buckets are sized for upstream protection, not for exact accounting.
+#
+# A person watching anime starts an episode every twenty minutes or so. PLAY at 20/min
+# is already two orders of magnitude past that, and it is the number that protects
+# hianime from us: nine upstream requests times a runaway client is how a provider
+# blocks the whole Worker range, which is exactly what AniList has already done.
+[[unsafe.bindings]]
+name = "RL_PLAY"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 20, period = 60 }
+
+[[unsafe.bindings]]
+name = "RL_READ"
+type = "ratelimit"
+namespace_id = "1002"
+simple = { limit = 120, period = 60 }

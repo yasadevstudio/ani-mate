@@ -1,0 +1,307 @@
+
+ ⛅️ wrangler 4.151.2 (update available [32m4.158.0[39m)
+[38;2;255;136;0m───────────────────────────────────────────────[39m
+[1mSupport for remote bindings in [38;2;33;133;41m`wrangler dev`[39m is now available as a replacement for [38;2;33;133;41m`wrangler dev --remote`[39m. Try it out now by running [38;2;33;133;41m`wrangler dev`[39m with the [38;2;33;133;41m`remote`[39m option enabled on your resources and let us know how it goes![22m
+[1mThis gives you access to remote resources in development while retaining all the usual benefits of local dev: fast iteration speed, breakpoint debugging, and more.[22m
+[1m[22m
+[1mRefer to https://developers.cloudflare.com/workers/development-testing/#remote-bindings for more information.[22m
+[33m▲ [43;33m[[43;30mWARNING[43;33m][0m [1mProcessing wrangler.toml configuration:[0m
+
+    - "unsafe" fields are experimental and may change or break at any time.
+
+
+Your Worker has access to the following bindings:
+[2mBinding[22m                      [2mResource[22m             
+[37menv.RL_PLAY[39m ([2mratelimit[22m)      [38;2;189;91;8mUnsafe Metadata[39m      
+[37menv.RL_READ[39m ([2mratelimit[22m)      [38;2;189;91;8mUnsafe Metadata[39m      
+
+[2m⎔ Starting remote preview...[22m
+Total Upload: [32m48.46 KiB / gzip: 12.70 KiB[39m
+[32m[wrangler:info][39m Ready on [32mhttp://127.0.0.1:8796[39m
+[32m[wrangler:info][39m [0m[1mGET[22m /health [32m[1m200[22m OK [39m[90m(446ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(361ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(85ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(86ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(91ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(90ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(84ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(98ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(88ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(95ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(101ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(85ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(95ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(83ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(86ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(91ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(87ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(85ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(86ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(79ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(83ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(85ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(82ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(89ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(89ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(81ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /health [32m[1m200[22m OK [39m[90m(62ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(81ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(163ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(185ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(171ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(177ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(202ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(204ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(197ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(205ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(185ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(189ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(192ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(230ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(71ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(228ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(242ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(230ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(231ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(233ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(240ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(79ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(250ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(72ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(268ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(68ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(71ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(65ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(274ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(73ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(76ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(280ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(74ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(73ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(73ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(276ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(280ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(88ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(69ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(83ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(321ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(85ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(85ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(86ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(88ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(73ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(91ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(70ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(71ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(77ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(78ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(78ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(70ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(74ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(77ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(83ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(77ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(97ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(75ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(74ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(86ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(89ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(86ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(75ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(70ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(85ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(69ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(83ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(73ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(87ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(68ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(91ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(84ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(94ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(100ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(83ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(72ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(79ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(80ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(68ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(77ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(101ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(77ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(85ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(100ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(84ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(83ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(65ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(68ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(86ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(77ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(71ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(70ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(86ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(87ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(95ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(75ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(75ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(70ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(96ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(87ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(89ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(79ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(80ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(85ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(97ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(99ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(91ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(97ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(90ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(62ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(89ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(72ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(95ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(62ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(67ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(68ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(84ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(84ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(85ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(51ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(85ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(87ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(72ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(49ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(49ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(74ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(71ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(52ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(79ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(73ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(73ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(103ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(74ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(81ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(66ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(68ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(50ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(86ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(84ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(93ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(63ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(66ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(70ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(72ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(52ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(54ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(54ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(54ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(60ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [33m[1m429[22m Too Many Requests [39m[90m(68ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(82ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/search [32m[1m200[22m OK [39m[90m(85ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /health [32m[1m200[22m OK [39m[90m(68ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1442ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1444ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1464ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1459ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1476ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1485ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1480ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1622ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1628ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1876ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1877ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1876ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1889ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1887ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(451ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(494ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(531ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(550ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(577ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(623ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(623ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(504ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(516ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(441ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(487ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(532ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(577ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(613ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(434ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(452ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(493ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(553ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(591ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(627ms)[39m[0m
+[2m⎔ Starting remote preview...[22m
+[2m⎔ Detected changes, restarted server.[22m
+Total Upload: [32m49.05 KiB / gzip: 12.85 KiB[39m
+[32m[wrangler:info][39m [0m[1mGET[22m /health [32m[1m200[22m OK [39m[90m(164ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(184ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(51ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(52ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(53ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(52ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(50ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(52ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(55ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(55ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(52ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(53ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(51ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(60ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(50ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(49ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(53ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(56ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(53ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(53ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(59ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(52ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(55ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(54ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(51ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(49ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(51ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(53ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(53ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(104ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(158ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(179ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(183ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(187ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(180ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(130ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(209ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(54ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(111ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(52ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(59ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(62ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(66ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(76ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(54ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(67ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(76ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(47ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(56ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(56ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(62ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(51ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(68ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [32m[1m200[22m OK [39m[90m(69ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1454ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(459ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(466ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(451ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(484ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(458ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [33m[1m429[22m Too Many Requests [39m[90m(55ms)[39m[0m
+[2m⎔ Starting remote preview...[22m
+[2m⎔ Detected changes, restarted server.[22m
+Total Upload: [32m48.46 KiB / gzip: 12.70 KiB[39m
+[32m[wrangler:info][39m [0m[1mGET[22m /health [32m[1m200[22m OK [39m[90m(202ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /debug/rl [33m[1m404[22m Not Found [39m[90m(197ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /health [32m[1m200[22m OK [39m[90m(53ms)[39m[0m
+[32m[wrangler:info][39m [0m[1mGET[22m /api/play [32m[1m200[22m OK [39m[90m(1856ms)[39m[0m
+[hianime.at] ep 1: "Beastars Final Season Part 2" track is signs only (7 cues), trying the dub servers for this same episode
+[hianime.at] ep 1: the dub servers have a readable track (336 cues) for this same episode -- using it
