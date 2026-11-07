@@ -174,7 +174,7 @@
                 // that unions forty years into one card, so searching "Dragon Ball
                 // Super" opened Dragon Ball Z from 1989. rankResults already scored
                 // every row against the query; use it. With no season named, season 1
-                // still scores highest, so the v0.5.1 behaviour is preserved rather
+                // still scores highest, so the v0.5.1 behavior is preserved rather
                 // than reverted. Measured 2026-10-12.
                 const byScore = members.reduce((best, m) =>
                     (m.search_score ?? -1) > (best.search_score ?? -1) ? m : best, members[0]);
@@ -481,7 +481,7 @@
         });
     }
 
-    // Arriving from favourites or trending means the siblings were never fetched.
+    // Arriving from favorites or trending means the siblings were never fetched.
     // Search once on the season-stripped title and cache whatever shares the id.
     async function ensureFranchiseSiblings() {
         const sel = state.selectedAnime;
