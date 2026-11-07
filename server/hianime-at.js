@@ -37,6 +37,10 @@ const AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
               '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const XOR_KEY = Buffer.from('otaku-embed-v1');
 
+/* Which show a hit is. Shared with every other stream provider so one fix reaches all
+ * of them -- see the header of server/title-match.js. */
+const { queryLadder, bestTrack, acceptableTier } = require('./title-match');
+
 function makeProvider(afetch) {
     async function get(url, referer) {
         const r = await afetch(url, {
@@ -137,6 +141,60 @@ function makeProvider(afetch) {
         } catch { return []; }
     }
 
+    /* ── THE DUB LISTING IS A SUBTITLE SOURCE. Added 2026-11-07 for v0.6.0. ──────────
+     *
+     * THIS IS THE FIX FOR THE BUG THAT OPENED 0.6.0, and it was hiding in plain sight.
+     * hianime lists sub and dub servers for the SAME episode id, and `stream()` only ever
+     * read the servers matching the mode being played. Measured 2026-11-07:
+     *
+     *   BEASTARS FINAL SEASON Part 2 ep 1    sub:  1 track,  7 cues (signs)
+     *                                        dub: 66 tracks, 336 cues (full dialogue)
+     *   Cowboy Bebop ep 1                    sub:  2 tracks, 1 cue
+     *                                        dub:  2 tracks, 217 cues
+     *
+     * Two episodes that have played silent for weeks, and a full script was one request away
+     * on a server the sub path never looked at.
+     *
+     * ⛔ AND IT IS THE SAME VIDEO, WHICH IS WHY THIS IS SAFE WHERE AN EXTERNAL FILE IS NOT.
+     * Same episode id, same encode, so the timing cannot drift. Checked rather than assumed:
+     * every cue of the sub-mode signs track reappears in the dub-listing track, 4 of 7 at an
+     * IDENTICAL timestamp and identical text (21.146 PLANT PRODUCTION RESEARCH FACILITY,
+     * 242.033 A THREEFOLD DILEMMA, 577.118 CITY HALL, 725.057 YASUMARU FAMILY PHARMACY).
+     * Same grid.
+     *
+     * The tracks may be dubtitles -- a transcript of the English dub rather than the sub
+     * script -- so the WORDS can differ slightly from what a sub-only release would say. The
+     * TIMING is the part that has to be right, and it is. 336 cues of approximately-right
+     * words beat 7 signs by a distance that makes the distinction academic.
+     */
+    async function zokoTracks(embed) {
+        try {
+            const origin = embed.replace(/^(https?:\/\/[^/]*).*/, '$1/');
+            const page = await get(embed, `${BASE}/`);
+            const blob = (page.body.match(/window\.__P="([^"]*)"/) || [])[1];
+            if (!blob) return [];
+            const raw = Buffer.from(blob, 'base64');
+            const dec = Buffer.alloc(raw.length);
+            for (let i = 0; i < raw.length; i++) dec[i] = raw[i] ^ XOR_KEY[i % XOR_KEY.length];
+            const cfg = JSON.parse(dec.toString('utf8'));
+            return (Array.isArray(cfg.subtitles) ? cfg.subtitles : [])
+                .map((s) => Object.assign({}, s, { referer: s.referer || origin }));
+        } catch { return []; }
+    }
+
+    /** Every subtitle track hianime has for one episode in one mode, across all its servers. */
+    async function tracksForMode(episodeId, mode) {
+        const servers = await serversFor(episodeId);
+        let out = [];
+        for (const key of Object.keys(servers)) {
+            if (!key.startsWith(mode + ':')) continue;
+            out = out.concat(/ZokoAnime/i.test(key)
+                ? await zokoTracks(servers[key])
+                : await megaplayTracks(servers[key]));
+        }
+        return out;
+    }
+
     async function stream(episodeId, mode = 'sub') {
         const { body } = await get(`${BASE}/api/theme/episode/servers?episodeId=${episodeId}`);
         let html = '';
@@ -228,7 +286,7 @@ function makeProvider(afetch) {
      * FESTIVAL OF THE METEOR. 362 bytes across a 24 minute episode.
      *
      * TWO EARLIER FIXES DO NOT CATCH IT, and that is the point.
-     *   - the track ranker penalises /forced/i in the LABEL. This file is labelled
+     *   - the track ranker penalizes /forced/i in the LABEL. This file is labeled
      *     plain "English" and carries default:true. Nothing in the metadata says
      *     signs-only.
      *   - the walk below accepted the first listing with `subtitles.length`, which
@@ -239,125 +297,14 @@ function makeProvider(afetch) {
      */
     const MIN_CUES = 40;
 
-    /* ── MATCH THE SHOW BEFORE JUDGING THE TRACK. Added 2026-11-03. ──────────────
-     * The cue check above, added 2026-11-01, made cue count the tiebreaker between
-     * listings. That is a USABILITY test being used as an IDENTITY test, and it put
-     * the wrong series on screen:
-     *
-     *   search("Beastars Season 2") ->
-     *     "Beastars Final Season Part 2"  malId 61114  ep2 = 421 cues   <- was picked
-     *     "Beastars 2nd Season"           malId 40935  ep2 = 300 cues   <- the real one
-     *
-     *   The final season has MORE dialogue in that episode, so it won. Episode 1 only
-     *   came out right by luck: the wrong listing happened to have 7 cues there and
-     *   got skipped. A whole season of the wrong show played before anyone noticed,
-     *   and it spoils the series it is impersonating.
-     *
-     * So the order is: WHICH SHOW first, then is the track readable. Cue count only
-     * ever separates listings that are already the same show.
-     *
-     * "Season 2" and "2nd Season" are the same thing and must normalise together, or
-     * the correct listing loses to a wrong one that happens to be worded like the
-     * query. Extra qualifiers the caller did not ask for -- final, part, movie, ova,
-     * special -- are what distinguish a different entry in the same franchise, so
-     * they are penalised hard rather than ignored.
+    /* ── WHICH SHOW IS THIS? -> server/title-match.js ───────────────────────────
+     * normTitle, titleScore, titleAcceptable, queryLadder, bestTrack and the tier band all
+     * used to live here, written across v0.5.5 to v0.5.8 with each version paying for a
+     * specific failure. v0.6.0 added a second stream provider, and logic that decides WHICH
+     * SHOW PLAYS must not exist in two copies that can drift apart -- that is the exact
+     * complaint 0.6.0 was opened to answer. Moved out verbatim; the reasoning travelled with
+     * it, because the reasoning is the valuable part.
      */
-    function normTitle(s) {
-        return String(s || '').toLowerCase()
-            .replace(/[^a-z0-9]+/g, ' ')
-            .replace(/\b(\d+)(?:st|nd|rd|th)\s+season\b/g, 'season $1')
-            .replace(/\bseason\s+(\d+)\b/g, 'season $1')
-            .replace(/\s+/g, ' ')
-            .trim();
-    }
-
-    const EXTRA = ['final', 'part', 'movie', 'ova', 'special', 'recap', 'uncensored'];
-
-    function titleScore(hitName, wanted) {
-        const a = normTitle(hitName), b = normTitle(wanted);
-        if (a === b) return 1000;                       // same show, say so
-        const at = a.split(' '), bt = b.split(' ');
-        const shared = bt.filter((w) => at.includes(w)).length;
-        let n = shared * 10 - Math.abs(at.length - bt.length);
-        // a qualifier the caller never asked for means a DIFFERENT entry, not a near miss
-        for (const w of EXTRA) if (at.includes(w) && !bt.includes(w)) n -= 60;
-        // a season OR part number that disagrees is disqualifying. Part was missing
-        // and "Final Season Part 1" happily matched "Final Season Part 2" on it.
-        for (const kind of ['season', 'part', 'cour']) {
-            const re = new RegExp(kind + ' (\\d+)');
-            const na = (a.match(re) || [])[1], nb = (b.match(re) || [])[1];
-            if (na && nb && na !== nb) n -= 200;
-        }
-        return n;
-    }
-
-    /* Is this hit plausibly the show that was asked for, or just the closest thing
-     * the host happened to return? RANKING CANNOT ANSWER THAT. Sorting a list of
-     * one still yields a first place, which is how "BEASTARS FINAL SEASON Part 1"
-     * came back as Part 2: the search returned exactly one hit, it was wrong, and
-     * ranking it changed nothing.
-     */
-    function titleAcceptable(hitName, wanted) {
-        const a = normTitle(hitName), b = normTitle(wanted);
-        if (a === b) return true;
-        for (const kind of ['season', 'part', 'cour']) {
-            const re = new RegExp(kind + ' (\\d+)');
-            const na = (a.match(re) || [])[1], nb = (b.match(re) || [])[1];
-            if (na && nb && na !== nb) return false;      // different entry, full stop
-        }
-        // the hit must not introduce a qualifier the caller never asked for
-        for (const w of EXTRA) if (a.split(' ').includes(w) && !b.split(' ').includes(w)) return false;
-        /* AND NOTHING ABOUT WORD OVERLAP. A first draft also demanded the hit share
-         * 60% of the requested words, which looks sensible and is wrong: hosts list
-         * shows under whichever language they prefer. "Kusuriya no Hitorigoto 3rd
-         * Season" is listed as "The Apothecary Diaries Season 3" and shares ZERO
-         * words with it, so the overlap rule refused a perfectly correct match and
-         * made the show unplayable. The host returned this hit FOR this query, so
-         * relatedness is already implied; what actually has to be checked is that it
-         * is not a DIFFERENT ENTRY, which the number and qualifier tests above do. */
-        return true;
-    }
-
-    /* Progressively broader queries. The host's own search is the weak link: asking
-     * it for the EXACT title can return fewer and worse hits than asking for less.
-     * Measured 2026-11-04:
-     *   "BEASTARS FINAL SEASON Part 1" -> 1 hit,  Final Season Part 2        (wrong)
-     *   "Beastars Final Season"        -> 2 hits, incl. "Beastars Final Season" (right)
-     *   "Beastars"                     -> 4 hits, the whole franchise
-     * Part 1 is listed as plain "Beastars Final Season" with no "Part" in it, so the
-     * more precisely we asked, the worse the answer got. */
-    function queryLadder(title) {
-        const out = [title];
-        const t = String(title || '').trim();
-        const drop = [
-            /\s+(part|cour)\s*\d+\s*$/i,          // "... Part 1"
-            /\s+(season\s*\d+|\d+(st|nd|rd|th)\s+season)\s*$/i,
-            /\s+(final|the final)\s+season\s*$/i,
-        ];
-        let cur = t;
-        for (const re of drop) {
-            const next = cur.replace(re, '').trim();
-            if (next && next !== cur) { out.push(next); cur = next; }
-        }
-        const first = t.split(/[:\-]/)[0].trim();
-        if (first && !out.includes(first)) out.push(first);
-        return out.filter((x, i) => x && out.indexOf(x) === i);
-    }
-
-    /* The track the player would actually choose, mirroring the UI's ranking so the
-     * file counted here is the file shown. Forced last, English first. */
-    function bestTrack(subs) {
-        const score = (s) => {
-            const label = String(s.label || ''), lang = String(s.lang || '');
-            let n = 0;
-            if (/^en/i.test(lang) || /^english/i.test(label)) n += 100;
-            if (/forced/i.test(label)) n -= 1000;
-            if (/dubtitle/i.test(label)) n -= 50;
-            if (/sdh/i.test(label)) n -= 10;
-            return n;
-        };
-        return subs.slice().sort((a, b) => score(b) - score(a))[0];
-    }
 
     async function cueCount(src, referer) {
         if (!src) return 0;
@@ -365,6 +312,42 @@ function makeProvider(afetch) {
             const r = await get(src, referer);
             return (String(r.body).match(/ --> /g) || []).length;
         } catch { return -1; }   // unreadable; treat as unknown, not as signs-only
+    }
+
+    /* Episode counts for a set of listings, so the caller can work out what episode number a
+     * subtitle database would use. Kept SEPARATE from streamByTitle and called only when an
+     * episode turns out to have no readable track: it costs one request per listing, and the
+     * happy path must not pay for a fallback it never uses. */
+    async function listingCounts(listings) {
+        const out = [];
+        for (const l of (listings || []).slice(0, 8)) {
+            try {
+                const eps = await episodes(l.id);
+                if (eps.length) out.push({ name: l.name, count: eps.length });
+            } catch { /* a listing we cannot read simply contributes nothing */ }
+        }
+        return out;
+    }
+
+    /* WHAT THE CALLER NEEDS TO KNOW BEYOND THE URL. Added 2026-11-07.
+     *
+     * streamByTitle used to hand back a stream and nothing about the state of its subtitles,
+     * so the server could not tell a full script from a 7-cue signs file and had no reason to
+     * look elsewhere. The walk below ALREADY measures this; it just threw the number away.
+     *
+     *   subsQuality  'dialogue' | 'signs' | 'none'  -- 'signs' and 'none' are the cases worth
+     *                                                 reaching outside hianime for
+     *   subsCues     the cue count of the track the player will actually choose
+     *   listing      which of the host's listings this came from
+     *   allListings  every listing the search turned up, for absolute-episode mapping
+     */
+    function decorate(st, quality, cues, listing, allListings) {
+        if (!st) return st;
+        st.subsQuality = quality;
+        st.subsCues = cues;
+        st.listing = listing;
+        st.allListings = allListings;
+        return st;
     }
 
     async function streamByTitle(title, episodeNumber, mode = 'sub') {
@@ -387,55 +370,89 @@ function makeProvider(afetch) {
         }
         if (!hits.length) return null;
 
+        /* EVERY listing the ladder found, kept before any filtering touches `hits`.
+         * The tier filter below deliberately throws away "Part 1" when "Part 2" was asked
+         * for, and Part 1's episode count is precisely what an absolute-episode offset is
+         * computed from, so it has to be captured here or it is gone. Names and slugs only,
+         * which the search already returned, so this costs nothing. */
+        const allListings = hits.map((h) => ({ id: h.id, name: h.name }));
+
         // Keep only listings that are plausibly the show asked for. If ranking is
         // allowed to pick from a list containing nothing correct, it will still
         // return something, and that something plays.
-        const ok = hits.filter((h) => titleAcceptable(h.name, title));
-        if (!ok.length) {
+        const tier = acceptableTier(hits, title);
+        if (!tier.length) {
             console.error(`[hianime.at] no listing matches "${title}" ` +
                           `(saw: ${hits.map((h) => h.name).join(', ')}). Refusing to ` +
                           `play a different entry in the same series.`);
             return null;
         }
-        /* ⛔ IDENTITY IS A CONSTRAINT, NOT A SCORE. This is the whole lesson of
-         * 0.5.5 through 0.5.7 and it has to be stated once, here.
-         *
-         * Rank, then keep ONLY the best-matching tier and walk inside it. Letting
-         * the cue check roam the full ranked list means a listing with better
-         * subtitles can outrank the correct show, which is exactly how:
-         *   - "Beastars Season 2" played Final Season Part 2 (more cues), and
-         *   - "FINAL SEASON Part 2" played Part 1 (7 cues vs 250).
-         *
-         * A signs-only track on the RIGHT show beats a full script from the wrong
-         * one. Subtitles are a preference. Which show is playing is not.
+        /* ⛔ IDENTITY IS A CONSTRAINT, NOT A SCORE. This is the whole lesson of 0.5.5
+         * through 0.5.8 and it is enforced in title-match.js now, not here:
+         *   - "Beastars Season 2" played Final Season Part 2, because that entry had more
+         *     cues in that episode and cue count was being used as an identity test
+         *   - "FINAL SEASON Part 2" played Part 1, 7 cues against 250
+         * acceptableTier() filters to the plausible listings and keeps only the best-scoring
+         * band, so the cue walk below can only ever choose between copies of the SAME show.
          */
-        /* The tier is a BAND, not an exact tie. Requiring s === best was too tight:
-         * duplicate listings of the SAME show are named slightly differently
-         * (a word more, a colon, a romanisation) and scored a few points apart,
-         * so the walk was left with one candidate and no alternative when that
-         * one carried a dead track. Cowboy Bebop fell to a 1-cue file and
-         * "Super no Ura de Yani Suu Futari" stopped resolving at all.
-         *
-         * TIER_SLACK sits well under the penalties that mark a DIFFERENT entry
-         * (-60 for an unasked-for qualifier, -200 for a season or part mismatch),
-         * so near-identical names stay together and other seasons stay out. */
-        const TIER_SLACK = 25;
-        const scored = ok.map((h) => ({ h, s: titleScore(h.name, title) }))
-                         .sort((x, y) => y.s - x.s);
-        const best = scored[0].s;
-        hits = scored.filter((x) => x.s >= best - TIER_SLACK).map((x) => x.h);
+        hits = tier;
+
+        /* Pull the OTHER mode's tracks for this same episode and, if one of them is readable,
+         * pool it onto the stream we already have. The stream is untouched -- only the
+         * subtitle list grows -- so a user watching subbed keeps the subbed audio and simply
+         * gets a track that has words in it. */
+        async function crossMode(episodeId, mode, got, epNum, listingName, listings) {
+            const other = mode === 'sub' ? 'dub' : 'sub';
+            let tracks = [];
+            try { tracks = await tracksForMode(episodeId, other); }
+            catch (e) { console.error('[hianime.at] cross-mode lookup failed:', e.message); return null; }
+            if (!tracks.length) return null;
+
+            const pick = bestTrack(tracks.filter((t) =>
+                /^en/i.test(t.lang || '') || /^english/i.test(t.label || '')));
+            if (!pick) return null;
+            const n = await cueCount(pick.src, pick.referer || got.referer);
+            if (n < MIN_CUES) return null;
+
+            /* Say where it came from. A dub-listing track can be a dubtitle, so the wording
+             * may not match a sub release exactly, and the person watching is the only one
+             * who can judge that. Hiding the origin is how a wrong season went unnoticed. */
+            const label = `${pick.label || 'English'} (${other} server)`;
+
+            /* ⛔ IT HAS TO CARRY default:true, AND THE SIGNS TRACK HAS TO LOSE IT.
+             *
+             * Caught in the player, not in the chain, and it would have shipped a fix that
+             * fixed nothing. The UI ranks English at +100 and adds +1 for `default` as a
+             * tiebreak. ZokoAnime's 7-cue signs file for this episode is labeled plain
+             * "English" and carries default:true, so it scored 101 against this track's 100
+             * and the player kept choosing the 7 signs over 336 lines of dialogue.
+             *
+             * Server-side cue counts said the fix worked. readyState and cues.length in a
+             * real browser said the fix worked. Which track the ranker actually PICKED is a
+             * third question, and it was the only one that mattered. */
+            const others = (got.subtitles || [])
+                .filter((s) => s.src !== pick.src)
+                .map((s) => Object.assign({}, s, { default: false }));
+            got.subtitles = [Object.assign({}, pick, { label, default: true })].concat(others);
+            console.error(`[hianime.at] ep ${epNum}: the ${other} servers have a readable track ` +
+                          `(${n} cues) for this same episode -- using it`);
+            return decorate(got, 'dialogue', n, listingName, listings);
+        }
 
         let silent = null;      // playable, but no subtitle track. Held as the fallback.
         let silentFrom = '';
         let signs = null;       // playable, has a track, but the track is signs only.
         let signsFrom = '';
+        let signsCues = 0;
 
         for (const hit of hits.slice(0, MAX_LISTINGS)) {
             let got = null;
+            let epId = null;        // hoisted: the cross-mode lookup below needs this id
             try {
                 const eps = await episodes(hit.id);
                 const ep = eps.find((e) => String(e.number) === String(episodeNumber));
                 if (!ep) continue;
+                epId = ep.id;
                 got = await stream(ep.id, mode);
             } catch { continue; }
             if (!got || !got.url) continue;
@@ -449,30 +466,40 @@ function makeProvider(afetch) {
                         console.error(`[hianime.at] ep ${episodeNumber}: using "${hit.name}" ` +
                                       `(${n} cues) over "${signsFrom || silentFrom}"`);
                     }
-                    return got;
+                    return decorate(got, 'dialogue', n, hit.name, allListings);
                 }
                 console.error(`[hianime.at] ep ${episodeNumber}: "${hit.name}" track is signs only ` +
-                              `(${n} cues), looking for a listing with dialogue`);
-                if (!signs) { signs = got; signsFrom = hit.name; }
+                              `(${n} cues), trying the ${mode === 'sub' ? 'dub' : 'sub'} servers ` +
+                              `for this same episode`);
+                const cross = await crossMode(epId, mode, got, episodeNumber, hit.name, allListings);
+                if (cross) return cross;
+                if (!signs) { signs = got; signsFrom = hit.name; signsCues = n; }
                 continue;
             }
+            /* No track at all in this mode. The other mode's servers are still worth asking:
+             * they are the same episode, so anything they have is in sync by construction. */
+            const cross = await crossMode(epId, mode, got, episodeNumber, hit.name, allListings);
+            if (cross) return cross;
             if (!silent) { silent = got; silentFrom = hit.name; }
         }
 
-        // A signs-only track still beats nothing: it is in sync and names the places.
+        /* A signs-only track still beats nothing: it is in sync and names the places. It is
+         * also the signal the caller uses to go looking outside hianime, which is why the
+         * cue count travels with it instead of being logged and dropped. */
         if (signs) {
             console.error(`[hianime.at] ep ${episodeNumber}: no listing has a dialogue track ` +
                           `(checked ${Math.min(hits.length, MAX_LISTINGS)}), using "${signsFrom}" signs only`);
-            return signs;
+            return decorate(signs, 'signs', signsCues, signsFrom, allListings);
         }
         if (silent) {
             console.error(`[hianime.at] ep ${episodeNumber}: no listing has a subtitle track ` +
                           `(checked ${Math.min(hits.length, MAX_LISTINGS)}), playing "${silentFrom}" without one`);
+            return decorate(silent, 'none', 0, silentFrom, allListings);
         }
         return silent;
     }
 
-    return { name: 'HiAnime.at', base: BASE, search, episodes, stream, streamByTitle };
+    return { name: 'HiAnime.at', base: BASE, search, episodes, stream, streamByTitle, listingCounts };
 }
 
 function decodeEntities(s) {

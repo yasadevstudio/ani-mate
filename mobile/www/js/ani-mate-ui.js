@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.5.11';
+    const APP_VERSION = '0.6.0';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -2061,10 +2061,14 @@
 
     // === CHANGELOG ===
     // Optional line shown above the list in the update popup. Empty string hides it.
-    const CHANGELOG_NOTE = "Subtitles are now gathered from every server an episode has, not just one. Where an episode genuinely has none, the app says so instead of playing silently.";
+    const CHANGELOG_NOTE = "Episodes that played silently now find a full script on the same episode's other servers. Beastars Final Season Part 2 episode 1 went from 7 on-screen signs to 336 lines of dialogue.";
 
     const CHANGELOG = [
-        "Subtitle search widened to every available server, which finds full tracks that were previously invisible, and an episode with no real subtitles now tells you rather than playing a handful of on-screen signs",
+        "Subtitles are now read from an episode's dub servers as well as its sub servers. It is the same episode and the same encode, so the timing cannot drift, and on episodes that carried only on-screen signs the dub servers have the full script",
+        "Added Gogoanime.by as a second stream source. It runs on different infrastructure from the main one instead of being another door into the same backend, and its episodes have the subtitles burned into the picture",
+        "Removed AllAnime, AnimePahe and the old HiAnime connector. All three stopped resolving, and each one spent a timeout on your first click before the working source was reached",
+        "Added OpenSubtitles as a last resort for episodes where no server has anything at all. Those tracks say which episode they came from and are never picked automatically, because a derived episode number can be wrong",
+        "Subtitle files in SubRip and SubStation Alpha format are now supported, and the adverts that uploaders inject as real cues are stripped out",
     ];
 
     function showChangelog() {

@@ -1127,6 +1127,12 @@ function decodeProviderId(encoded) {
     return result.replace('/clock', '/clock.json');
 }
 
+/* ⚠ DORMANT SINCE 2026-11-07. NOTHING CALLS THIS. AllAnime's extraction still works as
+ * written; its HOST does not. api.allanime.day answers 403 and allanime.day is a 50-hop
+ * redirect loop, so the step that called this was removed from getEpisodeUrlWithFallbacks
+ * rather than left to spend the user's first click on a timeout.
+ * Kept, not deleted, because the recipe is correct and hosts come back. If it is ever
+ * re-enabled, PROBE THE HOST FIRST -- that is the whole lesson of the 0.6.0 survey. */
 async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'best') {
     const gql = `query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls } }`;
 
@@ -1233,6 +1239,9 @@ function normTitle(s) {
 }
 
 // Search a consumet provider for a title, return best match ID + episode map
+/* ⚠ DORMANT SINCE 2026-11-07, with getFallbackStreamUrl below it. Both existed to drive
+ * consumet's AnimePahe and HiAnime adapters, and api.consumet.org now returns HTTP 451 while
+ * animepahe.com returns 403 Cloudflare. Unreachable, kept for the same reason as above. */
 async function searchFallbackProvider(provider, providerName, title, titleEnglish) {
     const cacheKey = `${providerName}:${title}`;
     if (fallbackCache[cacheKey] && (Date.now() - fallbackCache[cacheKey].at) < FALLBACK_CACHE_TTL) {
@@ -1319,6 +1328,106 @@ function getHiAnimeAt() {
     return hianimeAt;
 }
 
+let gogoanime = null;
+function getGogoanime() {
+    if (!gogoanime) {
+        try { gogoanime = require('./gogoanime-by').makeProvider(afetch); }
+        catch (e) { console.error('[gogoanime.by] load failed:', e.message); gogoanime = null; }
+    }
+    return gogoanime;
+}
+
+/* ── THE SUBTITLE CHAIN, SEPARATE FROM THE STREAM CHAIN. Added 2026-11-07 for v0.6.0. ─────
+ *
+ * The 2026-11-07 provider survey settled a question that had been answered wrong for a month:
+ * adding stream providers cannot fix missing subtitles, because the providers share backends.
+ * hianime.at, AniLight and gogoanime.by all resolve to ZokoAnime or megaplay, so "try another
+ * source" reads the same file. An episode published without a script track has none on any of
+ * them, and no amount of failover changes that.
+ *
+ * What fixes it is asking somewhere that is not a streaming site at all. See
+ * subs-external.js for the chain and subs-opensubtitles.js for the measurements.
+ */
+let subsChain = null;
+let episodeMap = null;
+function getSubsChain() {
+    if (!subsChain) {
+        try {
+            subsChain = require('./subs-external').makeChain(afetch, HIST_DIR);
+            episodeMap = require('./episode-map');
+            console.error(`[subs] external chain ready: ${subsChain.providers.join(' -> ')}`);
+        } catch (e) {
+            console.error('[subs] external chain load failed:', e.message);
+            subsChain = null;
+        }
+    }
+    return subsChain;
+}
+
+/**
+ * Pool external subtitles onto a stream whose own tracks are not readable.
+ *
+ * ONLY WHEN THERE IS NOTHING TO READ. An external file is a judgment call: it is grafted
+ * from a different authoring onto this encode. When hianime already has a dialogue track that
+ * track is correct by construction and nothing should displace it.
+ *
+ * ⛔ AND ONLY WHEN THE EPISODE NUMBER CAN BE DERIVED. episode-map returns null rather than
+ * guessing, and that null is honored here. The wrong episode's subtitles spoil the show;
+ * no subtitles is a disappointment. These are not the same cost, so they do not get the
+ * same benefit of the doubt.
+ */
+async function addExternalSubtitles(st, title, episodeNumber) {
+    if (!st || st.subsQuality === 'dialogue') return st;
+    const chain = getSubsChain();
+    if (!chain || !episodeMap) return st;
+
+    const ha = getHiAnimeAt();
+    if (!ha || !st.allListings || !st.listing) return st;
+
+    let counts = [];
+    try { counts = await ha.listingCounts(st.allListings); }
+    catch (e) { console.error('[subs] listing counts failed:', e.message); return st; }
+
+    const map = episodeMap.resolve({
+        listings: counts, chosen: st.listing, episode: episodeNumber,
+    });
+    if (!map) {
+        console.error(`[subs] cannot derive an absolute episode number for ` +
+                      `"${st.listing}" ep ${episodeNumber}; not grafting. ` +
+                      `Saw listings: ${counts.map((c) => `${c.name}(${c.count})`).join(', ') || 'none'}`);
+        return st;
+    }
+    console.error(`[subs] ${title}: hianime track is ${st.subsQuality} (${st.subsCues} cues). ` +
+                  `Looking up ${map.franchise} S${map.season}E${map.episode} -- ${map.derivedFrom}`);
+
+    /* The episode's real length, read off the playlist we are about to play. This is the
+     * only identity test a subtitle file has: see probeDuration in subs-external.js for the
+     * live-action Cowboy Bebop that matched by name, season and episode and ran 47 minutes. */
+    let durationSec = 0;
+    try { durationSec = await chain.probeDuration(st.url, st.referer); }
+    catch (e) { console.error('[subs] duration probe failed:', e.message); }
+
+    let found = [];
+    try { found = await chain.find(map, { durationSec }); }
+    catch (e) { console.error('[subs] chain failed:', e.message); return st; }
+    if (!found.length) return st;
+
+    /* APPENDED LAST, DELIBERATELY. The UI's ranker breaks score ties by keeping the EARLIER
+     * entry, so putting an external file first would let it beat a track that came from the
+     * episode's own servers. It must not: a track from this episode is correct by
+     * construction, and an external one is a derived guess that has already been measured
+     * getting an episode wrong. See the note on entry() in subs-external.js. */
+    st.subtitles = (st.subtitles || []).concat(found);
+    st.subsQuality = 'external';
+    st.subsCues = found[0].cues;
+    st.subsOrigin = found[0].origin;
+    return st;
+}
+
+/* The stream chain, in the order getEpisodeUrlWithFallbacks actually walks it. Kept beside
+ * the walk so a /play failure can name what was tried without a second list going stale. */
+const STREAM_CHAIN = ['HiAnime.at', 'AniDB', 'Gogoanime.by', 'AniDB (title match)'];
+
 async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, title, titleEnglish) {
     lastStreamSource = null;
     lastStreamMeta = null;
@@ -1330,10 +1439,17 @@ async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, 
         if (ha) {
             for (const t of [title, titleEnglish].filter(Boolean)) {
                 try {
-                    const st = await ha.streamByTitle(t, episodeString, mode);
+                    let st = await ha.streamByTitle(t, episodeString, mode);
                     if (st && st.url) {
+                        // Subtitles are a SEPARATE question from the stream. Only runs when
+                        // this episode's own tracks turned out to be signs-only or absent.
+                        st = await addExternalSubtitles(st, t, episodeString);
                         lastStreamSource = 'HiAnime.at';
-                        lastStreamMeta = { referer: st.referer, subtitles: st.subtitles, malId: st.malId };
+                        lastStreamMeta = {
+                            referer: st.referer, subtitles: st.subtitles, malId: st.malId,
+                            subsQuality: st.subsQuality, subsCues: st.subsCues,
+                            subsOrigin: st.subsOrigin || null,
+                        };
                         return st.url;
                     }
                 } catch (e) { console.error('[hianime.at]', e.message); }
@@ -1358,23 +1474,46 @@ async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, 
         return null;
     }
 
-    // 1. Try AllAnime (primary)
-    const allAnimeResult = await getEpisodeUrl(showId, episodeString, mode, quality);
-    if (allAnimeResult) { lastStreamSource = 'AllAnime'; return allAnimeResult; }
-
-    // 2. Try AnimePahe
-    if (consumetAnimePahe) {
-        const paheResult = await getFallbackStreamUrl(consumetAnimePahe, 'AnimePahe', title, titleEnglish, episodeString, mode);
-        if (paheResult) { lastStreamSource = 'AnimePahe'; return paheResult; }
+    /* ── 1. GOGOANIME.BY. The only backup measured to be a DIFFERENT BACKEND. ─────────
+     *
+     * Three steps used to sit here -- AllAnime, then AnimePahe, then HiAnime-via-consumet --
+     * and on 2026-11-07 every one of them was probed and every one is gone:
+     *     allanime.day .......... 301 redirect loop, 50 hops
+     *     api.allanime.day ...... 403
+     *     animepahe.com ......... 403 Cloudflare
+     *     api.consumet.org ...... 451, legally blocked
+     * They cost three timeouts on the user's first click and implied a safety net that was
+     * not there. ani-py deleted its own dead providers for exactly this reason:
+     *     "a provider that cannot resolve costs failover time and implies a safety net
+     *      that is not there."
+     *
+     * What replaces them answers from Google's own video hosting rather than from ZokoAnime
+     * or megaplay, so it is real redundancy and not another door into the same room. Its
+     * catalog is thin -- a search for "Beastars" returns only Part 2, and "Cowboy Bebop"
+     * returns nothing -- so it is a backup and not a primary. It does cover the episode this
+     * release was written for, and its encodes are HARDSUBBED, which means an episode that
+     * hianime publishes with no script track still plays with words on screen.
+     */
+    {
+        const gg = getGogoanime();
+        if (gg) {
+            for (const t of [title, titleEnglish].filter(Boolean)) {
+                try {
+                    const st = await gg.streamByTitle(t, episodeString);
+                    if (st && st.url) {
+                        lastStreamSource = 'Gogoanime.by';
+                        lastStreamMeta = {
+                            referer: st.referer, subtitles: [], malId: null,
+                            subsQuality: 'hardsub', subsCues: 0, subsOrigin: null,
+                        };
+                        return st.url;
+                    }
+                } catch (e) { console.error('[gogoanime.by]', e.message); }
+            }
+        }
     }
 
-    // 3. Try HiAnime
-    if (consumetHiAnime) {
-        const hiResult = await getFallbackStreamUrl(consumetHiAnime, 'HiAnime', title, titleEnglish, episodeString, mode);
-        if (hiResult) { lastStreamSource = 'HiAnime'; return hiResult; }
-    }
-
-    // 4. Last resort: match the title on AniDB. Reached when a show was found via AllAnime
+    // 2. Last resort: match the title on AniDB. Reached when a show was found via AllAnime
     // (so its id is not tagged) but no source could produce a stream.
     const ad4 = getAniDB();
     if (ad4) {
@@ -1499,7 +1638,7 @@ function serveStatic(res, filePath, contentType) {
         res.writeHead(200, {
             'Content-Type': contentType,
             'Access-Control-Allow-Origin': '*',
-            // NO-STORE ON THE UI, AND IT IS NOT AN OPTIMISATION QUESTION. ADDED 2026-10-17.
+            // NO-STORE ON THE UI, AND IT IS NOT AN OPTIMIZATION QUESTION. ADDED 2026-10-17.
             //
             // This handler sent no Cache-Control, no ETag and no Last-Modified. With none of
             // the three, Chromium falls back to HEURISTIC caching: it may reuse a cached
@@ -1602,14 +1741,14 @@ const server = http.createServer(async (req, res) => {
                 } catch (e) { gqlErr = 'unparseable response'; }
                 // ok ONLY when a real stream source came back. HTTP 200 is not the question.
                 out.push({
-                    name: 'AllAnime',
+                    name: 'AllAnime (dropped 0.6.0)',
                     ok: srcCount > 0,
                     status: r ? r.status : 0,
                     sources: srcCount,
                     error: gqlErr || undefined,
                     ms: Date.now() - t0
                 });
-            } catch (e) { out.push({ name: 'AllAnime', ok: false, error: String(e.message || e) }); }
+            } catch (e) { out.push({ name: 'AllAnime (dropped 0.6.0)', ok: false, error: String(e.message || e) }); }
 
             // HIANIME.AT IS PROBED FIRST BECAUSE IT IS THE ONE THAT WORKS. A health check
             // that omits the only functioning source is the same lie as one that reports a
@@ -1637,9 +1776,26 @@ const server = http.createServer(async (req, res) => {
             // The other three are PROBED, not asserted. The previous version pushed hardcoded
             // strings here — 'domain rotated', 'upstream 522' — which can never report healthy
             // and never actually tested anything. Two of four providers had a fake status.
+            /* Gogoanime.by is in the chain as of 0.6.0, so it belongs in the health report.
+             * The two consumet entries below it are NOT in the chain any more and are probed
+             * only so this endpoint keeps telling the truth about why they were dropped. */
+            {
+                const t0g = Date.now();
+                try {
+                    const gg = getGogoanime();
+                    const hits = gg ? await gg.search('beastars') : [];
+                    out.push({
+                        name: 'Gogoanime.by', ok: hits.length > 0, results: hits.length,
+                        ms: Date.now() - t0g,
+                    });
+                } catch (e) {
+                    out.push({ name: 'Gogoanime.by', ok: false,
+                               error: String(e.message || e).slice(0, 90), ms: Date.now() - t0g });
+                }
+            }
             for (const prov of [
-                { name: 'AnimePahe', mod: consumetAnimePahe },
-                { name: 'HiAnime',   mod: consumetHiAnime },
+                { name: 'AnimePahe (dropped 0.6.0)', mod: consumetAnimePahe },
+                { name: 'HiAnime consumet (dropped 0.6.0)', mod: consumetHiAnime },
             ]) {
                 const t = Date.now();
                 if (!prov.mod) { out.push({ name: prov.name, ok: false, note: 'not installed' }); continue; }
@@ -1926,7 +2082,7 @@ const server = http.createServer(async (req, res) => {
             // patternFid also gives those franchises a STABLE id. ufFind() returns the
             // smallest AniList id in whatever union this query happened to build, so
             // the same show came back as franchise 502 from one search and 223 from
-            // another, and anything persisted against it — favourites, history, the
+            // another, and anything persisted against it — favorites, history, the
             // sibling cache — went stale. A pattern name does not vary by query.
             // Measured 2026-10-12.
             const patternFid = {};
@@ -2108,7 +2264,13 @@ const server = http.createServer(async (req, res) => {
                 params.title || '', params.title_english || ''
             );
             if (!epUrl) {
-                jsonResponse(res, 404, { error: 'No streams available for this episode. The episode may not be uploaded yet — try again later.', retryable: true, sources_tried: ['AllAnime','AnimePahe','HiAnime','AniDB'] });
+                /* ⚠ THIS LIST WAS HARDCODED AND WENT STALE THE MOMENT THE CHAIN CHANGED. It named
+                 * AllAnime, AnimePahe and HiAnime-via-consumet, all three of which were removed
+                 * from the chain in 0.6.0, and it never named HiAnime.at -- the only source that
+                 * actually runs. A diagnostic that reports sources nobody tried is worse than no
+                 * diagnostic, because it sends the next person after hosts that were never asked.
+                 * Derived from the chain now. */
+                jsonResponse(res, 404, { error: 'No streams available for this episode. The episode may not be uploaded yet — try again later.', retryable: true, sources_tried: STREAM_CHAIN });
                 return;
             }
 
@@ -2156,6 +2318,16 @@ const server = http.createServer(async (req, res) => {
                 referer: (lastStreamMeta && lastStreamMeta.referer) || null,
                 subtitles: (lastStreamMeta && lastStreamMeta.subtitles) || [],
                 mal_id: (lastStreamMeta && lastStreamMeta.malId) || null,
+                /* WHERE THE SUBTITLES CAME FROM. The chain now has four tiers and they are
+                 * not equally trustworthy: a track off this episode's own servers cannot
+                 * drift, and an external file on a derived episode number has already been
+                 * measured getting an episode wrong. 'dialogue' | 'signs' | 'none' |
+                 * 'hardsub' | 'external'. Reported so a silent episode and a substituted
+                 * track are distinguishable from the outside instead of both just looking
+                 * like the app being broken. */
+                subs_quality: (lastStreamMeta && lastStreamMeta.subsQuality) || null,
+                subs_cues: (lastStreamMeta && lastStreamMeta.subsCues) || null,
+                subs_origin: (lastStreamMeta && lastStreamMeta.subsOrigin) || null,
                 title: playTitle
             });
             return;
@@ -2635,6 +2807,34 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
+        /* EXTERNAL SUBTITLES, SERVED FROM DISK. Added 2026-11-07 for v0.6.0.
+         *
+         * An external subtitle file reaches the player through here rather than through
+         * /proxy-stream, and the difference is deliberate:
+         *   - it is already WebVTT. The source is SubRip or SubStation Alpha, and a <track>
+         *     element renders neither. The conversion happened when it was fetched.
+         *   - it is already stripped of the uploader's adverts.
+         *   - it needs NO referer, so the UI leaves `src` alone. v0.5.9 wrapped tracks the UI
+         *     was already wrapping and produced `/proxy-stream?url=%2Fproxy-stream%3F...`,
+         *     a 400 on every track and a player with no subtitles.
+         * The token is an opaque key into the cache, not a URL, so nothing here can be
+         * pointed at an arbitrary host. */
+        if (pathname === '/subtitle') {
+            const chain = getSubsChain();
+            const vtt = chain && query.t ? chain.read(String(query.t)) : null;
+            if (!vtt) {
+                jsonResponse(res, 404, { error: 'No such subtitle' });
+                return;
+            }
+            res.writeHead(200, {
+                'Content-Type': 'text/vtt; charset=utf-8',
+                'Access-Control-Allow-Origin': '*',
+                'Cache-Control': 'public, max-age=86400',
+            });
+            res.end(vtt);
+            return;
+        }
+
         // Proxy stream for CORS-restricted CDNs (required for in-app player)
         if (pathname === '/proxy-stream') {
             const streamUrl = query.url;
@@ -2651,6 +2851,13 @@ const server = http.createServer(async (req, res) => {
                     'ep.allanime.pro', 'wb.allanime.pro',
                     'gogoanime.bid', 'anitaku.pe',
                     'cache.googlevideo.com',
+                    /* Gogoanime.by resolves to Blogger-hosted files on rr<N>---sn-<id>.
+                     * googlevideo.com, a different host every request. The entry above only
+                     * ever matched the single `cache.` subdomain, so the one stream source
+                     * that is NOT part of the hianime monoculture was blocked by our own
+                     * proxy. Matching is `host === d || host.endsWith('.' + d)`, so the bare
+                     * domain covers every edge node. Added 2026-11-07. */
+                    'googlevideo.com',
                     'biananset.net', 'gofcdn.com', 'vrv.co', 'crunchyroll.com',
                     'sharepoint.com', 'dropbox.com',
                     'cdnfile.info', 'cdn.master-file.com',
