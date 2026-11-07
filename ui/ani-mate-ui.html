@@ -345,6 +345,17 @@
             grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
             gap: 18px;
             align-content: start;
+            /* ⚠ BOTH OF THESE, and they fix different halves of the same bug.
+             * The poster is width:100% with aspect-ratio 2/3, so the card's height is
+             * DERIVED from its width. In a height-constrained container the browser
+             * resolved the row before that derivation and gave the card 54px against
+             * 282px of content, which `overflow:hidden` then clipped into a poster with
+             * no title. Only showed up once the container had a fixed height, so it was
+             * invisible at desktop width and broken on every narrow window.
+             *   grid-auto-rows: max-content  -> rows size to content, never to the track
+             *   align-items: start           -> cards keep their own height, no stretch */
+            grid-auto-rows: max-content;
+            align-items: start;
         }
         /* section labels and the empty state span the whole grid rather than
          * occupying one cell and leaving a hole next to them */
@@ -1484,13 +1495,66 @@
         }
 
         /* === MOBILE ROTATION === */
-        @media (max-width: 768px) {
+        /* ── NARROW WINDOWS. Rewritten 2026-11-07. ───────────────────────────────────
+         * This used to be `.left-panel, .right-panel { display: none }`, which does not
+         * make the app narrow, it AMPUTATES it: search, the tabs, the filter rail and
+         * watch history all vanish and there is no way to reach any of them. Anyone with
+         * a half-width Electron window lost four of the five tabs.
+         *
+         * The rail reflows to the top instead of disappearing: tabs in a scrollable
+         * strip, the search box under them, and the grid takes the rest. Watch history is
+         * the one thing that does go, because CONTINUE is the same information and a
+         * narrow window has no room for a third column. */
+        @media (max-width: 900px) {
             .app-container {
                 grid-template-columns: 1fr;
-                grid-template-rows: 40px auto;
-                grid-template-areas: "header" "center";
+                /* ⚠ minmax(0, 1fr), NOT 1fr. A bare `1fr` track is minmax(AUTO, 1fr), so
+                 * its minimum is its content -- and the browse grid is 3,000px of posters.
+                 * That blew the container past 100vh and squeezed the `auto` row holding
+                 * the tabs and filters down to ZERO height. The tabs were still in the DOM
+                 * and still reported as reachable; they just had nowhere to be. */
+                grid-template-rows: 44px auto minmax(0, 1fr);
+                grid-template-areas: "header" "left" "center";
+                overflow: hidden;
             }
-            .left-panel, .right-panel { display: none; }
+            .center-panel { min-height: 0; }
+            .left-panel {
+                flex-direction: column;
+                overflow: visible;
+                max-height: 40vh;
+                overflow-y: auto;
+            }
+            /* the tab bar goes horizontal and scrolls rather than wrapping to 3 rows */
+            .tab-bar {
+                display: flex;
+                overflow-x: auto;
+                gap: 6px;
+                scrollbar-width: none;
+            }
+            .tab-bar::-webkit-scrollbar { display: none; }
+            .tab-bar .tab-btn,
+            .tab-bar .tab-btn:first-child { flex: 0 0 auto; grid-column: auto; }
+            /* filters stay reachable, laid out across instead of down */
+            .rail { flex-direction: row; flex-wrap: wrap; align-items: flex-start; gap: 10px; }
+            .rail-section { flex: 1 1 140px; }
+            .rail-genres { max-height: 70px; }
+            .right-panel { display: none; }
+            .results-container {
+                grid-template-columns: repeat(auto-fill, minmax(116px, 1fr));
+                gap: 12px;
+                padding: var(--pad-sm);
+            }
+            .controls-bar { flex-wrap: wrap; gap: 6px; }
+        }
+        /* Phone-width: two posters across, and the chrome gets out of the way. */
+        @media (max-width: 480px) {
+            .results-container {
+                grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+                gap: 10px;
+            }
+            .header-presented, .now-playing { display: none; }
+            .left-panel { max-height: 46vh; }
+            .season-nav { padding: var(--pad-sm); }
         }
         @media (orientation: landscape) and (max-height: 500px) {
             .video-player-container {
