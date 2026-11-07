@@ -23,8 +23,23 @@ on localhost AND get YASA's approval before push"* since April. I quoted it back
 a rule is not obeying it. **The gate is: have I asked, in this conversation, about THIS
 release? If I cannot point at his yes, I do not ship.**
 
-Committing locally is fine. Pushing a branch is fine. The tag, the deploy and the version
-bump are not.
+### ⚠ AND DO NOT OVER-CORRECT INTO SITTING ON COMMITS.
+*His clarification, 2026-11-07 17:39:* **"make sure you are not lagging behind on pushes
+either."**
+
+**Committing and pushing to `main` is NORMAL WORK and should happen promptly.** After the
+earlier mistakes I swung the other way and held a finished comment fix back as "outside what
+you asked for", which is just a different way of being wrong — work that is done and sitting
+on my disk is work he cannot see, review or lose-proof.
+
+    push a commit     -> yes, promptly, no permission needed
+    git tag           -> ASK   (the tag is what builds and publishes)
+    version bump      -> ASK   (and ask which NUMBER)
+    wrangler deploy   -> ASK
+    gh release edit   -> ASK
+
+**The gate is on PUBLISHING, not on version control.** A push moves code to a repo nobody is
+installing from; a tag moves it to people's machines. Only the second one is a decision.
 
 ### ⛔ AND A SHORT ANSWER TO A YES/NO QUESTION IS NOT AN UNAMBIGUOUS YES.
 *2026-11-07 16:57, twenty minutes after the block above was written.*
