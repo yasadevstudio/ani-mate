@@ -79,6 +79,64 @@ function makeProvider(afetch) {
      * Resolve one episode to a playable stream.
      * -> { url, referer, subtitles: [{lang,label,src,default}], malId, quality } or null
      */
+    /* ── EVERY SERVER, NOT JUST ONE. Added 2026-11-07. ──────────────────────────
+     * This adapter only ever read ZokoAnime. hianime also lists HD-1 (megaplay),
+     * and HD-1 is the RICHER source: measured on Beastars Season 2 ep2 it returns
+     * 36 subtitle tracks including four English variants, where ZokoAnime returns
+     * three tracks total.
+     *
+     * That gap is why "no subtitles" kept recurring on individual episodes. When
+     * ZokoAnime's only English file is signs-only, HD-1 frequently has a full one,
+     * and nothing here ever looked.
+     *
+     * GRAFTING IS SAFE, and it was checked rather than assumed. The warning further
+     * up about foreign subtitles drifting against a different encode does not apply
+     * between these two: on Beastars S2 ep2 both servers return 300 cues with
+     * identical timestamps (00:01:32.509, 00:01:33.635, ...) and identical text.
+     * Same master, same timing.
+     *
+     * Each track carries its OWN referer, because the two hosts gate differently:
+     * ZokoAnime's vtt wants zokoanime.video, HD-1's wants megaplay.buzz. A single
+     * stream-level referer cannot serve both.
+     */
+    async function serversFor(episodeId) {
+        const out = {};
+        try {
+            const r = await get(`${BASE}/api/theme/episode/servers?episodeId=${episodeId}`, `${BASE}/`);
+            let html = '';
+            try { html = JSON.parse(r.body).html || ''; } catch { return out; }
+            html = html.replace(/\\"/g, '"');
+            const re = /data-type="(\w+)"[^>]*data-server-name="([^"]+)"[^>]*data-hash="([^"]*)"/g;
+            let m;
+            while ((m = re.exec(html))) {
+                if (m[1] !== 'sub' && m[1] !== 'dub') continue;
+                out[m[1] + ':' + m[2]] = Buffer.from(m[3], 'base64').toString('utf8');
+            }
+        } catch { /* a server list we cannot read just means fewer candidates */ }
+        return out;
+    }
+
+    async function megaplayTracks(embed) {
+        try {
+            const page = await get(embed, `${BASE}/`);
+            const id = (page.body.match(/data-id="(\d+)"/) || [])[1];
+            if (!id) return [];
+            const host = embed.replace(/^(https?:\/\/[^/]*).*/, '$1');
+            const r = await get(`${host}/stream/getSources?id=${id}`, embed);
+            let j;
+            try { j = JSON.parse(r.body); } catch { return []; }
+            return (j.tracks || [])
+                .filter((x) => x && x.file && x.kind !== 'thumbnails')
+                .map((x) => ({
+                    lang: /^english/i.test(x.label || '') ? 'en' : (x.lang || ''),
+                    label: x.label || x.lang || 'Subtitles',
+                    src: x.file,
+                    default: !!x.default,
+                    referer: host + '/',          // megaplay's CDN gates on its own host
+                }));
+        } catch { return []; }
+    }
+
     async function stream(episodeId, mode = 'sub') {
         const { body } = await get(`${BASE}/api/theme/episode/servers?episodeId=${episodeId}`);
         let html = '';
@@ -109,10 +167,25 @@ function makeProvider(afetch) {
         try { cfg = JSON.parse(dec.toString('utf8')); } catch { return null; }
         if (!cfg.src) return null;
 
+        // ZokoAnime's own tracks, tagged with the referer THEIR host needs.
+        const zoko = (Array.isArray(cfg.subtitles) ? cfg.subtitles : [])
+            .map((s) => Object.assign({}, s, { referer: s.referer || embedOrigin }));
+
+        // Pool in HD-1's, which is usually the richer list. Same timing, checked.
+        let extra = [];
+        const servers = await serversFor(episodeId);
+        for (const key of Object.keys(servers)) {
+            if (!key.startsWith(mode + ':')) continue;
+            if (/ZokoAnime/i.test(key)) continue;          // already have it
+            extra = extra.concat(await megaplayTracks(servers[key]));
+        }
+        const seen = new Set(zoko.map((s) => s.src));
+        const subtitles = zoko.concat(extra.filter((s) => s.src && !seen.has(s.src)));
+
         return {
             url: cfg.src,
             referer: embedOrigin,         // the CDN rejects the request without this
-            subtitles: Array.isArray(cfg.subtitles) ? cfg.subtitles : [],
+            subtitles,
             malId,
             quality: (cfg.player && cfg.player.default_quality) || 'auto',
         };
@@ -369,7 +442,8 @@ function makeProvider(afetch) {
 
             if (got.subtitles && got.subtitles.length) {
                 const best = bestTrack(got.subtitles);
-                const n = await cueCount(best && best.src, got.referer);
+                // per-track referer: pooled tracks come from different hosts
+                const n = await cueCount(best && best.src, (best && best.referer) || got.referer);
                 if (n < 0 || n >= MIN_CUES) {          // readable, or unknown: take it
                     if (silent || signs) {
                         console.error(`[hianime.at] ep ${episodeNumber}: using "${hit.name}" ` +

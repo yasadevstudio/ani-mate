@@ -1409,7 +1409,7 @@
                     <div class="player-splash-title">ANI-MATE</div>
                     <div class="player-splash-sub">FREE ANIME FOR ALL</div>
                     <div class="player-splash-tagline" style="font-family:'Jura',sans-serif;font-size:12px;color:var(--text-dim);margin-top:8px;letter-spacing:1px">Stream 95% of all anime ever made</div>
-                    <div class="player-splash-ver">v0.5.10 // YASA SYSTEMS ACTIVE</div>
+                    <div class="player-splash-ver">v0.5.11 // YASA SYSTEMS ACTIVE</div>
                 </div>
                 <div class="episode-grid-container glass" id="episode-grid-container">
                     <div class="selected-anime-header">
@@ -2013,13 +2013,35 @@
             t.kind = 'subtitles';
             t.label = s.label || s.lang || `Track ${i + 1}`;
             t.srclang = s.lang || 'en';
-            t.src = state.streamReferer
-                ? `/proxy-stream?url=${encodeURIComponent(s.src)}&referer=${encodeURIComponent(state.streamReferer)}`
+            // PER-TRACK REFERER. Tracks are pooled from more than one server since
+            // 2026-11-07 and the hosts gate differently: ZokoAnime's vtt wants
+            // zokoanime.video, HD-1's wants megaplay.buzz. Using one stream-level
+            // referer for all of them 403s every track that did not come from the
+            // stream's own host, which is indistinguishable from "no subtitles".
+            const ref = s.referer || state.streamReferer;
+            t.src = ref
+                ? `/proxy-stream?url=${encodeURIComponent(s.src)}&referer=${encodeURIComponent(ref)}`
                 : s.src;
             if (i === pick) t.default = true;
             // `default` only marks which track SHOULD show. Chromium still needs mode set, and
             // setting it before the cues load is a no-op, so do it again once the track loads.
-            t.addEventListener('load', () => applySubtitleMode(), { once: true });
+            t.addEventListener('load', () => {
+                applySubtitleMode();
+                /* SAY SO WHEN THERE IS NOTHING TO READ. Some episodes genuinely ship only a
+                 * signs track: BEASTARS FINAL SEASON Part 2 ep1 has 7 cues across 24 minutes
+                 * on every server, while eps 2-5 have 348-422. Playing that silently is
+                 * indistinguishable from the app being broken, and it has cost real time
+                 * working out which it was. The app already knows; it just never said. */
+                if (i !== pick) return;
+                const tt = t.track;
+                const n = tt && tt.cues ? tt.cues.length : 0;
+                if (n > 0 && n < 40) {
+                    toast(`This episode has no subtitles at the source — only ${n} on-screen signs`, 'error');
+                }
+            }, { once: true });
+            t.addEventListener('error', () => {
+                if (i === pick) toast('Subtitle track failed to load', 'error');
+            }, { once: true });
             video.appendChild(t);
         });
 
@@ -3529,12 +3551,12 @@
     }
 
     // === CHANGELOG POPUP ===
-    const APP_VERSION = '0.5.10';
+    const APP_VERSION = '0.5.11';
     // Optional line shown above the list in the update popup. Empty string hides it.
-    const CHANGELOG_NOTE = "Subtitles were failing to load because the file address was being wrapped twice. Fixed.";
+    const CHANGELOG_NOTE = "Subtitles are now gathered from every server an episode has, not just one. Where an episode genuinely has none, the app says so instead of playing silently.";
 
     const CHANGELOG = [
-        "Subtitle tracks load again: the address was being routed through the app twice, which the host rejected",
+        "Subtitle search widened to every available server, which finds full tracks that were previously invisible, and an episode with no real subtitles now tells you rather than playing a handful of on-screen signs",
     ];
 
     function showChangelog() {

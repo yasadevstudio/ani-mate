@@ -2668,7 +2668,15 @@ const server = http.createServer(async (req, res) => {
                     'hianime.at',        // the API host
                     'zokoanime.video',   // the embed, and the Referer its CDN demands
                     'dramahot.top',      // master + variant playlists and the subtitle vtt
-                    'drama1.cfd'         // the segment CDN the variant points at
+                    'drama1.cfd',        // the segment CDN the variant points at
+                    // HD-1 / megaplay, added 2026-11-07. hianime lists a SECOND server per
+                    // episode and it carries far more subtitle tracks than ZokoAnime -- 36 vs
+                    // 3 on Beastars S2 ep2. Its .vtt files live on mysubsplay.com and are
+                    // referer-gated on megaplay.buzz. Without both hosts here the player gets
+                    // a 403 on every one of those tracks, which looks exactly like the source
+                    // having no subtitles.
+                    'megaplay.buzz',     // the HD-1 embed, and the Referer its CDN demands
+                    'mysubsplay.com'     // where HD-1's subtitle vtt files actually live
                 ];
                 const allowed = ALLOWED_PROXY_DOMAINS.some(d => proxyHost === d || proxyHost.endsWith('.' + d));
                 if (!allowed) {

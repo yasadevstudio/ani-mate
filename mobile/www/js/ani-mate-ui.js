@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.5.10';
+    const APP_VERSION = '0.5.11';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -839,7 +839,9 @@
 
         let url;
         try {
-            const r = await NET.get(sub.src, { referer: referer || '' });
+            // per-track referer: tracks are pooled from several servers and each
+            // host gates on its own. One shared referer 403s the rest.
+            const r = await NET.get(sub.src, { referer: sub.referer || referer || '' });
             if (!r.ok || !/^\s*WEBVTT/.test(r.body)) return;   // a 403 page is not a cue file
             url = URL.createObjectURL(new Blob([r.body], { type: 'text/vtt' }));
             subBlobUrls.push(url);
@@ -2059,10 +2061,10 @@
 
     // === CHANGELOG ===
     // Optional line shown above the list in the update popup. Empty string hides it.
-    const CHANGELOG_NOTE = "Subtitles were failing to load because the file address was being wrapped twice. Fixed.";
+    const CHANGELOG_NOTE = "Subtitles are now gathered from every server an episode has, not just one. Where an episode genuinely has none, the app says so instead of playing silently.";
 
     const CHANGELOG = [
-        "Subtitle tracks load again: the address was being routed through the app twice, which the host rejected",
+        "Subtitle search widened to every available server, which finds full tracks that were previously invisible, and an episode with no real subtitles now tells you rather than playing a handful of on-screen signs",
     ];
 
     function showChangelog() {
