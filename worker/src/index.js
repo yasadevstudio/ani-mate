@@ -44,6 +44,7 @@ import { makeProvider as makeHiAnime } from '../../server/hianime-at.js';
 import { makeProvider as makeGogo } from '../../server/gogoanime-by.js';
 import * as opensubs from '../../server/subs-opensubtitles.js';
 import * as episodeMap from '../../server/episode-map.js';
+import { handleAccounts } from './accounts.js';
 
 const ALLANIME_API = 'https://api.allanime.day/api';
 const ALLANIME_REFR = 'https://allmanga.to';
@@ -67,7 +68,7 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
          * routes. The account routes below are the ones that carry identity. */
         'access-control-allow-origin': '*',
         'access-control-allow-headers': 'content-type, authorization',
-        'access-control-allow-methods': 'GET, POST, DELETE, OPTIONS',
+        'access-control-allow-methods': 'GET, POST, PATCH, DELETE, OPTIONS',
         'cache-control': 'no-store',
     },
 });
@@ -85,9 +86,22 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), {
  * Fails OPEN. If the binding is missing or throws, requests are served rather than
  * refused: a limiter that breaks must not take the app down with it.
  */
+/* The routes that MINT credentials get the tight bucket. Everything else that touches
+ * an account -- /api/sync, /api/devices -- is a normal authenticated read/write and
+ * belongs on RL_READ, because a device syncing often is a device working correctly. */
+const AUTH_MINTS = new Set([
+    '/api/account',
+    '/api/account/recover',
+    '/api/account/recovery-key',
+    '/api/device/pair',
+    '/api/device/pair-code',
+]);
+
 async function limited(env, req, p) {
     const ip = req.headers.get('cf-connecting-ip') || 'unknown';
-    const bucket = p === '/api/play' ? env.RL_PLAY : env.RL_READ;
+    const bucket = p === '/api/play' ? env.RL_PLAY
+        : AUTH_MINTS.has(p) ? (env.RL_AUTH || env.RL_READ)
+        : env.RL_READ;
     if (!bucket || typeof bucket.limit !== 'function') return null;
     try {
         const { success } = await bucket.limit({ key: ip });
@@ -97,6 +111,9 @@ async function limited(env, req, p) {
             detail: p === '/api/play'
                 ? 'Too many playback requests. This endpoint makes up to nine upstream ' +
                   'requests each, so it is capped at 20 a minute per device.'
+                : AUTH_MINTS.has(p)
+                ? 'Too many sync setup requests. Creating an account, pairing a device ' +
+                  'or using a recovery key is capped at 10 a minute per address.'
                 : 'Too many requests. Capped at 120 a minute per device.',
             retry_after: 60,
         }, 429);
@@ -236,6 +253,17 @@ export default {
                 const counts = await ha.listingCounts(hits.slice(0, 8));
                 const map = episodeMap.resolve({ listings: counts, chosen: title, episode: ep });
                 return json({ title, episode: ep, map, listings: counts });
+            }
+
+            /* ── ACCOUNTS AND SYNC ────────────────────────────────────────────
+             * Everything identity-bearing lives in accounts.js, which returns null
+             * for a path it does not own so this table stays the single router.
+             * Design: ACCOUNTS-DESIGN.md. Passwordless, optional, no PII. */
+            if (p === '/api/account' || p === '/api/sync' || p === '/api/devices'
+                || p.startsWith('/api/account/') || p.startsWith('/api/device/')
+                || p.startsWith('/api/devices/')) {
+                const r = await handleAccounts(req, env, p, q);
+                if (r) return r;
             }
 
             return json({ error: 'not found', path: p }, 404);

@@ -38,3 +38,32 @@ name = "RL_READ"
 type = "ratelimit"
 namespace_id = "1002"
 simple = { limit = 120, period = 60 }
+
+# ── ACCOUNTS / SYNC DATABASE ─────────────────────────────────────────────────────
+# D1, not KV: devices, watch progress, favorites and settings are relational, and the
+# sync protocol asks "everything on this account changed after <stamp>" which is an
+# indexed range scan, not a key lookup. Schema in schema.sql, design in
+# ACCOUNTS-DESIGN.md. Applied to the remote 2026-11-08: 6 tables, 22 rows written.
+#
+# ⚠ THE BINDING IS OPTIONAL AT RUNTIME. src/accounts.js answers 503 when env.DB is
+# absent, so a deployment without this block keeps serving search/episodes/play exactly
+# as before instead of throwing on every request.
+[[d1_databases]]
+binding = "DB"
+database_name = "ani-mate-accounts"
+database_id = "cc639d9c-3792-4254-aa22-2dfb77c8d049"
+
+# ── AUTH BUCKET ──────────────────────────────────────────────────────────────────
+# Tighter than RL_READ because these are the routes that MINT credentials. 10/min per
+# IP is far above any honest use (a person pairs a device once) and far below useful
+# account-creation spam.
+#
+# ⚠ IT IS NOT WHAT PROTECTS THE PAIRING CODE. Per-colo counting plus IP rotation means
+# an IP limiter cannot be the guard on a 6-digit secret; that job belongs to the
+# 3-attempt counter on the code row itself. This bucket protects the DATABASE from
+# junk rows, nothing more.
+[[unsafe.bindings]]
+name = "RL_AUTH"
+type = "ratelimit"
+namespace_id = "1003"
+simple = { limit = 10, period = 60 }

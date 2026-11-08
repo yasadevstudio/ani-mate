@@ -45,8 +45,21 @@ reading `7f3a…` with no email, no username and no IP is a record with no perso
 | **recovery key** | 128 bits random | written down by the user | SHA-256 hash |
 | **pairing code** | 6 digits | 5 minutes, one use | SHA-256 hash |
 
-All three are high-entropy and server-generated, so a single SHA-256 is the correct hash —
-there is no dictionary to run against them. Comparisons use `crypto.subtle.timingSafeEqual`.
+⚠ **The pairing code is NOT a credential and holding it grants nothing.** See the pairing
+flow — it is displayed by the device that wants IN and typed into a device that is already
+signed in, so the privileged call is the one carrying a real token. That is what makes six
+digits safe; it was not safe in the first version of this document.
+
+All three are high-entropy, so a single SHA-256 is the correct hash — there is no
+dictionary to run against them.
+
+**On constant-time comparison, precisely:** lookups are `WHERE token_hash = ?` on an
+indexed column, which SQLite does not promise to do in constant time. That is fine and is
+not papered over with a `timingSafeEqual` call that compares a value to itself: what an
+index-timing oracle could leak is information about a stored **SHA-256**, and SHA-256 is
+preimage resistant, so it does not yield the token. `timingSafeEqual` is used where a
+secret is genuinely compared in application code, and nowhere else, so that reading this
+code tells the truth about what is protecting what.
 
 **Recovery key format:** 26 characters of Crockford base32 (no `I`, `L`, `O`, `U`, so it
 cannot be mis-transcribed), displayed in groups of four. 128 bits. Typable on a phone.
@@ -76,13 +89,17 @@ CREATE TABLE devices (
 );
 CREATE INDEX idx_devices_token ON devices(token_hash);
 
+-- A CLAIM is a device asking to be let in. It exists before any account is attached,
+-- which is why account_id is nullable here and NOT NULL everywhere else.
 CREATE TABLE pairing_codes (
-  code_hash   TEXT PRIMARY KEY,
-  account_id  TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-  expires_at  INTEGER NOT NULL,
-  attempts    INTEGER NOT NULL DEFAULT 0,  -- the code dies at 3, see below
-  used_at     INTEGER
+  code_hash   TEXT PRIMARY KEY,            -- SHA-256 of the 6 digits on the new device
+  token_hash  TEXT NOT NULL UNIQUE,        -- SHA-256 of the token the NEW DEVICE generated
+  platform    TEXT,
+  label_hint  TEXT,
+  created_at  INTEGER NOT NULL,
+  expires_at  INTEGER NOT NULL
 );
+CREATE INDEX idx_pairing_token ON pairing_codes(token_hash);
 
 -- One table per synced kind. Every row carries updated_at and deleted; see SYNC.
 CREATE TABLE watch (
@@ -157,20 +174,54 @@ touches a setting:
 `PATCH /api/devices/:id` renames it. Auto for zero friction, editable because only the owner
 knows which Pixel is which.
 
-### Add a second device — pairing, the way a TV does it
+### Add a second device — the TV flow, and it runs in the direction that is safe
 
-    signed-in device:  POST /api/device/pair-code     -> { code: "418290", expires_in: 300 }
-    new device:        POST /api/device/pair {code}   -> { account_id, device_token }
+The new device generates its own 32-byte token, asks for a claim, and shows six digits.
+Those six digits are typed into a device that is **already signed in**:
 
-Six digits is only a million combinations, so three things guard it, and all three are
-needed:
+    new device:        POST /api/device/claim      Bearer <token it just generated>
+                                                -> { code: "418290", expires_in: 300 }
+                       GET  /api/device/claim      Bearer <same token>
+                                                -> 202 { status: "pending" }      (poll)
+                                                -> 200 { account_id, device_id, label }
+                                                -> 404  the code expired unapproved
 
-- **5 minute TTL**
-- **single use** — `used_at` is set the moment it works
-- **3 failed attempts and the code is dead**, tracked on the code row itself
+    signed-in device:  POST /api/device/approve    Bearer <its existing device token>
+                       { code: "418290" }       -> { status: "approved", label }
 
-That last one matters: the Worker's IP rate limiter can be sidestepped by rotating IPs, so
-the lockout has to live on the code, not on the caller.
+On approval the server creates the device row with the token hash the new device supplied,
+and deletes the claim. The new device's next poll finds itself authenticated and already
+holds its token. **The token is never sent back over the wire and never stored in the
+clear.**
+
+#### ⛔ WHY NOT THE OBVIOUS DIRECTION — AND WHY THIS DOCUMENT USED TO BE WRONG
+
+The first version of this design had it the other way around: the signed-in device asks
+for a code, the new device redeems it. It named three guards, and the load-bearing one
+**could not fire**, measured 2026-11-08:
+
+    50,000 wrong guesses -> 0 rows found -> 0 attempts recorded
+
+The lookup is `WHERE code_hash = sha256(guess)`. A wrong guess matches **no row**, so
+there is nothing to increment and "3 failed attempts and the code is dead" never happens
+for a single wrong code. What was left was a 20-bit secret (10^6) behind a 300-second TTL
+— **3,333 requests/second to sweep the space** — guarded only by an IP bucket that
+Cloudflare counts **per colo** and an attacker can spread across addresses.
+
+Reversing the direction deletes the question. In this flow a stranger guessing codes at
+`/api/device/approve` must present **their own valid device token**, and a correct guess
+attaches *someone else's new device to the attacker's own account* — no access to
+anything of yours. There is no server-side secret of yours left to guess, so there is no
+counter to get right.
+
+⚠ **The lesson is the one already written into this Worker's rate limiter: a risk you have
+NAMED is not a risk you have HANDLED.** Both documents said "3 attempts and it dies" and
+both were describing code that could not do it. Sizing a limiter against a weak secret is
+worse than restructuring so the secret stops being load-bearing.
+
+What is left, and it is the same in every pairing scheme ever built: someone can talk you
+into approving a code that is not yours. That is social engineering, not brute force, so
+the approve screen names the platform and label of what is asking to join.
 
 ### Recover
 
@@ -232,7 +283,7 @@ write is what the user actually did most recently.
 | the PBKDF2 cap is irrelevant | it only constrains password hashing, and there are no passwords |
 | D1 holds hashes, never secrets | a dump of this database yields nothing usable |
 | constant-time comparison | `crypto.subtle.timingSafeEqual`, confirmed present |
-| pairing codes lock on 3 failures | on the code row, so rotating IPs does not help |
+| pairing codes cannot be brute forced | the privileged call is `approve`, which needs a real token; guessing a code gains an attacker nothing of yours |
 | rate limiting | already built and live |
 | no PII | no email, no username, no IP, no analytics |
 | deletion is real | `DELETE /api/account` cascades |
