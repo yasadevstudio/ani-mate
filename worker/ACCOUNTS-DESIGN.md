@@ -69,7 +69,7 @@ CREATE TABLE devices (
   id          TEXT PRIMARY KEY,
   account_id  TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
   token_hash  TEXT NOT NULL UNIQUE,        -- SHA-256 of the bearer token
-  label       TEXT,                        -- "Desktop", "Pixel 8" — user-editable
+  label       TEXT,                        -- auto-generated on pair, user-editable
   platform    TEXT,                        -- electron | android
   created_at  INTEGER NOT NULL,
   last_seen   INTEGER
@@ -139,9 +139,23 @@ agent. That is deliberate and should stay that way.
       -> POST /api/account
       <- { account_id, device_token, recovery_key }
 
-The app stores `account_id` and `device_token` locally and shows the recovery key **once**,
+The app stores `account_id` and `device_token` locally, names itself (see below), and shows
+the recovery key **once**,
 with a copy button and plain words: *this is the only way back in if you lose your devices.
 We cannot send it to you, because we do not know who you are.*
+
+### Naming a device
+
+The device labels itself on creation and on pairing, so the list is readable before anyone
+touches a setting:
+
+| platform | label |
+|---|---|
+| Electron | `Desktop` / `Desktop (2)` if that name is taken on the account |
+| Android | the device model where the WebView reports it, else `Phone` |
+
+`PATCH /api/devices/:id` renames it. Auto for zero friction, editable because only the owner
+knows which Pixel is which.
 
 ### Add a second device — pairing, the way a TV does it
 
@@ -166,8 +180,9 @@ Rate limited hard, and it issues a new device token rather than revealing the ol
 
 ### Sign out / manage devices
 
-    GET    /api/devices       -> list, with label, platform, last_seen
-    DELETE /api/devices/:id   -> revoke that one
+    GET    /api/devices          -> list, with label, platform, last_seen
+    PATCH  /api/devices/:id      -> rename it
+    DELETE /api/devices/:id      -> revoke that one
     POST   /api/account/recovery-key  -> regenerate, invalidating the old one
 
 ### Delete the account
@@ -195,8 +210,11 @@ it in its local list; the phone pushes; the favorite is back. It looks like the 
 you.
 
 So a delete sets `deleted = 1` and `updated_at = now`. The row stays, the other device pulls
-the tombstone and removes it locally. Tombstones are garbage-collected after 90 days, which
-is far longer than any device will plausibly be offline.
+the tombstone and removes it locally. Tombstones are garbage-collected after **180 days**.
+
+The asymmetry matters: a tombstone kept too LONG costs a few rows, while one expired too
+EARLY means a device offline past the window never learns about the delete and resurrects
+it. When in doubt, keep it longer.
 
 ### Progress is last-write-wins, deliberately
 
@@ -224,11 +242,16 @@ query string, so they stay out of logs and out of URL history.
 
 ---
 
-## Open, not yet decided
+## Settled, 2026-11-07 19:11
 
-- **Device labels.** Auto-generated ("Desktop", "Pixel 8") or user-typed? Auto is less
-  friction; typed is clearer on the device list.
-- **Tombstone retention.** 90 days is a guess sized to "longer than a device stays offline",
-  and it is the one number in here I have no measurement for.
-- **What the UI calls this.** "Account" sets an expectation of email and password. "Sync"
-  describes what it actually does.
+- **Device labels are AUTO-GENERATED AND EDITABLE.** The device names itself on first
+  contact so the list is never full of "Unknown device", and the user can rename it. Auto
+  for zero friction, editable because only the owner knows which Pixel is which.
+- **Tombstone retention is 180 DAYS.** His number. Twice what I guessed, and the direction
+  that is actually safe: a tombstone expiring too EARLY is the failure mode, because a
+  device offline longer than the window never learns about the delete and silently
+  resurrects it on its next push.
+- **The UI calls it SYNC, never "Account".** "Account" promises an email field, a password
+  field and a forgot-password link, and all three are things this design deliberately does
+  not have. "Sync" describes what it actually does. The button reads **Sync my stuff**, the
+  settings section reads **Sync**, and the recovery key screen is **Sync recovery key**.

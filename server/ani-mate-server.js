@@ -2522,12 +2522,44 @@ const server = http.createServer(async (req, res) => {
                         } catch { /* skip failed queries */ }
                     }
                     if (updated) {
-                        saveFavorites(favs);
-                        saveForgeHistory(history);
+                        /* ⚠ RE-READ BEFORE WRITING, AND MERGE -- NEVER SAVE THE ARRAY
+                         * LOADED AT THE TOP OF THIS HANDLER.
+                         *
+                         * `favs` and `history` were read BEFORE several seconds of
+                         * AniList lookups. Writing them back writes a pre-lookup
+                         * snapshot over the file, so anything the user removed during
+                         * that window is RESURRECTED ON DISK. Reproduced 2026-11-07:
+                         * nine favorites, delete one mid-refresh, and it came back.
+                         *
+                         * Enrichment only ever sets title_english and cover, so copy
+                         * exactly those onto whatever is on disk NOW. A row that is
+                         * gone stays gone, because it is not in the fresh list to
+                         * copy onto. */
+                        const encFav = new Map(favs.map(f => [f.id, f]));
+                        const freshFavs = loadFavorites();
+                        for (const f of freshFavs) {
+                            const e = encFav.get(f.id);
+                            if (!e) continue;
+                            if (e.title_english && !f.title_english) f.title_english = e.title_english;
+                            if (e.cover && !f.cover) f.cover = e.cover;
+                        }
+                        saveFavorites(freshFavs);
+
+                        const encHist = new Map(history.map(h => [h.anime_id, h]));
+                        const freshHist = loadForgeHistory();
+                        for (const h of freshHist) {
+                            const e = encHist.get(h.anime_id);
+                            if (!e) continue;
+                            if (e.title_english && !h.title_english) h.title_english = e.title_english;
+                            if (e.cover && !h.cover) h.cover = e.cover;
+                        }
+                        saveForgeHistory(freshHist);
                     }
                 }
-                // Apply same fixDisplayName + franchise backfill as GET /favorites
-                const fixedFavs = favs.map(f => fixDisplayName(f));
+                // Apply same fixDisplayName + franchise backfill as GET /favorites.
+                // Re-read so the response cannot hand the client a list containing
+                // something it just deleted.
+                const fixedFavs = loadFavorites().map(f => fixDisplayName(f));
                 const fn2 = (s) => (s || '').toLowerCase()
         // Fold unicode punctuation to ASCII FIRST. AniList writes "Journey’s End" with
         // U+2019 and AllAnime writes "Journey's End" with an ASCII quote; stripping only

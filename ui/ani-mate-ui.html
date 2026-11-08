@@ -3454,6 +3454,7 @@
                 // Remove from favorites
                 await apiCall(`/favorites/${encodeURIComponent(ctxTarget.animeId)}`, { method: 'DELETE' });
                 state.favorites = state.favorites.filter(f => f.id !== ctxTarget.animeId);
+                favGen++;
                 if (state.activeTab === 'favs') renderFavorites();
                 else if (state.results.length > 0) renderResults();
             } else {
@@ -3985,6 +3986,7 @@
             if (isFav) {
                 await apiCall(`/favorites/${encodeURIComponent(id)}`, { method: 'DELETE' });
                 state.favorites = state.favorites.filter(f => f.id !== id);
+                favGen++;
                 toast(`Removed from favorites`, 'info');
             } else {
                 const payload = { id, name, episodes: parseInt(episodes) || 0 };
@@ -4078,9 +4080,18 @@
         refreshEnglishTitles();
     }
 
+    /* Bumped by anything that changes the favorites list. A background refresh that
+     * started before a change must not overwrite the result of that change -- the
+     * server-side half of this bug resurrected a deleted favorite ON DISK, and this
+     * half resurrected it on screen. */
+    let favGen = 0;
+    window.bumpFavGen = () => { favGen++; };
+
     async function refreshEnglishTitles() {
         try {
+            const gen = favGen;
             const data = await apiCall('/favorites/refresh', { method: 'POST' });
+            if (gen !== favGen) return;      // the list moved while we were away
             if (data.favorites && data.enriched > 0) {
                 state.favorites = data.favorites;
                 if (state.activeTab === 'favs') renderFavorites();
