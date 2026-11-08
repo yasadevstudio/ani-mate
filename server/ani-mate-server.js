@@ -130,6 +130,11 @@ let hianimeAt = null;
 let anidbProvider = null;
 
 
+/* The sync engine, required for its SHAPE helpers only -- the desktop's favorites and
+ * history live in this process, and the browser page cannot translate records it cannot
+ * read. Same functions the phone calls in its WebView, so the two cannot disagree. */
+const syncShape = require('./ani-mate-sync.js').shape;
+
 const PKG_VERSION = (() => { try { return require('../package.json').version; } catch { return '0.4.0'; } })();
 const PORT = parseInt(process.env.ANI_MATE_PORT) || 7890;
 // How many AniList-only titles get a secondary AllAnime lookup so they become
@@ -1752,6 +1757,89 @@ const server = http.createServer(async (req, res) => {
         // Serve bundled hls.js
         if (pathname === '/hls.min.js') {
             serveStatic(res, path.join(UI_DIR, 'hls.min.js'), 'application/javascript');
+            return;
+        }
+
+        /* THE SYNC ENGINE, served from server/ so there is exactly one copy of it.
+         * The phone needs a real file inside the APK and has its own; this is the
+         * desktop half of that arrangement, and `npm run sync:shared` keeps them
+         * identical. See the header of ani-mate-sync.js for why one copy matters. */
+        /* One line of config, so the page never has to guess the backend and a dev can
+         * point a whole desktop install at a local worker with an env var. */
+        if (pathname === '/sync/config.js') {
+            const edge = process.env.ANI_MATE_EDGE || '';
+            res.writeHead(200, { 'Content-Type': 'application/javascript',
+                                 'Cache-Control': 'no-store' });
+            res.end(edge ? 'window.ANI_MATE_EDGE=' + JSON.stringify(edge) + ';' : '');
+            return;
+        }
+
+        if (pathname === '/ani-mate-sync.js') {
+            serveStatic(res, path.join(__dirname, 'ani-mate-sync.js'), 'application/javascript');
+            return;
+        }
+
+        /* ── SYNC: THE LOCAL SIDE ──────────────────────────────────────────────────
+         * The engine runs in the browser page but the desktop's data lives HERE, in
+         * two JSON files this process owns. So the page cannot read or write it
+         * directly; these two routes are the adapter's hands.
+         *
+         * ⚠ THE SHAPES ARE NOT THE SAME AND THE TRANSLATION BELONGS HERE. The sync
+         * schema says {anime_id, title, position}; the desktop files say
+         * {id, name, playback_time}. Doing this mapping in the page would mean doing
+         * it again, differently, on the phone. */
+        if (pathname === '/sync/local' && req.method === 'GET') {
+            jsonResponse(res, 200, {
+                favorites: loadFavorites().map(syncShape.favToSync),
+                watch: loadForgeHistory().map(syncShape.watchToSync),
+            });
+            return;
+        }
+
+        if (pathname === '/sync/local' && req.method === 'POST') {
+            const payload = safeJsonParse(await readBody(req)) || {};
+            const applied = { favorites: 0, watch: 0 };
+
+            if (Array.isArray(payload.favorites) && payload.favorites.length) {
+                /* ⛔ MERGE ON WRITE, NEVER WRITE A SNAPSHOT THE CALLER BROUGHT. A
+                 * /favorites/refresh that loaded a snapshot, did slow lookups and then
+                 * wrote the stale array back cost real favorites on 2026-11-07. The same
+                 * shape of bug is available here and the same answer applies: re-read,
+                 * apply row by row, write once. */
+                const favs = loadFavorites();
+                for (const row of payload.favorites) {
+                    const at = favs.findIndex((f) => String(f.id) === String(row.anime_id));
+                    if (row.deleted) {
+                        if (at >= 0) { favs.splice(at, 1); applied.favorites++; }
+                        continue;
+                    }
+                    const fav = syncShape.favFromSync(row, at >= 0 ? favs[at] : null);
+                    if (at >= 0) favs[at] = fav; else favs.unshift(fav);
+                    applied.favorites++;
+                }
+                saveFavorites(favs);
+            }
+
+            if (Array.isArray(payload.watch) && payload.watch.length) {
+                const hist = loadForgeHistory();
+                for (const row of payload.watch) {
+                    const at = hist.findIndex((h) => String(h.anime_id) === String(row.anime_id));
+                    if (row.deleted) {
+                        if (at >= 0) { hist.splice(at, 1); applied.watch++; }
+                        continue;
+                    }
+                    const rec = syncShape.watchFromSync(row, at >= 0 ? hist[at] : null);
+                    if (at >= 0) hist[at] = rec; else hist.unshift(rec);
+                    applied.watch++;
+                }
+                /* The same 100-record cap addToForgeHistory keeps, applied after a merge
+                 * so a sync cannot grow the file without bound. Newest first. */
+                hist.sort((a, b) => Date.parse(b.timestamp || 0) - Date.parse(a.timestamp || 0));
+                if (hist.length > 100) hist.length = 100;
+                saveForgeHistory(hist);
+            }
+
+            jsonResponse(res, 200, { status: 'applied', applied });
             return;
         }
 

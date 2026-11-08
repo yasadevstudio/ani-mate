@@ -306,3 +306,61 @@ query string, so they stay out of logs and out of URL history.
   field and a forgot-password link, and all three are things this design deliberately does
   not have. "Sync" describes what it actually does. The button reads **Sync my stuff**, the
   settings section reads **Sync**, and the recovery key screen is **Sync recovery key**.
+
+---
+
+## The client half, built 2026-11-08
+
+    server/ani-mate-sync.js          the engine + the record translation. ONE copy.
+    ui/ani-mate-ui.html              desktop panel, adapter over /sync/local
+    server/ani-mate-server.js        /sync/local GET+POST, /ani-mate-sync.js, /sync/config.js
+    mobile/www/js/ani-mate-sync.js   the same engine, copied by `npm run sync:shared`
+    mobile/www/js/ani-mate-sync-ui.js  phone panel, adapter over window.Storage
+
+**One engine, two adapters.** The engine knows nothing about where a favorite lives; the
+desktop's adapter calls the local Node server because that is where its JSON files are,
+and the phone's calls `window.Storage` because that is where its Capacitor files are.
+
+**The record translation is in the engine, not in either adapter.** Measured: the
+desktop's history entry and the phone's are field for field identical, down to
+`playback_episode` being nulled when an episode finishes. So `shape.watchToSync` and
+friends live in the shared file, and the Node server `require()`s them. Writing that
+mapping twice is how `position` comes to mean the resume point on one device and the
+last-played episode on the other.
+
+### ⛔ NEITHER APP TRACKS WHICH ROWS IT CHANGED
+
+There is no dirty flag on a favorite in either store and adding one meant hooking every
+mutation in two codebases. So the engine keeps **its own** record of what it last saw
+(`seen`: id -> content hash) and diffs against that. A row in `seen` that is gone from
+the local store is a local delete and becomes a tombstone.
+
+Two consequences, both load-bearing:
+
+- **The push is a full snapshot, so it MUST follow a successful pull.** Pushing a stale
+  snapshot resurrects whatever another device just deleted. The engine refuses to push if
+  the pull failed.
+- **The server ignores a push of unchanged content.** Every upsert carries
+  `WHERE <row> IS NOT excluded.<row>`. Without it, one device syncing would re-stamp every
+  row it owns and the other would re-download the whole account on every pull, forever.
+  `IS NOT` rather than `!=` because `NULL != NULL` is NULL, which is falsy, which would
+  make every row with an empty column look changed every time.
+
+### What does NOT sync, and why
+
+`quality` only. It is the one preference about the hardware and the connection rather than
+the person: pushing a desktop's 1080p onto a phone on cell data is a bug wearing a
+feature's clothes. `prefer_english`, `autoplay` and `nsfw` all cross, under the
+localStorage keys both apps already used.
+
+### Tested 2026-11-08, against a local D1 through `wrangler dev`
+
+    65/65   the API, including every refusal path, cross-account isolation,
+            and that RL_AUTH actually fires
+    29/29   two simulated devices converging, including the resurrection case
+    23/23   the real desktop page in a browser, driven through its own panel
+    21/21   the real mobile page at 360px, driven through its shipped adapter
+    18/18   BOTH pages at once on one account: pair by code, converge, delete on
+            the phone and have it stay deleted on the desktop, revoke
+
+The last one is the only test that proves the feature rather than the pieces.

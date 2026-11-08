@@ -137,6 +137,12 @@
          backend, keeping the local scraper as the fallback. -->
     <script src="js/ani-mate-edge.js"></script>
     <script src="js/ani-mate-storage.js"></script>
+    <!-- SYNC. The engine is the SAME FILE the desktop serves out of server/; keep it
+         that way with `npm run sync:shared`. Order matters: the engine defines
+         window.ANIMATE_SYNC, the adapter needs window.Storage above it, and the UI
+         file mounts its button into #tab-bar after ani-mate-ui.js has built it. -->
+    <script src="js/ani-mate-sync.js"></script>
     <script src="js/ani-mate-ui.js"></script>
+    <script src="js/ani-mate-sync-ui.js"></script>
 </body>
 </html>

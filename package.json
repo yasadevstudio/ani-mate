@@ -8,7 +8,9 @@
   "scripts": {
     "start": "electron .",
     "build:win": "electron-builder --win --x64",
-    "build:linux": "electron-builder --linux --x64"
+    "build:linux": "electron-builder --linux --x64",
+    "sync:shared": "cp server/ani-mate-sync.js mobile/www/js/ani-mate-sync.js && mkdir -p mobile/android/app/src/main/assets/public/js && cp mobile/www/js/*.js mobile/android/app/src/main/assets/public/js/ && cp mobile/www/css/*.css mobile/android/app/src/main/assets/public/css/ 2>/dev/null || true",
+    "sync:verify": "cmp -s server/ani-mate-sync.js mobile/www/js/ani-mate-sync.js && echo \"sync engine: identical\" || (echo \"DRIFT: server/ani-mate-sync.js != mobile/www/js/ani-mate-sync.js -- run npm run sync:shared\" && exit 1)"
   },
   "dependencies": {
     "@consumet/extensions": "^1.8.8",

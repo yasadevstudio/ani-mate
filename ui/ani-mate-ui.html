@@ -6,6 +6,10 @@
     <title>ANI-MATE // Free Anime For All</title>
     <link href="https://fonts.googleapis.com/css2?family=Audiowide&family=Orbitron:wght@400;700;900&family=Jura:wght@300;400;500;700&display=swap" rel="stylesheet">
     <script src="/hls.min.js"></script>
+    <!-- The sync engine. ONE copy, shared with the phone; served out of server/.
+         config.js first: it names the backend, and it is empty in a real install. -->
+    <script src="/sync/config.js"></script>
+    <script src="/ani-mate-sync.js"></script>
     <style>
         /* === RESET & BASE === */
         *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
@@ -1411,6 +1415,191 @@
             vertical-align: middle;
         }
 
+        /* === SYNC PANEL ===================================================
+           SENTINEL geometry: 12px radius, 20px padding, soft lift, three text
+           levels. Deliberately NOT called "Account" anywhere a user can see --
+           that word promises an email field, a password field and a
+           forgot-password link, and this design has none of the three. */
+        .sync-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 8, 14, 0.88);
+            backdrop-filter: blur(6px);
+            z-index: 10001;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .sync-modal {
+            background: linear-gradient(160deg, var(--surface-2), var(--surface-1));
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius);
+            padding: var(--pad);
+            width: 100%;
+            max-width: 520px;
+            max-height: 86vh;
+            overflow-y: auto;
+            box-shadow: var(--lift-hi);
+        }
+        .sync-modal h2 {
+            font-family: 'Audiowide', cursive;
+            color: var(--accent-cyan);
+            font-size: 18px;
+            letter-spacing: 1px;
+            margin: 0 0 2px 0;
+        }
+        .sync-sub {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 10px;
+            letter-spacing: 2px;
+            color: var(--text-muted);
+            margin-bottom: var(--pad-sm);
+        }
+        .sync-prose {
+            font-size: 13px;
+            line-height: 1.55;
+            color: var(--text-dim);
+            margin: 0 0 var(--pad-sm) 0;
+        }
+        .sync-card {
+            background: var(--glass-bg);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius-sm);
+            padding: var(--pad-sm);
+            margin-bottom: 10px;
+        }
+        .sync-card:hover { background: var(--glass-hover); }
+        .sync-card-title {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 11px;
+            letter-spacing: 1.5px;
+            color: var(--text-primary);
+            margin-bottom: 4px;
+        }
+        .sync-card-note { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+        .sync-btn {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 10px;
+            letter-spacing: 2px;
+            padding: 9px 18px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--accent-cyan);
+            color: var(--accent-cyan);
+            background: linear-gradient(135deg, rgba(0,255,255,0.10), rgba(0,255,255,0.02));
+            cursor: pointer;
+            transition: box-shadow .18s, transform .18s;
+        }
+        .sync-btn:hover { box-shadow: var(--lift); transform: translateY(-1px); }
+        .sync-btn:disabled { opacity: .45; cursor: default; transform: none; box-shadow: none; }
+        .sync-btn.ghost { border-color: var(--glass-border); color: var(--text-dim); background: none; }
+        .sync-btn.danger { border-color: var(--danger); color: var(--danger); background: none; }
+        .sync-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+        .sync-input {
+            flex: 1 1 160px;
+            min-width: 0;
+            background: var(--surface-3);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            padding: 9px 12px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 12px;
+            letter-spacing: 1px;
+        }
+        /* The recovery key and the pairing code are things a person reads off the
+           screen and types somewhere else, so they get real size and real spacing. */
+        .sync-secret {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 17px;
+            letter-spacing: 3px;
+            color: var(--accent-gold);
+            background: rgba(255, 221, 0, 0.06);
+            border: 1px dashed rgba(255, 221, 0, 0.35);
+            border-radius: var(--radius-sm);
+            padding: 14px 12px;
+            text-align: center;
+            word-break: break-all;
+            line-height: 1.5;
+            margin-bottom: 10px;
+        }
+        .sync-code {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 34px;
+            letter-spacing: 10px;
+            color: var(--accent-gold);
+            text-align: center;
+            padding: 16px 0 10px 0;
+            text-shadow: 0 0 22px rgba(255, 221, 0, 0.35);
+        }
+        .sync-warn {
+            font-size: 12.5px;
+            line-height: 1.5;
+            color: var(--accent-gold);
+            background: rgba(255, 221, 0, 0.06);
+            border-left: 2px solid var(--accent-gold);
+            padding: 10px 12px;
+            margin-bottom: var(--pad-sm);
+        }
+        .sync-err {
+            font-size: 12.5px;
+            color: var(--danger);
+            background: rgba(255, 51, 51, 0.07);
+            border-left: 2px solid var(--danger);
+            padding: 9px 12px;
+            margin-bottom: 10px;
+        }
+        .sync-dev {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius-sm);
+            margin-bottom: 8px;
+            background: var(--glass-bg);
+        }
+        .sync-dev-main { flex: 1; min-width: 0; }
+        .sync-dev-name {
+            font-size: 13px;
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .sync-dev-meta {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 9px;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+        .sync-dev-here { color: var(--success); }
+        .sync-mini {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 9px;
+            letter-spacing: 1px;
+            padding: 5px 9px;
+            border-radius: 6px;
+            background: none;
+            border: 1px solid var(--glass-border);
+            color: var(--text-dim);
+            cursor: pointer;
+        }
+        .sync-mini:hover { color: var(--accent-cyan); border-color: var(--accent-cyan); }
+        .sync-mini.danger:hover { color: var(--danger); border-color: var(--danger); }
+        .sync-foot {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            margin-top: var(--pad-sm);
+            padding-top: var(--pad-sm);
+            border-top: 1px solid var(--glass-border);
+            flex-wrap: wrap;
+        }
+        /* The control-bar button, showing state at a glance without being asked. */
+        #sync-btn.on { border-color: var(--success); color: var(--success); }
+
         /* === CHANGELOG MODAL === */
         .changelog-overlay {
             position: fixed;
@@ -1680,6 +1869,10 @@
                         <span class="toggle-slider"></span>
                     </label>
                 </div>
+                <!-- SYNC, not "Account" and not "Sign in". The word has to describe
+                     what the thing does, and what it does is make this install and the
+                     phone agree. -->
+                <button class="play-btn" id="sync-btn" title="Sync favorites, history and progress across your devices" style="font-size:10px;padding:8px 12px;letter-spacing:2px">&#8646; SYNC</button>
                 <button class="play-btn" id="play-btn" disabled title="Play selected episode (Enter)">&#9654; PLAY</button>
                 <button class="play-btn" id="dl-btn" disabled title="Download selected episode to ~/Videos/ANI-MATE/" style="font-size:10px;padding:8px 12px;letter-spacing:2px;border-color:var(--accent-cyan);color:var(--accent-cyan);background:linear-gradient(135deg, rgba(0,255,255,0.1), rgba(0,255,255,0.03))">&#8615; DL</button>
             </div>
@@ -4196,6 +4389,395 @@
             }
         } catch { /* not supported */ }
     }
+
+
+    /* ══ SYNC ════════════════════════════════════════════════════════════════════
+     * The engine is shared with the phone (server/ani-mate-sync.js); everything in
+     * here is the desktop's half: where its data lives, and what the panel looks
+     * like.
+     *
+     * ⚠ THE DESKTOP'S DATA IS NOT IN THIS PAGE. Favorites and history are two JSON
+     * files owned by the Node process, so the adapter below talks to /sync/local
+     * rather than touching anything directly. The phone's adapter uses the
+     * Capacitor filesystem instead, and that difference is the entire reason the
+     * engine takes an adapter at all.
+     */
+    const SYNC_SETTING_KEYS = {
+        /* Both apps already use these exact localStorage keys, which is why settings
+         * sync needed no migration on either side.
+         *
+         * quality is NOT here on purpose. It is the one preference that is about the
+         * hardware and the connection rather than the person: pushing a desktop's
+         * 1080p onto a phone on cell data would be a bug wearing a feature's clothes. */
+        prefer_english: 'ani-mate-english-titles',
+        autoplay: 'ani-mate-autoplay',
+        nsfw: 'ani-mate-nsfw',
+    };
+
+    let SYNC = null;
+    try {
+        SYNC = window.ANIMATE_SYNC.create({
+            platform: 'electron',
+            log: (m) => console.log('[sync] ' + m),
+            adapter: {
+                loadFavorites: async () => (await (await fetch('/sync/local')).json()).favorites,
+                loadWatch: async () => (await (await fetch('/sync/local')).json()).watch,
+                applyFavorites: (rows) => syncApplyLocal({ favorites: rows }),
+                applyWatch: (rows) => syncApplyLocal({ watch: rows }),
+                loadSettings: async () => Object.entries(SYNC_SETTING_KEYS).map(([k, ls]) => ({
+                    key: k, value: localStorage.getItem(ls) === 'true' ? 'true' : 'false',
+                })),
+                applySettings: async (rows) => {
+                    for (const row of rows) {
+                        const ls = SYNC_SETTING_KEYS[row.key];
+                        if (!ls) continue;          // an unknown key from a newer client
+                        localStorage.setItem(ls, row.value === 'true' ? 'true' : 'false');
+                    }
+                    /* Reflect it immediately. A setting that syncs but does not appear
+                     * until the next launch reads as not having synced. */
+                    syncReflectSettings();
+                },
+            },
+        });
+    } catch (e) {
+        console.warn('[sync] engine unavailable: ' + e.message);
+    }
+
+    async function syncApplyLocal(payload) {
+        await fetch('/sync/local', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+    }
+
+    function syncReflectSettings() {
+        const en = document.getElementById('english-title-toggle');
+        const ap = document.getElementById('autoplay-toggle');
+        const ns = document.getElementById('nsfw-toggle');
+        if (en) en.checked = localStorage.getItem('ani-mate-english-titles') === 'true';
+        if (ap) ap.checked = localStorage.getItem('ani-mate-autoplay') === 'true';
+        if (ns) ns.checked = localStorage.getItem('ani-mate-nsfw') === 'true';
+    }
+
+    /** Re-render whatever the sync brought in, so the screen is not a stale snapshot. */
+    async function syncRefreshViews() {
+        try {
+            syncReflectSettings();
+            if (typeof loadFavorites === 'function') await loadFavorites();
+            if (typeof loadContinue === 'function') await loadContinue();
+        } catch (e) { console.warn('[sync] view refresh: ' + e.message); }
+    }
+
+    function syncAgo(ms) {
+        if (!ms) return 'never';
+        const s = Math.round((Date.now() - ms) / 1000);
+        if (s < 60) return s + 's ago';
+        if (s < 3600) return Math.round(s / 60) + 'm ago';
+        if (s < 86400) return Math.round(s / 3600) + 'h ago';
+        return Math.round(s / 86400) + 'd ago';
+    }
+
+    function syncBtnState() {
+        const b = document.getElementById('sync-btn');
+        if (!b || !SYNC) return;
+        const st = SYNC.state();
+        b.classList.toggle('on', st.signedIn);
+        b.title = st.signedIn
+            ? 'Sync is on (' + (st.label || 'this device') + ') - last synced ' + syncAgo(st.lastSync)
+            : 'Sync favorites, history and progress across your devices';
+    }
+
+    let syncPanelEl = null;
+    let syncErrText = '';
+
+    function syncClose() {
+        if (SYNC) SYNC.cancelPairing();
+        if (syncPanelEl) { syncPanelEl.remove(); syncPanelEl = null; }
+        syncErrText = '';
+        syncBtnState();
+    }
+
+    function syncOpen(view) {
+        if (!SYNC) return;
+        if (!syncPanelEl) {
+            syncPanelEl = document.createElement('div');
+            syncPanelEl.className = 'sync-overlay';
+            syncPanelEl.addEventListener('click', (e) => {
+                if (e.target === syncPanelEl) syncClose();
+            });
+            document.body.appendChild(syncPanelEl);
+        }
+        syncRender(view || (SYNC.state().signedIn ? 'on' : 'off'));
+    }
+
+    /* Named for its subsystem: there is already an syncEsc() ~2,000 lines up, and it
+     * turns 0 into '' because it tests truthiness. Nothing here is numeric today,
+     * but shadowing a helper that differs on edge cases is how one gets found the
+     * hard way later. */
+    const syncEsc = (s) => String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+
+    async function syncRender(view, data) {
+        if (!syncPanelEl) return;
+        const st = SYNC.state();
+        const err = syncErrText ? '<div class="sync-err">' + syncEsc(syncErrText) + '</div>' : '';
+        let body = '';
+
+        if (view === 'off') {
+            body = `
+                <h2>SYNC</h2>
+                <div class="sync-sub">FAVORITES &middot; HISTORY &middot; PROGRESS</div>
+                ${err}
+                <p class="sync-prose">Keep your list and your place in every show the same on
+                   every device. There is no email and no password &mdash; nothing here knows
+                   who you are, and that is on purpose.</p>
+                <div class="sync-card" id="sync-do-create" style="cursor:pointer">
+                    <div class="sync-card-title">&#43; SYNC MY STUFF</div>
+                    <div class="sync-card-note">Start fresh. Everything already on this
+                        machine comes with you.</div>
+                </div>
+                <div class="sync-card" id="sync-do-pair" style="cursor:pointer">
+                    <div class="sync-card-title">&#8646; ADD THIS DEVICE</div>
+                    <div class="sync-card-note">Already syncing somewhere else? This device
+                        shows a code and you type it into the one you are already signed in
+                        on.</div>
+                </div>
+                <div class="sync-card" id="sync-do-recover" style="cursor:pointer">
+                    <div class="sync-card-title">&#8634; I HAVE A RECOVERY KEY</div>
+                    <div class="sync-card-note">Lost every device you had? The key is the
+                        way back.</div>
+                </div>
+                <div class="sync-foot"><span></span>
+                    <button class="sync-btn ghost" id="sync-x">CLOSE</button></div>`;
+        } else if (view === 'key') {
+            body = `
+                <h2>SYNC RECOVERY KEY</h2>
+                <div class="sync-sub">WRITE THIS DOWN NOW</div>
+                <div class="sync-secret">${syncEsc(data.recovery_key)}</div>
+                <div class="sync-warn">This is the only way back in if you lose your devices.
+                    <strong>We cannot send it to you, because we do not know who you are.</strong>
+                    You will not be shown it again.</div>
+                <div class="sync-row">
+                    <button class="sync-btn" id="sync-copy">COPY</button>
+                    <button class="sync-btn ghost" id="sync-key-done">I SAVED IT</button>
+                </div>`;
+        } else if (view === 'pair') {
+            body = `
+                <h2>ADD THIS DEVICE</h2>
+                <div class="sync-sub">EXPIRES IN <span id="sync-ttl">${data.expires_in}</span>S</div>
+                <div class="sync-code">${syncEsc(data.code)}</div>
+                <p class="sync-prose">On a device that is already syncing, open
+                   <strong>SYNC</strong> and enter this code. Waiting&hellip;</p>
+                <div class="sync-foot"><span></span>
+                    <button class="sync-btn ghost" id="sync-x">CANCEL</button></div>`;
+        } else if (view === 'recover') {
+            body = `
+                <h2>RECOVERY KEY</h2>
+                <div class="sync-sub">26 CHARACTERS, DASHES OPTIONAL</div>
+                ${err}
+                <div class="sync-row">
+                    <input class="sync-input" id="sync-key-in" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XX" autocomplete="off" spellcheck="false">
+                    <button class="sync-btn" id="sync-key-go">RESTORE</button>
+                </div>
+                <p class="sync-prose">Case and dashes do not matter. This gives this device a
+                   new key of its own; your other devices keep theirs.</p>
+                <div class="sync-foot"><span></span>
+                    <button class="sync-btn ghost" id="sync-back">BACK</button></div>`;
+        } else if (view === 'on') {
+            const devs = (data && data.devices) || [];
+            const rows = devs.map((d) => `
+                <div class="sync-dev">
+                    <div class="sync-dev-main">
+                        <div class="sync-dev-name">${syncEsc(d.label || 'Device')}</div>
+                        <div class="sync-dev-meta">${syncEsc((d.platform || 'unknown').toUpperCase())}
+                            &middot; ${d.current
+                                ? '<span class="sync-dev-here">THIS DEVICE</span>'
+                                : 'LAST SEEN ' + syncEsc(syncAgo(d.last_seen).toUpperCase())}</div>
+                    </div>
+                    <button class="sync-mini" data-rename="${syncEsc(d.id)}">RENAME</button>
+                    <button class="sync-mini danger" data-revoke="${syncEsc(d.id)}">${d.current ? 'SIGN OUT' : 'REMOVE'}</button>
+                </div>`).join('');
+            body = `
+                <h2>SYNC</h2>
+                <div class="sync-sub">ON &middot; LAST SYNCED ${syncEsc(syncAgo(st.lastSync).toUpperCase())}</div>
+                ${err}
+                <div class="sync-row" style="margin-bottom:var(--pad-sm)">
+                    <button class="sync-btn" id="sync-now">&#8646; SYNC NOW</button>
+                    <button class="sync-btn ghost" id="sync-add">&#43; ADD A DEVICE</button>
+                </div>
+                <div class="sync-card-title" style="margin:var(--pad-sm) 0 8px">YOUR DEVICES</div>
+                ${rows || '<div class="sync-card-note">Loading&hellip;</div>'}
+                <div class="sync-card-title" style="margin:var(--pad) 0 8px">RECOVERY</div>
+                <div class="sync-card">
+                    <div class="sync-card-note">A new key replaces the old one immediately and
+                        your signed-in devices stay signed in.</div>
+                    <div style="margin-top:10px"><button class="sync-btn ghost" id="sync-newkey">NEW RECOVERY KEY</button></div>
+                </div>
+                <div class="sync-foot">
+                    <button class="sync-btn danger" id="sync-nuke">DELETE EVERYTHING</button>
+                    <button class="sync-btn ghost" id="sync-x">CLOSE</button>
+                </div>`;
+        } else if (view === 'approve') {
+            body = `
+                <h2>ADD A DEVICE</h2>
+                <div class="sync-sub">ENTER THE CODE IT IS SHOWING</div>
+                ${err}
+                <div class="sync-row">
+                    <input class="sync-input" id="sync-code-in" placeholder="000000" inputmode="numeric" maxlength="7" autocomplete="off">
+                    <button class="sync-btn" id="sync-code-go">APPROVE</button>
+                </div>
+                <p class="sync-prose">Open SYNC on the other device and it will show you six
+                   digits. Only type in a code you asked for yourself.</p>
+                <div class="sync-foot"><span></span>
+                    <button class="sync-btn ghost" id="sync-back">BACK</button></div>`;
+        } else if (view === 'joined') {
+            body = `
+                <h2>DEVICE ADDED</h2>
+                <div class="sync-sub">${syncEsc((data.platform || 'device').toUpperCase())}</div>
+                <p class="sync-prose"><strong>${syncEsc(data.label)}</strong> is now syncing with
+                   this account. If that is not something you just did, remove it from your
+                   device list.</p>
+                <div class="sync-row">
+                    <button class="sync-btn" id="sync-see-devices">DEVICE LIST</button>
+                    <button class="sync-btn ghost" id="sync-x">DONE</button>
+                </div>`;
+        }
+
+        syncPanelEl.innerHTML = '<div class="sync-modal">' + body + '</div>';
+        syncErrText = '';
+        syncWire(view, data);
+        if (view === 'on' && !(data && data.devices)) {
+            try { syncRender('on', await SYNC.devices()); }
+            catch (e) { syncErrText = e.message; syncRender('on', { devices: [] }); }
+        }
+    }
+
+    function syncWire(view, data) {
+        const on = (id, fn) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('click', fn);
+        };
+        const fail = (e, back) => {
+            syncErrText = e && e.message ? e.message : String(e);
+            syncRender(back);
+        };
+        on('sync-x', syncClose);
+        on('sync-back', () => syncRender(SYNC.state().signedIn ? 'on' : 'off'));
+
+        on('sync-do-create', async () => {
+            const btn = document.getElementById('sync-do-create');
+            if (btn) btn.style.opacity = '.5';
+            try {
+                const r = await SYNC.createAccount(undefined);
+                await syncRefreshViews();
+                syncRender('key', r);
+            } catch (e) { fail(e, 'off'); }
+        });
+        on('sync-do-pair', async () => {
+            try {
+                const r = await SYNC.startPairing(
+                    async (res) => { await syncRefreshViews(); syncRender('on'); },
+                    () => { syncErrText = 'That code expired. Ask for a new one.'; syncRender('off'); });
+                syncRender('pair', r);
+            } catch (e) { fail(e, 'off'); }
+        });
+        on('sync-do-recover', () => syncRender('recover'));
+        on('sync-key-done', () => syncRender('on'));
+        on('sync-copy', async () => {
+            try {
+                await navigator.clipboard.writeText(data.recovery_key);
+                const b = document.getElementById('sync-copy');
+                if (b) b.textContent = 'COPIED';
+            } catch (e) { /* clipboard refused; the key is on screen to read */ }
+        });
+        on('sync-key-go', async () => {
+            const v = (document.getElementById('sync-key-in') || {}).value || '';
+            try {
+                await SYNC.recover(v, undefined);
+                await syncRefreshViews();
+                syncRender('on');
+            } catch (e) { fail(e, 'recover'); }
+        });
+        on('sync-now', async () => {
+            const b = document.getElementById('sync-now');
+            if (b) { b.disabled = true; b.textContent = 'SYNCING...'; }
+            try { await SYNC.sync(); await syncRefreshViews(); syncRender('on'); }
+            catch (e) { fail(e, 'on'); }
+        });
+        on('sync-add', () => syncRender('approve'));
+        on('sync-code-go', async () => {
+            const v = (document.getElementById('sync-code-in') || {}).value || '';
+            try { syncRender('joined', await SYNC.approve(v)); }
+            catch (e) { fail(e, 'approve'); }
+        });
+        on('sync-see-devices', () => syncRender('on'));
+        on('sync-newkey', async () => {
+            try { syncRender('key', await SYNC.newRecoveryKey()); }
+            catch (e) { fail(e, 'on'); }
+        });
+        on('sync-nuke', async () => {
+            /* Two steps, because this one is not undoable and there is no support
+             * address to write to afterwards. */
+            const b = document.getElementById('sync-nuke');
+            if (!b) return;
+            if (b.dataset.armed !== '1') {
+                b.dataset.armed = '1';
+                b.textContent = 'TAP AGAIN TO DELETE FOREVER';
+                return;
+            }
+            try { await SYNC.deleteAccount(); syncClose(); }
+            catch (e) { fail(e, 'on'); }
+        });
+
+        if (syncPanelEl) {
+            for (const el of syncPanelEl.querySelectorAll('[data-rename]')) {
+                el.addEventListener('click', async () => {
+                    const name = prompt('Name this device');
+                    if (!name) return;
+                    try { await SYNC.renameDevice(el.dataset.rename, name); syncRender('on'); }
+                    catch (e) { fail(e, 'on'); }
+                });
+            }
+            for (const el of syncPanelEl.querySelectorAll('[data-revoke]')) {
+                el.addEventListener('click', async () => {
+                    try {
+                        const r = await SYNC.revokeDevice(el.dataset.revoke);
+                        if (r.was_current) { syncClose(); return; }
+                        syncRender('on');
+                    } catch (e) { fail(e, 'on'); }
+                });
+            }
+        }
+
+        /* The pairing code expires on its own, and a countdown that is visibly
+         * running is the difference between "waiting" and "stuck". */
+        if (view === 'pair') {
+            let left = data.expires_in;
+            const tick = setInterval(() => {
+                const el = document.getElementById('sync-ttl');
+                if (!el) { clearInterval(tick); return; }
+                el.textContent = Math.max(0, --left);
+                if (left <= 0) clearInterval(tick);
+            }, 1000);
+        }
+    }
+
+    document.getElementById('sync-btn').addEventListener('click', () => syncOpen());
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && syncPanelEl) { syncClose(); e.stopPropagation(); }
+    });
+
+    /* Sync on launch and every two minutes while the app is open, but only if this
+     * device is actually signed in -- an unsigned install makes no network calls for
+     * this feature at all, which is what "optional" has to mean. */
+    if (SYNC && SYNC.state().signedIn) {
+        SYNC.sync().then(syncRefreshViews).catch((e) => console.warn('[sync] ' + e.message));
+        SYNC.startAuto(120000);
+    }
+    syncBtnState();
+    setInterval(syncBtnState, 30000);
 
     init();
     showChangelog();

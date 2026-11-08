@@ -2235,5 +2235,27 @@
         });
     }
 
+    /* ── THE HOOK SYNC NEEDS ──────────────────────────────────────────────────────
+     * Everything in this file is inside an IIFE, so ani-mate-sync-ui.js cannot reach
+     * renderFavorites() or loadContinue() to show what a sync just brought in. One
+     * exported function, rather than exposing the internals or moving them out.
+     *
+     * ⚠ state.favorites IS AN IN-MEMORY CACHE. Sync writes favorites.json directly, so
+     * re-rendering without re-reading would paint the list from before the sync and
+     * look exactly like a sync that did nothing. */
+    window.__animateRefreshAfterSync = async function () {
+        try {
+            state.favorites = await Storage.loadFavorites();
+            updatePanelFavStar();
+            if (state.activeTab === 'favs') renderFavorites();
+            else if (state.activeTab === 'continue') await loadContinue();
+            else if (state.activeTab === 'daily') renderDaily();
+            else if (state.activeTab === 'releases') renderReleases();
+            else if (state.activeTab === 'search' && state.results.length > 0) renderResults();
+        } catch (err) {
+            console.warn('[sync] refresh after sync: ' + err.message);
+        }
+    };
+
     init();
 })();

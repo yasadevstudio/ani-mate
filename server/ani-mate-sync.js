@@ -87,9 +87,112 @@
         return h.toString(36);
     }
 
+
+    /* ── SHAPE TRANSLATION ─────────────────────────────────────────────────────────
+     * ⛔ BOTH APPS STORE THE SAME RECORDS AND THE SYNC SCHEMA USES DIFFERENT NAMES, SO
+     * THIS MAPPING LIVES HERE AND NOWHERE ELSE. Verified 2026-11-08: the desktop's
+     * ani-mate-history.json entry and the phone's history.json entry are field for
+     * field identical, down to playback_episode being nulled when an episode finishes.
+     * Writing the mapping twice is how `position` ends up meaning the resume point on
+     * one device and the last-played episode on the other, and nobody notices until
+     * someone's progress is wrong.
+     *
+     * The desktop requires() this from its Node server, where the files actually live;
+     * the phone calls it in the WebView. Same function, two runtimes.
+     *
+     * ⚠ episodes_watched CROSSES AS A JSON STRING. D1 has no array type, and keeping it
+     * stringified on the wire means the content hash cannot differ between the two apps
+     * over array formatting.
+     *
+     * ⚠ quality IS NOT IN EITHER DIRECTION, ON PURPOSE. It is the one preference about
+     * the hardware and the connection rather than the person -- pushing a desktop's
+     * 1080p onto a phone on cell data is a bug wearing a feature's clothes. */
+    const shape = {
+        favToSync(f) {
+            return {
+                anime_id: String(f.id),
+                title: f.name || null,
+                title_english: f.title_english || null,
+                episodes: f.episodes || 0,
+                franchise_id: f.franchise_id || null,
+                cover: f.cover || null,
+                added_at: f.added ? (Date.parse(f.added) || null) : null,
+            };
+        },
+        favFromSync(row, prev) {
+            const id = String(row.anime_id);
+            const fav = {
+                id,
+                name: row.title || (prev && prev.name) || id,
+                episodes: row.episodes || 0,
+                added: new Date(row.added_at || row.updated_at || Date.now()).toISOString(),
+            };
+            if (row.title_english) fav.title_english = row.title_english;
+            if (row.franchise_id) fav.franchise_id = row.franchise_id;
+            if (row.cover) fav.cover = row.cover;
+            return fav;
+        },
+        watchToSync(h) {
+            return {
+                anime_id: String(h.anime_id),
+                title: h.title || null,
+                title_english: h.title_english || null,
+                episode: h.episode == null ? null : String(h.episode),
+                /* The resume POINT, which is what another device needs. `episode` is the
+                 * last one opened; playback_time is where in it we stopped, and
+                 * markWatched zeroes it when the episode finishes. */
+                position: h.playback_time || 0,
+                duration: h.duration == null ? null : h.duration,
+                mode: h.mode || null,
+                episodes_watched: JSON.stringify(
+                    Array.isArray(h.episodes_watched) ? h.episodes_watched.map(String) : []),
+                total_episodes: h.total_episodes == null ? null : h.total_episodes,
+            };
+        },
+        watchFromSync(row, prev) {
+            const id = String(row.anime_id);
+            let watched = [];
+            try {
+                const parsed = JSON.parse(row.episodes_watched || '[]');
+                if (Array.isArray(parsed)) watched = parsed.map(String);
+            } catch (e) { /* a malformed list is not worth losing the row over */ }
+            const rec = {
+                anime_id: id,
+                title: row.title || (prev && prev.title) || id,
+                episode: row.episode == null ? '1' : String(row.episode),
+                quality: (prev && prev.quality) || 'best',
+                mode: row.mode || 'sub',
+                /* The server's clock is a better recency signal than whatever the other
+                 * device's clock said, and `timestamp` is what orders CONTINUE. */
+                timestamp: new Date(row.updated_at || Date.now()).toISOString(),
+                episodes_watched: watched,
+                total_episodes: row.total_episodes == null ? null : row.total_episodes,
+                playback_time: row.position || 0,
+                playback_episode: (row.position || 0) > 0
+                    ? (row.episode == null ? null : String(row.episode)) : null,
+            };
+            if (row.title_english) rec.title_english = row.title_english;
+            return rec;
+        },
+        /* The three toggles both apps already keep under these exact localStorage keys,
+         * which is why settings sync needed no migration on either side. */
+        SETTING_KEYS: {
+            prefer_english: 'ani-mate-english-titles',
+            autoplay: 'ani-mate-autoplay',
+            nsfw: 'ani-mate-nsfw',
+        },
+    };
+
     function create(options) {
         const opt = options || {};
-        const endpoint = (opt.endpoint || DEFAULT_EDGE).replace(/\/+$/, '');
+        /* ANI_MATE_EDGE is set by the HOST PAGE, never by a query string or by
+         * anything a user can type. On desktop the local server writes it from the
+         * ANI_MATE_EDGE env var (that is how a dev points at a local worker); on the
+         * phone it is unset and the default stands. Keeping it out of the URL matters:
+         * a device token travels on these requests, and an endpoint anyone could flip
+         * from a link would be a way to collect one. */
+        const endpoint = (opt.endpoint || root.ANI_MATE_EDGE || DEFAULT_EDGE)
+            .replace(/\/+$/, '');
         const platform = opt.platform || 'electron';
         const adapter = opt.adapter;
         const store = opt.store || localStore();
@@ -390,9 +493,11 @@
         return self;
     }
 
-    root.ANIMATE_SYNC = { create, DEFAULT_EDGE };
+    root.ANIMATE_SYNC = { create, shape, DEFAULT_EDGE };
 
     /* The desktop loads this over HTTP into a browser page; the Worker and any Node-side
      * test load it as a module. Export both ways so neither has to care. */
-    if (typeof module !== 'undefined' && module.exports) module.exports = { create, DEFAULT_EDGE };
+    if (typeof module !== 'undefined' && module.exports) {
+        module.exports = { create, shape, DEFAULT_EDGE };
+    }
 })(typeof globalThis !== 'undefined' ? globalThis : this);
