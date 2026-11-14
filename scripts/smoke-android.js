@@ -319,42 +319,48 @@ function nodeDevice(label) {
             ok(!!pid, 'and it is running');
 
             section('its own check, and its UPDATE NOW button');
-            /* ⛔ WHAT IS ON TOP FIRST. Android's description of the screen lists what a
-             * page holds whether or not something else covers it. On 0.7.2 the first-run
-             * sync panel sits on top of the update box: tapping where UPDATE NOW is drawn
-             * taps the panel, and nothing starts (seen 2026-11-14, with the picture). So
-             * the app's own panels are answered first, the way a person has to, and
-             * UPDATE NOW is only tapped once none of them is left. Then the tap is
-             * checked: the box must have gone on to downloading, or it is tapped again.
-             * (Never LATER: that is the update box's other button.) */
+            /* ⛔ WHAT IS ON TOP, IN THE APP'S OWN ORDER. Android's description of the screen
+             * lists what a page holds whether or not something else covers it, so a tap at
+             * a button's place can land on whatever is drawn over it. Seen 2026-11-14, with
+             * pictures, both ways round:
+             *
+             *   the first-run sync panel (NOT NOW)   is drawn over the update box
+             *   the update box (UPDATE NOW)          is drawn over the what's-new panel (GOT IT)
+             *
+             * So: NOT NOW first whenever it is there. Then UPDATE NOW, and the tap is
+             * checked: the box must have gone on to downloading. Only if it did not, or
+             * the box is not up yet, is GOT IT tapped. (Never LATER: that is the update
+             * box's other button.) */
             let tapped = false;
-            let taps = 0;
+            const did = [];
             const words = [];
+            const read = () => { const nodes = screen().filter((n) => n.label); for (const n of nodes) if (!words.includes(n.label)) words.push(n.label); return nodes; };
+            const has1 = (nodes, re) => nodes.find((n) => re.test(n.label));
             const until1 = Date.now() + 200000;
-            while (Date.now() < until1 && !tapped) {
-                const nodes = screen().filter((n) => n.label);
-                for (const n of nodes) if (!words.includes(n.label)) words.push(n.label);
-                const away = nodes.find((n) => /^(GOT IT|NOT NOW)$/i.test(n.label));
-                if (away) { tapOn(away); await sleep(1800); continue; }
-                const go = nodes.find((n) => /^UPDATE NOW$/i.test(n.label));
-                if (!go) { await sleep(2500); continue; }
-                tapOn(go); taps++;
-                /* Did the box take it? It hides its two buttons and says it is downloading,
-                 * or Android's installer is already in front. */
-                for (let i = 0; i < 6 && !tapped; i++) {
-                    await sleep(1500);
-                    const after = screen().filter((n) => n.label);
-                    for (const n of after) if (!words.includes(n.label)) words.push(n.label);
-                    tapped = after.some((n) => /^(Downloading|Installing)/i.test(n.label) || /packageinstaller/.test(n.pkg))
-                        || versionNow() === want || !after.some((n) => /^UPDATE NOW$/i.test(n.label));
+            while (Date.now() < until1 && !tapped && did.length < 14) {
+                const nodes = read();
+                const syncPanel = has1(nodes, /^NOT NOW$/i);
+                if (syncPanel) { tapOn(syncPanel); did.push('NOT NOW'); await sleep(1800); continue; }
+                const go = has1(nodes, /^UPDATE NOW$/i);
+                if (go) {
+                    tapOn(go); did.push('UPDATE NOW');
+                    for (let i = 0; i < 6 && !tapped; i++) {
+                        await sleep(1500);
+                        const after = read();
+                        tapped = after.some((n) => /^(Downloading|Installing)/i.test(n.label) || /packageinstaller/.test(n.pkg))
+                            || versionNow() === want || !has1(after, /^UPDATE NOW$/i);
+                    }
+                    if (tapped) break;
                 }
-                if (!tapped && taps >= 3) break;
+                const whatsNew = has1(nodes, /^GOT IT$/i);
+                if (whatsNew) { tapOn(whatsNew); did.push('GOT IT'); await sleep(1800); continue; }
+                await sleep(2500);
             }
             const offer = words.find((w) => /→|->/.test(w) && /\d+\.\d+\.\d+/.test(w)) || words.find((w) => /UPDATE AVAILABLE/i.test(w)) || '';
-            ok(tapped, 'the app offers the update by itself (' + (offer || 'no offer seen') + ') and UPDATE NOW is tapped' + (taps > 1 ? ' (' + taps + ' taps)' : ''));
+            ok(tapped, 'the app offers the update by itself (' + (offer || 'no offer seen') + ') and UPDATE NOW is tapped (taps, in order: ' + did.join(', ') + ')');
             const progress = words.filter((w) => /^(Downloading|Installing|Update failed)/i.test(w));
             if (progress.length) console.log('        (its box said: ' + progress.slice(-3).join(' | ').slice(0, 200) + ')');
-            if (!tapped) console.log('        (words on its screen: ' + words.slice(0, 40).join(' | ').slice(0, 500) + ')');
+            if (!tapped) console.log('        (words on its screen: ' + words.slice(0, 60).join(' | ').slice(0, 700) + ')');
 
             section('Android\'s installer');
             let confirmed = false;
