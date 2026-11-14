@@ -1,0 +1,205 @@
+name: Self-update check
+
+# AFTER A RELEASE IS PUBLISHED: the releases before it, installed for real, updating
+# themselves to it through their own updaters. Everything before a tag checks the build
+# (release.yml, smoke.yml). This checks that the copies people already have can GET there:
+# that the release is where the old updater looks, that the file passes the old updater's
+# own check, that the old version lets go, and that what starts afterwards is the new
+# version with the library the old one had.
+#
+#     the "Run workflow" button on the Actions page, or
+#     git push origin HEAD:refs/heads/selfupdate/<anything>      (and remove it afterwards)
+#
+# Each job starts from the release one or two back (`back`), so a copy that skipped a
+# release is covered too. Nothing here builds, signs or publishes anything.
+#
+#   windows   the installer of the old release, then the app's own check, its two boxes
+#             answered, the installer it downloads, and the app it starts
+#   linux     the old AppImage, and the old .deb installed as a package (its updater runs
+#             dpkg as root, which this machine allows without a person)
+#   android   the old release's APK as phones have it, on an emulator: its own UPDATE NOW
+#             and Android's own "Update" are tapped
+on:
+  workflow_dispatch:
+  push:
+    branches: ['selfupdate/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selfupdate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GH_REPO: ${{ github.repository }}
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        back: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install the release that many back
+        shell: pwsh
+        run: |
+          $tags = @(gh release list --limit 4 --exclude-drafts --exclude-pre-releases --json tagName -q '.[].tagName')
+          $new = $tags[0]; $old = $tags[${{ matrix.back }}]
+          Write-Host "the latest release is $new; starting from $old"
+          "NEW=$($new.TrimStart('v'))" >> $env:GITHUB_ENV
+          $want = [int64](gh release view $old --json assets -q '.assets[] | select(.name | endswith(".exe")) | .size')
+          for ($i = 1; $i -le 3; $i++) {
+            gh release download $old --pattern 'ANI-MATE-Setup-*.exe' --output old-setup.exe --clobber
+            if ((Get-Item old-setup.exe).Length -eq $want) { break }
+            Write-Host "download $i was $((Get-Item old-setup.exe).Length) bytes, expected $want"
+          }
+          .\scripts\wait-installed.ps1 -Installer .\old-setup.exe -Version $old.TrimStart('v')
+
+      - name: It updates itself
+        shell: pwsh
+        run: node scripts/smoke-windows.js --self-update --to $env:NEW
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [AppImage, deb]
+        back: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: A display nobody sees, something to press Enter with, and what an AppImage needs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb xdotool
+          sudo apt-get install -y -qq libfuse2t64 || sudo apt-get install -y -qq libfuse2
+
+      - name: The release that many back
+        run: |
+          mapfile -t TAGS < <(gh release list --limit 4 --exclude-drafts --exclude-pre-releases --json tagName -q '.[].tagName')
+          NEW=${TAGS[0]}; OLD=${TAGS[${{ matrix.back }}]}
+          echo "the latest release is $NEW; starting from $OLD"
+          echo "NEW=${NEW#v}" >> "$GITHUB_ENV"
+          gh release download "$NEW" --pattern 'latest-linux.yml' --output latest-linux.yml
+          if [ "${{ matrix.kind }}" = "AppImage" ]; then
+            gh release download "$OLD" --pattern '*.AppImage' --output old.AppImage
+          else
+            gh release download "$OLD" --pattern '*.deb' --output old.deb
+            sudo apt-get install -y -qq ./old.deb
+            dpkg-query -W ani-mate
+            # The updater becomes root through pkexec where there is one. On a desktop that
+            # is a password box; here this user is simply allowed.
+            sudo mkdir -p /etc/polkit-1/rules.d
+            echo 'polkit.addRule(function(action, subject) { if (subject.user == "runner") { return polkit.Result.YES; } });' | sudo tee /etc/polkit-1/rules.d/49-selfupdate-check.rules > /dev/null
+            echo "ways to become root on this machine: $(command -v gksudo kdesudo pkexec beesu sudo | tr '\n' ' ')"
+          fi
+
+      - name: It updates itself
+        run: |
+          if [ "${{ matrix.kind }}" = "AppImage" ]; then
+            node scripts/selfupdate-linux.js old.AppImage "$NEW" latest-linux.yml
+          else
+            node scripts/selfupdate-linux.js --deb "$NEW" latest-linux.yml
+          fi
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [34, 36]
+        back: [1, 2]
+    env:
+      IMAGE: system-images;android-${{ matrix.api }};google_apis;x86_64
+      # Said for both tools: see smoke.yml.
+      ANDROID_AVD_HOME: /home/runner/.android/avd
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
+
+      - name: Let the emulator use the processor's virtualization
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Start an emulator
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "emulator" "$IMAGE" > /dev/null
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | avdmanager create avd --force -n smoke -k "$IMAGE" -d pixel_6
+          nohup "$ANDROID_HOME/emulator/emulator" -avd smoke -no-window -no-audio -no-boot-anim -no-snapshot \
+              -gpu swiftshader_indirect -memory 4096 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          sleep 20
+          if ! pgrep -f qemu-system > /dev/null; then echo "the emulator did not stay up:"; cat "$RUNNER_TEMP/emulator.log"; exit 1; fi
+
+      - name: Wait for Android to finish starting
+        run: |
+          timeout 300 adb wait-for-device || { echo "no emulator appeared in five minutes"; tail -40 "$RUNNER_TEMP/emulator.log"; exit 1; }
+          for i in $(seq 1 120); do
+            [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+            sleep 5
+          done
+          [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ] || { tail -40 "$RUNNER_TEMP/emulator.log"; exit 1; }
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          adb shell settings put global hide_error_dialogs 1
+          adb shell input keyevent 82
+          sleep 15
+
+      - name: The release that many back, as phones have it
+        run: |
+          mapfile -t TAGS < <(gh release list --limit 4 --exclude-drafts --exclude-pre-releases --json tagName -q '.[].tagName')
+          NEW=${TAGS[0]}; OLD=${TAGS[${{ matrix.back }}]}
+          echo "the latest release is $NEW; starting from $OLD"
+          echo "NEW=${NEW#v}" >> "$GITHUB_ENV"
+          gh release download "$OLD" --pattern '*-mobile.apk' --output "$RUNNER_TEMP/old.apk"
+          adb install "$RUNNER_TEMP/old.apk"
+          adb shell dumpsys package com.yasa.animate | grep -E 'versionName|versionCode'
+
+      - name: It updates itself
+        run: node scripts/smoke-android.js --self-update --to "$NEW" --shot "$RUNNER_TEMP/phone-selfupdate.png"
+
+      - name: A picture of where it ended
+        if: always()
+        run: adb exec-out screencap -p > "$RUNNER_TEMP/phone-end.png" 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-${{ matrix.api }}-from-${{ matrix.back }}-back
+          path: ${{ runner.temp }}/phone*.png
+          if-no-files-found: ignore
+          retention-days: 5

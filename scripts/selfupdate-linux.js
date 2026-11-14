@@ -7,6 +7,10 @@
  * its place with the library the old one had.
  *
  *     node scripts/selfupdate-linux.js <ANI-MATE-old.AppImage> <new version> [latest-linux.yml]
+ *     node scripts/selfupdate-linux.js --deb <new version> [latest-linux.yml]
+ *                                  the copy INSTALLED from the .deb (/opt/ANI-MATE): for a
+ *                                  machine CI lends, because that update replaces the
+ *                                  installed package (the updater runs dpkg as root)
  *
  *     curl -LO https://github.com/yasadevstudio/ani-mate/releases/download/v0.7.1/ANI-MATE-0.7.1.AppImage
  *     curl -LO https://github.com/yasadevstudio/ani-mate/releases/download/v0.7.2/latest-linux.yml
@@ -25,8 +29,9 @@
  * user runs. It needs Xvfb (see scripts/smoke-electron.js for getting one without
  * installing it) and xdotool, and it downloads the new AppImage, about 130 MB.
  *
- * The .deb goes another way (the updater asks for the password and runs dpkg), and this
- * does not cover it. Windows and Android: .github/workflows/selfupdate.yml.
+ * With --deb the update is the package itself: the updater asks to become root (pkexec, or
+ * sudo where there is no pkexec) and runs dpkg, so that mode needs a machine where that
+ * goes through without a person. Windows and Android: .github/workflows/selfupdate.yml.
  *
  * Exit code: 0 all passed, 1 a check failed, 2 it could not run.
  */
@@ -39,9 +44,11 @@ const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 const seed = require('../tests/smoke-seed');
 
-const OLD = process.argv[2];
+const DEB = process.argv[2] === '--deb';
+const OLD = DEB ? (process.env.ANIMATE_INSTALLED || '/opt/ANI-MATE/ani-mate') : process.argv[2];
 const WANT = process.argv[3];
 const YML = process.argv[4];
+const packageVersion = () => (spawnSync('dpkg-query', ['-W', '-f=${Version}', 'ani-mate'], { encoding: 'utf8' }).stdout || '').trim();
 const which = (name) => { const r = spawnSync('which', [name], { encoding: 'utf8' }); return r.status === 0 ? (r.stdout || '').trim().split('\n')[0] : ''; };
 const XVFB = process.env.ANIMATE_XVFB || which('Xvfb');
 /** Every process of this user whose command line or environment names the temp folder.
@@ -76,14 +83,22 @@ const rowsOf = (answer) => { const out = []; const walk = (v) => { if (Array.isA
 function freePort() { return new Promise((res, rej) => { const s = net.createServer(); s.once('error', rej); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => res(port)); }); }); }
 
 (async () => {
-    if (!OLD || !fs.existsSync(OLD) || !WANT) { console.log('usage: node scripts/selfupdate-linux.js <old AppImage> <new version> [latest-linux.yml]'); process.exit(2); }
+    if (!OLD || !fs.existsSync(OLD) || !WANT) { console.log('usage: node scripts/selfupdate-linux.js <old AppImage> <new version> [latest-linux.yml]   (or --deb <new version>)'); process.exit(2); }
+    if (DEB && process.env.CI !== 'true' && !process.argv.includes('--throwaway-machine')) {
+        console.log('\n  STOPPED: --deb lets the updater replace the INSTALLED package on this machine. It is for a machine'
+            + '\n  nobody uses ANI-MATE on (CI=true, or --throwaway-machine).\n');
+        process.exit(2);
+    }
     if (!XVFB || !fs.existsSync(XVFB)) { console.log('\n  SKIP: Xvfb is needed (ANIMATE_XVFB=/path/to/Xvfb). See the header of scripts/smoke-electron.js.\n'); process.exit(2); }
     if (!which('xdotool')) { console.log('\n  SKIP: xdotool is needed to answer the app\'s two boxes.\n'); process.exit(2); }
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'animate-selfupdate-'));
     const appDir = path.join(tmp, 'app');
     fs.mkdirSync(appDir, { recursive: true });
-    const oldFile = path.join(appDir, path.basename(OLD));
-    fs.copyFileSync(OLD, oldFile); fs.chmodSync(oldFile, 0o755);
+    /* An AppImage is copied, because its updater replaces the file it runs from. The
+     * installed copy is run where it is. */
+    const oldFile = DEB ? OLD : path.join(appDir, path.basename(OLD));
+    if (!DEB) { fs.copyFileSync(OLD, oldFile); fs.chmodSync(oldFile, 0o755); }
+    const packageWas = DEB ? packageVersion() : '';
 
     let display = 0;
     for (let n = 130; n < 150 && !display; n++) if (!fs.existsSync('/tmp/.X11-unix/X' + n)) display = n;
@@ -126,7 +141,7 @@ function freePort() { return new Promise((res, rej) => { const s = net.createSer
          * free, so it is held for the seconds that version needs to pick another. */
         const squatter = net.createServer();
         const held = await new Promise((res) => { squatter.once('error', () => res(false)); squatter.listen(7890, '127.0.0.1', () => res(true)); });
-        console.log('\n  old app    ' + path.basename(oldFile) + '   in ' + appDir);
+        console.log('\n  old app    ' + (DEB ? oldFile + '   (the installed package, version ' + packageWas + ')' : path.basename(oldFile) + '   in ' + appDir));
         console.log('  display    :' + display + ' (in memory)   port 7890 ' + (held ? 'held back for the user\'s own app' : 'is already in use by something else'));
 
         section('the released version starts and is given three favorites');
@@ -187,7 +202,8 @@ function freePort() { return new Promise((res, rej) => { const s = net.createSer
          * 7890, the user's. (The old version does not read it.) */
         fs.writeFileSync(path.join(userData, 'port.json'), JSON.stringify({ port: newPort }));
         how = await press('Update Ready');
-        const swapped = await until('the new file to take the old one\'s place', () => fs.readdirSync(appDir).some((f) => f.includes(WANT)) && !fs.existsSync(oldFile), 40000).catch(() => false);
+        const replaced = () => (DEB ? packageVersion() === WANT : fs.readdirSync(appDir).some((f) => f.includes(WANT)) && !fs.existsSync(oldFile));
+        const swapped = await until('the new version to take the old one\'s place', replaced, DEB ? 120000 : 40000).catch(() => false);
         if (!swapped) {
             console.log('        (' + how + '; nothing was replaced, so the same function its button calls is called from outside)');
             try {
@@ -198,8 +214,10 @@ function freePort() { return new Promise((res, rej) => { const s = net.createSer
                 how = 'called from outside';
             } catch (e) { how = 'could not be called from outside either: ' + e.message; }
         }
-        const files = await until('the new file', () => { const l = fs.readdirSync(appDir); return l.some((f) => f.includes(WANT)) && !fs.existsSync(oldFile) ? l : null; }, 60000).catch(() => fs.readdirSync(appDir));
-        ok(files.some((f) => f.includes(WANT)) && !fs.existsSync(oldFile), 'the old file is gone and the new one is in its folder (' + how + '): ' + files.join(', '));
+        await until('the new version', replaced, DEB ? 120000 : 60000).catch(() => false);
+        const files = fs.readdirSync(appDir);
+        if (DEB) ok(packageVersion() === WANT, 'the installed package is now version ' + packageVersion() + ', it was ' + packageWas + ' (' + how + ')');
+        else ok(files.some((f) => f.includes(WANT)) && !fs.existsSync(oldFile), 'the old file is gone and the new one is in its folder (' + how + '): ' + files.join(', '));
 
         section('what comes up in its place');
         const st = await until('the new version\'s server', () => status(newPort), 90000).catch(() => null);
@@ -208,11 +226,17 @@ function freePort() { return new Promise((res, rej) => { const s = net.createSer
         ok(oldExited, 'the old version has exited');
         const after = st ? rowsOf(await get(newPort, '/favorites')) : [];
         ok(seed.FAVORITES.every((f) => after.some((r) => r.id === f.id)), 'the three favorites the old version held are still there: ' + after.map((r) => r.name).join(', '));
-        const newFile = files.map((f) => path.join(appDir, f)).find((f) => f.includes(WANT));
+        let newFile = files.map((f) => path.join(appDir, f)).find((f) => f.includes(WANT));
+        if (DEB) {
+            /* What its updater downloaded and handed to dpkg is still in its cache. */
+            const pending = path.join(tmp, 'cache', 'ani-mate-updater', 'pending');
+            newFile = fs.existsSync(pending) ? fs.readdirSync(pending).map((f) => path.join(pending, f)).find((f) => /\.deb$/.test(f)) : null;
+        }
         if (newFile && fs.existsSync(newFile) && YML && fs.existsSync(YML)) {
             const sum = crypto.createHash('sha512').update(fs.readFileSync(newFile)).digest('base64');
-            const want = (/sha512: (\S+)/.exec(fs.readFileSync(YML, 'utf8')) || [])[1];
-            ok(sum === want, 'the file now in its folder is the published AppImage, byte for byte (sha512 ' + sum.slice(0, 16) + '...)');
+            const yml = fs.readFileSync(YML, 'utf8');
+            const want = DEB ? (/\.deb\s*\n\s*sha512: (\S+)/.exec(yml) || [])[1] : (/sha512: (\S+)/.exec(yml) || [])[1];
+            ok(sum === want, 'the file it ' + (DEB ? 'installed' : 'now runs from') + ' is the published ' + (DEB ? '.deb' : 'AppImage') + ', byte for byte (sha512 ' + sum.slice(0, 16) + '...)');
         }
         const servers = holding(tmp).filter((pid) => { try { return /ani-mate-server\.js/.test(fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8')); } catch (e) { return false; } });
         ok(servers.length === 1, 'one server is running, the new one (' + servers.length + ')');

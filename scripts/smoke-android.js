@@ -6,6 +6,12 @@
  *     node scripts/smoke-android.js              start the installed build and check it
  *     node scripts/smoke-android.js --seeded     and it must still hold that library
  *
+ *     node scripts/smoke-android.js --self-update --to 0.7.3
+ *                       AFTER a release: the RELEASED older build, as phones have it, finds
+ *                       the new release, and its own UPDATE NOW and Android's own "Update"
+ *                       are tapped. A released build cannot be examined from outside, so this
+ *                       part reads the screen and taps it, the way a person does.
+ *
  *     --no-sync         leave out the part that uses the live sync server
  *     --updater accept --update-url <a release's APK address>
  *     --updater refuse --update-url <the same>
@@ -199,6 +205,26 @@ function wordsOnScreen() {
     return out;
 }
 
+/** Everything on the screen that has words or can be tapped, with where it is. Android's
+ *  own description of the screen (uiautomator), which includes what a page shows. */
+function screen() {
+    adb('shell', 'uiautomator', 'dump', '/sdcard/animate-smoke-ui.xml');
+    const xml = sh('cat /sdcard/animate-smoke-ui.xml');
+    const plain = (t) => t.replace(/&#10;/g, ' ').replace(/&amp;/g, '&').replace(/&apos;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+    const out = [];
+    const re = /<node\b([^>]*)>/g;
+    let m;
+    while ((m = re.exec(xml))) {
+        const get = (k) => { const x = new RegExp('(?:^|\\s)' + k + '="([^"]*)"').exec(m[1]); return x ? x[1] : ''; };
+        const b = /\[(\d+),(\d+)\]\[(\d+),(\d+)\]/.exec(get('bounds'));
+        if (!b) continue;
+        out.push({ label: plain(get('text') || get('content-desc')).trim(), pkg: get('package'),
+                   x: Math.round((Number(b[1]) + Number(b[3])) / 2), y: Math.round((Number(b[2]) + Number(b[4])) / 2) });
+    }
+    return out;
+}
+const tapOn = (n) => adb('shell', 'input', 'tap', String(n.x), String(n.y));
+
 /** A picture of the screen as it is. */
 function takePicture(file) {
     try {
@@ -277,6 +303,68 @@ function nodeDevice(label) {
             + sh('getprop ro.product.model') + (emulator ? ', an emulator' : ''));
         console.log('  WebView    ' + (sh('dumpsys webviewupdate').split('\n').find((l) => /Current WebView package/.test(l)) || '(not reported)').trim());
         console.log('  the app    ' + (sh('dumpsys package ' + APP).split('\n').filter((l) => /versionName=|versionCode=/.test(l)).map((l) => l.trim()).join('  ') || '(no record)'));
+
+        // ── --self-update: the released build updates itself ───────────────────────
+        if (has('--self-update')) {
+            const want = opt('--to', '');
+            const versionNow = () => ((sh('dumpsys package ' + APP).split('\n').find((l) => /versionName=/.test(l)) || '').replace(/^.*versionName=/, '').trim());
+            const was = versionNow();
+            section('the released version (' + was + '), as phones have it');
+            adb('shell', 'appops', 'set', APP, 'REQUEST_INSTALL_PACKAGES', 'allow');     // "allow from this source", which a person grants once
+            adb('shell', 'am', 'force-stop', APP);
+            await sleep(800);
+            const r = adb('shell', 'am', 'start', '-W', '-n', APP + '/.MainActivity');
+            ok(/Status: ok/.test((r.stdout || '') + (r.stderr || '')), 'Android starts it');
+            const pid = await until('its process', () => (sh('pidof ' + APP).split(/\s+/)[0] || null), 30000).catch(() => null);
+            ok(!!pid, 'and it is running');
+
+            section('its own check, and its UPDATE NOW button');
+            let tapped = false;
+            const words = [];
+            const until1 = Date.now() + 170000;
+            while (Date.now() < until1 && !tapped) {
+                const nodes = screen().filter((n) => n.label);
+                for (const n of nodes) if (!words.includes(n.label)) words.push(n.label);
+                const go = nodes.find((n) => /^UPDATE NOW$/i.test(n.label));
+                if (go) { tapOn(go); tapped = true; break; }
+                /* Its own first-run panels sit on top of everything: put them away the way
+                 * a person does. (Never LATER: that is the update box's other button.) */
+                const away = nodes.find((n) => /^(GOT IT|NOT NOW)$/i.test(n.label));
+                if (away) { tapOn(away); await sleep(1500); continue; }
+                await sleep(2500);
+            }
+            const offer = words.find((w) => /→|->/.test(w) && /\d+\.\d+\.\d+/.test(w)) || words.find((w) => /UPDATE AVAILABLE/i.test(w)) || '';
+            ok(tapped, 'the app offers the update by itself (' + (offer || 'no offer seen') + ') and UPDATE NOW is tapped');
+            if (!tapped) console.log('        (words on its screen: ' + words.slice(0, 30).join(' | ').slice(0, 400) + ')');
+
+            section('Android\'s installer');
+            let confirmed = false;
+            const said = [];
+            const until2 = Date.now() + 200000;
+            while (tapped && Date.now() < until2 && versionNow() !== want) {
+                const nodes = screen().filter((n) => n.label && /packageinstaller|permissioncontroller|com\.android\.vending|gms/.test(n.pkg));
+                for (const n of nodes) if (!said.includes(n.label)) said.push(n.label);
+                const yes = nodes.find((n) => /^(Update|Install|Reinstall|Continue|Install anyway|OK)$/i.test(n.label));
+                if (yes) { tapOn(yes); confirmed = true; await sleep(3000); continue; }
+                await sleep(2000);
+            }
+            ok(confirmed || versionNow() === want, 'its updater downloaded the release, accepted it, and Android asked: ' + JSON.stringify(said.slice(0, 6)));
+
+            section('what is installed afterwards');
+            const now = await until('the new version', () => (versionNow() === want ? want : null), 120000, 2000).catch(() => versionNow());
+            ok(now === want, 'Android now has version ' + now + ' (it had ' + was + ')');
+            const open = screen().find((n) => /^Open$/i.test(n.label));
+            if (open) tapOn(open); else adb('shell', 'am', 'start', '-n', APP + '/.MainActivity');
+            await sleep(15000);
+            ok(!!sh('pidof ' + APP), 'the new version starts and stays up');
+            const crashed = sh('logcat -d -b crash').split('\n').filter((l) => l.includes(APP));
+            ok(crashed.length === 0, 'with nothing of the app\'s in the crash log' + (crashed.length ? ': ' + crashed.slice(0, 2).join(' | ').slice(0, 200) : ''));
+            const shown = screen().filter((n) => n.label && n.pkg === APP).map((n) => n.label);
+            console.log('        (on its screen now: ' + shown.slice(0, 8).join(' | ').slice(0, 260) + ')');
+            if (SHOT) takePicture(SHOT);
+            console.log('\n  ' + passes + ' passing, ' + fails + ' failing\n');
+            return finish(fails ? 1 : 0);
+        }
 
         // ── it starts ──────────────────────────────────────────────────────────────
         section('Android starts the app');

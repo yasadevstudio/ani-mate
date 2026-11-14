@@ -6,6 +6,10 @@
  *                                                         put a small library in it
  *     node scripts/smoke-windows.js --installed           the installed app
  *     node scripts/smoke-windows.js --installed --seeded  and it must still hold that library
+ *     node scripts/smoke-windows.js --self-update --to 0.7.3
+ *                                                         AFTER a release: the installed OLDER
+ *                                                         version finds it, downloads it and
+ *                                                         installs it through its own updater
  *     node scripts/smoke-windows.js                       this folder, on its own Electron
  *
  *     --exe <path>      another executable (a built dist\win-unpacked\ANI-MATE.exe)
@@ -37,6 +41,10 @@
  *     app closed the ordinary way leaves nothing running
  *   - (not counted) a search reaches the sources: that depends on what they make of this
  *     machine's address
+ *   - with --self-update: the old version's own check finds the new release; its
+ *     "Download now?" box is answered; its updater downloads the installer and accepts its
+ *     checksum; its "Restart now?" box is answered; the installer replaces the old version
+ *     and starts the new one; one installed copy, the new version, the same library
  *
  * Exit code: 0 all passed, 1 a check failed, 2 it could not run.
  */
@@ -127,6 +135,26 @@ async function closeFromThePage(debugPort) {
         try { ws.close(); } catch (e) { /* the window went, and the socket with it */ }
         return 'asked through the page';
     } catch (e) { return 'could not ask through the page: ' + (e && e.message || e); }
+}
+
+/* Press Enter in the box with this title, which is what a person does to take its first
+ * button. Says whether a window with that title was there to press it in. */
+function pressEnterIn(title) {
+    const out = powershell(
+        '$w = New-Object -ComObject WScript.Shell; $ok = $false; '
+        + 'for ($i = 0; $i -lt 40 -and -not $ok; $i++) { $ok = $w.AppActivate(\'' + title + '\'); if (-not $ok) { Start-Sleep -Milliseconds 500 } }; '
+        + 'if ($ok) { Start-Sleep -Milliseconds 600; $w.SendKeys(\'{ENTER}\') }; $ok');
+    return /True/i.test(out);
+}
+/* The same function a box's button calls, called in the app's main process from outside.
+ * Only used when a box could not be answered, and then that is said. */
+async function callInMain(inspectPort, expression) {
+    const list = await (await fetch('http://127.0.0.1:' + inspectPort + '/json', { signal: AbortSignal.timeout(4000) })).json();
+    const ws = new WebSocket(list[0].webSocketDebuggerUrl);
+    await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
+    ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression } }));
+    await sleep(800);
+    try { ws.close(); } catch (e) { /* the app may be going away */ }
 }
 
 function installed() {
@@ -235,10 +263,10 @@ async function attach(cdp, origin) {
 
     /** Start the app. `debug`: a debugging port, for the launches this script needs to
      *  look inside or to close from the page. */
-    function launch(exe, appDir, debug) {
+    function launch(exe, appDir, debug, extra) {
         const env = Object.assign({}, process.env, { ELECTRON_ENABLE_LOGGING: '1' });
         delete env.ELECTRON_RUN_AS_NODE;
-        const child = spawn(exe, (appDir ? [appDir] : []).concat(debug ? ['--remote-debugging-port=' + debug] : []),
+        const child = spawn(exe, (appDir ? [appDir] : []).concat(debug ? ['--remote-debugging-port=' + debug] : []).concat(extra || []),
                             { env, stdio: ['ignore', 'pipe', 'pipe'] });
         started.push(child);
         const out = { child, log: '', debug: debug || 0 };
@@ -272,7 +300,7 @@ async function attach(cdp, origin) {
         let exe = opt('--exe', '');
         let appDir = null;
         let packaged = !!exe;
-        if (!exe && (has('--installed') || has('--seed'))) {
+        if (!exe && (has('--installed') || has('--seed') || has('--self-update'))) {
             const found = installed();
             if (found.length !== 1) {
                 console.log('\n  Expected one installed ' + PRODUCT + ' under %LOCALAPPDATA%\\Programs, found ' + found.length + ': ' + JSON.stringify(found) + '\n');
@@ -336,6 +364,78 @@ async function attach(cdp, origin) {
             const files = fs.readdirSync(DATA).map((f) => f + ' ' + fs.statSync(path.join(DATA, f)).size).join(', ');
             console.log('        (its data folder now: ' + files + ')');
             fs.writeFileSync(STATE, JSON.stringify({ from: fileVersion(exe), favorites: seed.FAVORITES.map((f) => f.id), at: new Date().toISOString() }));
+            console.log('\n  ' + passes + ' passing, ' + fails + ' failing\n');
+            return finish(fails ? 1 : 0);
+        }
+
+        // ── --self-update: the installed older version updates itself ───────────────
+        if (has('--self-update')) {
+            const want = opt('--to', '');
+            const was = fileVersion(exe);
+            section('the installed version (' + was + ') starts and is given three favorites');
+            const inspect = await freePort();
+            const run = launch(exe, null, 0, ['--inspect=' + inspect]);
+            try { await until('its server', () => status(port), 90000); }
+            catch (e) {
+                console.log('  it did not come up: ' + e.message);
+                console.log(run.log.split('\n').slice(-25).map((l) => '    | ' + l).join('\n'));
+                return finish(2);
+            }
+            ok(true, 'it is up, on port ' + port);
+            for (const f of seed.FAVORITES.slice().reverse()) await post(port, '/favorites', f);
+            const before = favoriteRows(await api(port, '/favorites'));
+            ok(seed.FAVORITES.every((f) => before.some((r) => r.id === f.id)), 'its own POST /favorites stored all three: ' + before.map((r) => r.name).join(', '));
+
+            section('its own check, three seconds after its window opens');
+            const found = await until('its updater to report', () => (/Found version (\S+)/.exec(run.log) || [])[1], 90000).catch(() => null);
+            ok(found === want, 'its updater wrote "Found version ' + found + '"' + (found === want ? '' : ' (wanted ' + want + ')'));
+            const line = run.log.split('\n').find((l) => /Found version/.test(l));
+            if (line) console.log('        | ' + line.trim().slice(0, 200));
+
+            section('its "Download now?" box');
+            let how = pressEnterIn('Update Available') ? 'Enter pressed in the box' : 'the box was not found';
+            let started = await until('the download to start', () => /Downloading update from/i.test(run.log), 20000).catch(() => false);
+            if (!started) {
+                console.log('        (' + how + '; no download started, so the function its button calls is called from outside)');
+                await callInMain(inspect, 'process.mainModule.require("electron-updater").autoUpdater.downloadUpdate().then(() => 1, () => 0)').catch((e) => console.log('        (could not: ' + e.message + ')'));
+                how = 'called from outside';
+                started = await until('the download to start', () => /Downloading update from/i.test(run.log), 20000).catch(() => false);
+            }
+            ok(!!started, 'the download starts (' + how + ')');
+            await until('the download to finish', () => /New version \S+ has been downloaded/i.test(run.log) || /\[AutoUpdater\]|ERR_UPDATER|checksum mismatch/i.test(run.log), 10 * 60 * 1000, 1000).catch(() => false);
+            const downloaded = /New version (\S+) has been downloaded/i.exec(run.log);
+            ok(!!downloaded, 'its updater downloaded the installer and accepted its checksum' + (downloaded ? ': version ' + downloaded[1] : ''));
+            const partial = run.log.split('\n').find((l) => /To download:|Differential download/i.test(l));
+            if (partial) console.log('        | ' + partial.trim().slice(0, 200));
+            const bad = run.log.split('\n').filter((l) => /\[AutoUpdater\]|ERR_UPDATER|checksum mismatch/i.test(l));
+            ok(bad.length === 0, 'with no updater error in its output' + (bad.length ? ': ' + bad.slice(0, 2).join(' | ').slice(0, 300) : ''));
+
+            section('its "Restart now?" box');
+            how = pressEnterIn('Update Ready') ? 'Enter pressed in the box' : 'the box was not found';
+            let gone = await Promise.race([run.exited.then(() => true), sleep(25000).then(() => false)]);
+            if (!gone) {
+                console.log('        (' + how + '; the app did not quit, so the function its button calls is called from outside)');
+                await callInMain(inspect, 'process.mainModule.require("electron-updater").autoUpdater.quitAndInstall()').catch((e) => console.log('        (could not: ' + e.message + ')'));
+                how = 'called from outside';
+                gone = await Promise.race([run.exited.then(() => true), sleep(40000).then(() => false)]);
+            }
+            ok(gone, 'the old version quits to let the installer work (' + how + ')');
+
+            section('what the installer leaves, and what starts');
+            const swapped = await until('the new version to be installed', () => String(fileVersion(exe)).startsWith(want), 5 * 60 * 1000, 2000).catch(() => false);
+            ok(!!swapped, 'the installed program is now version ' + fileVersion(exe) + ' (it was ' + was + ')');
+            ok(installed().length === 1, 'and there is one installed copy, not two side by side: ' + JSON.stringify(installed()));
+            const st = await until('the new version to start by itself', async () => { const x = await status(port); return x && x.version === want ? x : null; }, 4 * 60 * 1000, 2000).catch(() => null);
+            ok(!!st, 'the app is started again by the installer and reports ' + (st ? st.version : 'nothing'));
+            const after = st ? favoriteRows(await api(port, '/favorites')) : [];
+            ok(seed.FAVORITES.every((f) => after.some((r) => r.id === f.id)), 'the three favorites the old version held are still there: ' + after.map((r) => r.name).join(', '));
+            const mains = named(image).filter((p) => !/--type=/.test(p.CommandLine || '') && !/ani-mate-server\.js/.test(p.CommandLine || ''));
+            ok(mains.length === 1, 'one copy of the app is running (' + mains.length + ')');
+            for (const m of mains) askToClose(m.ProcessId);
+            let left = [];
+            for (let i = 0; i < 20; i++) { left = named(image); if (!left.length) break; await sleep(1000); }
+            ok(left.length === 0, 'and closed the ordinary way it leaves nothing running (' + left.length + ' left)');
+            for (const p of named(image)) killTree(p.ProcessId);
             console.log('\n  ' + passes + ' passing, ' + fails + ' failing\n');
             return finish(fails ? 1 : 0);
         }
