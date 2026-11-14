@@ -327,6 +327,11 @@ function nodeDevice(label) {
              *   the first-run sync panel (NOT NOW)   is drawn over the update box
              *   the update box (UPDATE NOW)          is drawn over the what's-new panel (GOT IT)
              *
+             * That is how 0.7.1 to 0.7.3 draw them. From the version after 0.7.3 the
+             * app takes turns itself (the update box waits for the sync panel to be
+             * answered, and the sync panel waits for what's new), so only one of them
+             * is up at a time and the order below still holds.
+             *
              * So: NOT NOW first whenever it is there. Then UPDATE NOW, and the tap is
              * checked: the box must have gone on to downloading. Only if it did not, or
              * the box is not up yet, is GOT IT tapped. (Never LATER: that is the update
@@ -454,6 +459,33 @@ function nodeDevice(label) {
             + (answered.length === 5 ? '' : '; NOT ' + JSON.stringify(Object.fromEntries(Object.entries(plugins).filter(([k, v]) => k !== 'headers' && v !== 'ok')))));
         ok(plugins.headers.includes('ApkInstaller') && plugins.headers.includes('WebFetch'),
            'and the app\'s own two are registered (ApkInstaller, WebFetch): ' + plugins.headers.join(' '));
+
+        // ── the first-run panels, as the app left them ─────────────────────────────
+        /* The page puts up to three things over itself at a start: what's new, the update
+         * box, and the first-run sync question. They take turns (showUpdateDialog in
+         * mobile/www/js/ani-mate-ui.js, and the wait at the end of ani-mate-sync-ui.js).
+         * 0.7.2 and 0.7.3 did not: on a slow start the question opened before what's new
+         * and sat on top of it, and an update found later went up underneath the
+         * question. Whatever is up stays up until it is answered, so a look now, with
+         * nothing answered yet, sees it. They are answered at the very end of the run.
+         * Counted for the build under test only: an older build is what it is. */
+        let firstRun = null;
+        if (!has('--seed')) {
+            section('the first-run panels');
+            const notes = await page.evalJs(`try { return window.AniMateNotes.plain('## Fixed\\n\\n- **Subtitles** are back', 300); } catch (e) { return 'threw: ' + (e && e.message || e); }`);
+            ok(notes === 'Fixed\n\n• Subtitles are back', 'the notes file is in the app, and takes a release\'s marks off in this WebView: ' + JSON.stringify(notes));
+            const started = await until('the page to say it has started', () => page.evalJs(`return window.__animateStarted === true;`), 20000).catch(() => false);
+            ok(started === true, 'the page says its own start-up panel has had its turn');
+            const looks = [];
+            for (let i = 0; i < 5; i++) {
+                looks.push(await page.evalJs(`return { n: !!document.querySelector('.changelog-overlay'), u: !!document.getElementById('update-dialog-overlay'),
+                    q: !!document.querySelector('.sync-sheet'), due: !!(window.SYNC && window.SYNC.needsIntro && window.SYNC.needsIntro()) };`));
+                await sleep(1000);
+            }
+            const drawn = looks.map((l) => [l.n && 'what\'s new', l.u && 'the update box', l.q && 'the sync question'].filter(Boolean).join(' under ') || 'nothing');
+            ok(!looks.some((l) => l.q && (l.n || l.u)), 'the sync question is never up over what\'s new or the update box (five looks a second apart: ' + [...new Set(drawn)].join('; ') + ')');
+            firstRun = looks[looks.length - 1];
+        }
 
         // ── --seed: an older build, given a library ────────────────────────────────
         if (has('--seed')) {
@@ -675,16 +707,29 @@ function nodeDevice(label) {
         const errors = sh('logcat -d -s Capacitor/Console:E').split('\n').filter((l) => /Capacitor\/Console/.test(l));
         console.log('        (' + errors.length + ' error lines from the page\'s console' + (errors.length ? ', the first: ' + errors.slice(0, 3).map((l) => l.replace(/^.*Capacitor\/Console[^:]*:\s*/, '').slice(0, 150)).join(' || ') : '') + ')');
 
+        /* The first-run panels are answered here, at the end, so every check above ran on
+         * the app as someone opening it finds it. Two pictures when asked for: the screen
+         * as the app left it, and the library with the panels put away. */
+        if (SHOT) takePicture(SHOT.replace(/\.png$/, '-as-opened.png'));
+        const press = (re) => page.evalJs(`for (const b of document.querySelectorAll('button')) {
+            if (${re}.test(b.textContent.trim()) && b.getClientRects().length) { b.click(); return true; } } return false;`);
+        if (firstRun && firstRun.n && firstRun.due && !firstRun.q) {
+            /* In the app's order: what's new, and only then the sync question, which
+             * was waiting for it. */
+            section('the first-run panels, answered');
+            await press(/^GOT IT$/i);
+            const asked = await until('the sync question', () => page.evalJs(`return !!document.getElementById('s-intro-no') && !document.querySelector('.changelog-overlay');`), 8000).catch(() => false);
+            ok(asked === true, 'GOT IT on what\'s new, and the sync question comes up after it, on its own');
+            await press(/^NOT NOW$/i);
+            await sleep(1200);
+            const left = await page.evalJs(`return { q: !!document.querySelector('.sync-sheet'), due: !!(window.SYNC && window.SYNC.needsIntro && window.SYNC.needsIntro()) };`);
+            ok(!left.q && !left.due, 'NOT NOW puts it away, and it will not be asked again');
+        } else if (SHOT) {
+            /* Whatever is up, one at a time, the top one first. */
+            try { for (let i = 0; i < 4; i++) { if (!(await press(/^(NOT NOW|GOT IT|OK|CLOSE)$/i))) break; await sleep(1200); } } catch (e) { /* the picture is taken anyway */ }
+        }
         if (SHOT) {
-            /* Two pictures: the screen as the app left it, and the library with the
-             * first-run panels put away. */
-            takePicture(SHOT.replace(/\.png$/, '-as-opened.png'));
-            try {
-                await page.evalJs(`for (const id of ['sync-intro-no', 's-intro-no', 'changelog-close', 'changelog-ok']) { const b = document.getElementById(id); if (b) b.click(); }
-                    for (const b of document.querySelectorAll('button')) { if (/^(NOT NOW|GOT IT|OK|CLOSE)$/i.test(b.textContent.trim())) b.click(); }
-                    document.querySelector('[data-tab="favs"]').click(); return true;`);
-                await sleep(2500);
-            } catch (e) { /* the picture is taken anyway */ }
+            try { await page.evalJs(`document.querySelector('[data-tab="favs"]').click(); return true;`); await sleep(2500); } catch (e) { /* the picture is taken anyway */ }
             takePicture(SHOT);
         }
     } catch (e) {

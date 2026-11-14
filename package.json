@@ -12,7 +12,7 @@
     "sync:shared": "node scripts/sync-shared.js",
     "sync:verify": "node scripts/verify-shared.js",
     "test": "npm run test:offline && npm run test:live",
-    "test:ui": "node tests/franchise-module.test.js && node scripts/local-suite.js tests/franchise-ui.test.js && node tests/page-playback.test.js && node tests/budget.test.js",
+    "test:ui": "node tests/franchise-module.test.js && node scripts/local-suite.js tests/franchise-ui.test.js && node tests/page-playback.test.js && node tests/budget.test.js && node tests/notes.test.js",
     "test:live": "node scripts/test-live.js",
     "test:worker": "node worker/tests/run.mjs",
     "test:syntax": "node tests/ui-syntax.test.js && node scripts/verify-shared.js",

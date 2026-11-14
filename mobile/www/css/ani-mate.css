@@ -1009,6 +1009,16 @@ body {
     color: var(--text-dim);
     text-align: center;
 }
+/* Why an update did not go through, in the installer's own words. It sits above the
+   two buttons and stays until the next try. */
+.update-dialog-error {
+    font-family: 'Jura', sans-serif;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--danger);
+    text-align: center;
+    margin-bottom: 14px;
+}
 .update-dialog-buttons {
     display: flex;
     gap: 12px;

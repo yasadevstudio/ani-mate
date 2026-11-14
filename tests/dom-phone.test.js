@@ -26,6 +26,11 @@
  *   - a stream whose host refuses every request without its Referer still plays: the
  *     player's first attempt is refused, and its second loader, which goes through the
  *     native HTTP plugin (a stand-in here), gets through (row 23, what the app does)
+ *   - THE START-UP PANELS TAKE TURNS (added 2026-11-14, after a phone on 0.7.2 showed the
+ *     first-run sync question drawn over the update box): on a slow start the question
+ *     waits for what's new; an update found while the question is up waits for the
+ *     answer; a release's notes are shown without their "##" and "**"; and an update
+ *     that fails says why in the box, with its two buttons back
  *   - TWO PHONES SYNC, through the phone's own storage adapter and its own panel, against
  *     the real Worker run locally: an account made on one, joined from the other with
  *     the recovery key, one row per show on each though they knew it under different
@@ -59,7 +64,19 @@ const json = (obj, status) => ({ status: status || 200, headers: CORS.concat([{ 
 
 /* What the stand-ins were asked. */
 const asked = { search: [], episodes: [], play: [], allanime: [], allanimeRefused: 0, anilistDetails: 0, anilistRequests: 0, github: 0, other: [] };
-const world = { edgeDown: false, aaWindowStart: 0, aaInWindow: 0 };
+const world = { edgeDown: false, aaWindowStart: 0, aaInWindow: 0, releaseBody: null };
+
+/* A release's notes the way they are written for the release page, Windows line ends
+ * included, and what the update box should make of them: the marks gone, and the text
+ * stopped at the end of the last line that fits in 300 characters. */
+const NOTES_AS_WRITTEN = '## The right subtitles\r\n\r\nSome episodes were being shown the wrong English track.\r\n\r\n'
+    + '- **Signs only**: when the first English track holds only on-screen signs, the full one is used.\r\n'
+    + '- The `dub` transcript is the last resort, see [the notes](https://example.test/notes).\r\n\r\n'
+    + 'When an episode has several English tracks, ANI-MATE now counts the lines in each of them before it picks one '
+    + 'and it will keep going down the list until it finds one that has the dialogue in it and not only the signs';
+const NOTES_AS_SHOWN = 'The right subtitles\n\nSome episodes were being shown the wrong English track.\n\n'
+    + '\u2022 Signs only: when the first English track holds only on-screen signs, the full one is used.\n'
+    + '\u2022 The dub transcript is the last resort, see the notes.';
 
 function answer(req) {
     let u;
@@ -133,7 +150,7 @@ function answer(req) {
     if (u.hostname === 'api.github.com') {
         asked.github++;
         return json({ tag_name: 'v9.9.9', name: 'v9.9.9', html_url: 'https://github.com/YASADevStudio/ani-mate/releases/tag/v9.9.9',
-                      body: 'Fixed things.\n<img src="animate-dom-probe" onerror="window.__probeRan=2"> <b>bold</b>',
+                      body: world.releaseBody || 'Fixed things.\n<img src="animate-dom-probe" onerror="window.__probeRan=2"> <b>bold</b>',
                       assets: [{ name: 'ANI-MATE-9.9.9-mobile.apk',
                                  browser_download_url: 'https://github.com/yasadevstudio/ani-mate/releases/download/v9.9.9/ANI-MATE-9.9.9-mobile.apk' }] });
     }
@@ -184,6 +201,25 @@ const MINIMAL_CAPACITOR = `(() => {
         window.__nativeCall(JSON.stringify({ id, opts: Object.assign({ method }, o) })); });
     window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'android',
         Plugins: { CapacitorHttp: { get: (o) => call('GET', o), post: (o) => call('POST', o), request: (o) => call((o && o.method) || 'GET', o) } } };
+})();`;
+
+/* As much of a phone as the update box and a slow start need: a splash screen that takes
+ * its time going away (the page waits for it before it does anything else), and an
+ * installer that does what this suite tells it. No storage and no HTTP plugin, so the
+ * page keeps using what a browser has for those. How slow the splash is comes from the
+ * page's own storage, which the suite fills before it loads the page. */
+const PHONE_FOR_THE_UPDATE_BOX = `(() => {
+    let splashMs = 0;
+    try { splashMs = Number(localStorage.getItem('__suite_splash_ms') || 0); } catch (e) {}
+    window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'android', Plugins: {
+        SplashScreen: { hide: () => new Promise((r) => setTimeout(r, splashMs)) },
+        ApkInstaller: {
+            addListener: async (name, fn) => { window.__apkProgress = fn; return { remove: () => { window.__apkProgress = null; } }; },
+            downloadAndInstall: (o) => new Promise((res, rej) => {
+                window.__apkAsked = (window.__apkAsked || 0) + 1;
+                window.__apk = { url: o && o.url, done: () => res({ installed: true }), fail: (m) => rej(new Error(m)) };
+            }),
+        } } };
 })();`;
 
 /* What Android gives Capacitor's real script before it runs: the bridge object it posts
@@ -462,6 +498,125 @@ const ANDROID_FOR_THE_BRIDGE = `
                 ok(more > 5, 'and it keeps playing (' + (more && more.toFixed ? more.toFixed(1) : more) + 's)');
                 ok(pg.thrown.length === 0, 'with nothing thrown' + (pg.thrown.length ? ': ' + JSON.stringify(pg.thrown.slice(0, 3)) : ''));
             } finally { await pg.close(); }
+        }
+
+        // ── the start-up panels take turns, and what the update box says ───────
+        {
+            const pu = await cdp.open(CDP, 'about:blank');
+            try {
+                world.edgeDown = false;
+                await pu.intercept('http', answer);
+                await pu.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+                await pu.send('Page.addScriptToEvaluateOnNewDocument', { source: PHONE_FOR_THE_UPDATE_BOX });
+                const HERE = PHONE2 || PHONE;
+                /* A cold start with exactly this in the page's storage. */
+                const start = async (keep) => {
+                    await pu.send('Page.navigate', { url: HERE + '/css/ani-mate.css' });
+                    await pu.settle(400);
+                    await pu.evalJs(`localStorage.clear(); const k = ${JSON.stringify(keep || {})}; for (const n in k) localStorage.setItem(n, k[n]); return true;`);
+                    await pu.send('Page.navigate', { url: HERE + '/index.html' });
+                    await pu.until(`return typeof window.API === 'object' && !!document.getElementById('search-input') && document.readyState === 'complete';`, 15000);
+                };
+                const panels = () => pu.evalJs(`return { sheet: !!document.querySelector('.sync-sheet'), intro: !!document.getElementById('s-intro-no'),
+                    whatsNew: !!document.querySelector('.changelog-overlay'), update: !!document.getElementById('update-dialog-overlay') };`);
+                const click = (sel) => pu.evalJs(`const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return false; e.click(); return true;`);
+                /* Is this button what a finger lands on, or is something drawn over it? */
+                const reach = (id) => pu.evalJs(`const b = document.getElementById(${JSON.stringify(id)}); if (!b) return 'not there';
+                    const r = b.getBoundingClientRect(); const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                    return top === b || b.contains(top) ? 'reachable' : 'covered by ' + (top ? (top.id || top.className || top.tagName) : 'nothing');`);
+                /* What the update box shows right now: only what is drawn. */
+                const box = () => pu.evalJs(`const o = document.getElementById('update-dialog-overlay'); if (!o) return null;
+                    const shown = (e) => !!e && e.getClientRects().length > 0;
+                    const n = o.querySelector('#update-notes');
+                    return { asked: window.__apkAsked || 0, url: (window.__apk || {}).url || '',
+                             notes: n ? n.textContent : null, elementsInNotes: n ? n.querySelectorAll('*').length : -1,
+                             reasonAboveButtons: (() => { const e = o.querySelector('#update-error'), bt = o.querySelector('#update-buttons');
+                                 return shown(e) && shown(bt) && e.getBoundingClientRect().bottom <= bt.getBoundingClientRect().top + 1; })(),
+                             words: [...o.querySelectorAll('*')].filter((e) => e.children.length === 0 && shown(e)).map((e) => e.textContent.trim()).filter(Boolean),
+                             buttons: [...o.querySelectorAll('button')].filter(shown).map((b) => b.textContent.trim()) };`);
+                const LATER_TODAY = JSON.stringify({ version: '9.9.9', at: Date.now() });
+
+                section('a slow start: the first-run sync question waits for what\'s new');
+                await start({ '__suite_splash_ms': '2500', 'ani-mate-update-dismissed': LATER_TODAY });
+                await pu.until(`return !!document.querySelector('.changelog-overlay');`, 12000);
+                let p = await panels();
+                ok(p.whatsNew && !p.sheet, 'the what\'s-new panel comes up with nothing on top of it (sync sheet there: ' + p.sheet + ')');
+                await pu.settle(2000);
+                p = await panels();
+                ok(p.whatsNew && !p.sheet, 'and the sync question stays away while it is up');
+                await click('.changelog-dismiss');
+                const askedAfter = await pu.until(`return !!document.getElementById('s-intro-no');`, 6000);
+                p = await panels();
+                ok(!!askedAfter && !p.whatsNew, 'GOT IT, and then it is asked, on its own');
+                const seenVersion = await pu.evalJs(`return localStorage.getItem('ani-mate-last-version') || '';`);
+
+                section('an update found while the sync question is up');
+                world.releaseBody = NOTES_AS_WRITTEN;
+                const githubBefore = asked.github;
+                await start({ 'ani-mate-last-version': seenVersion });
+                const introFirst = await pu.until(`return !!document.getElementById('s-intro-no');`, 8000);
+                ok(!!introFirst, 'with what\'s new already seen, the sync question is the first thing up');
+                for (const t0 = Date.now(); asked.github === githubBefore && Date.now() - t0 < 12000;) await pu.settle(200);
+                await pu.settle(1200);
+                p = await panels();
+                ok(asked.github === githubBefore + 1 && p.sheet && !p.update,
+                   'the page has found the update and does not put its box up under the question (GitHub asked ' + (asked.github - githubBefore) + ' time(s), box there: ' + p.update + ')');
+                await click('#s-intro-no');
+                const boxUp = await pu.until(`return !!document.getElementById('update-dialog-overlay');`, 4000);
+                p = await panels();
+                ok(!!boxUp && !p.sheet, 'NOT NOW, and the update box takes its turn');
+                let r = await reach('update-install');
+                ok(r === 'reachable', 'UPDATE NOW is what a finger lands on: ' + r);
+
+                section('what the update box says of the release');
+                let b = await box();
+                ok(!!b && b.notes === NOTES_AS_SHOWN, 'the notes without their marks, stopped where a line ends: ' + JSON.stringify(b && b.notes));
+                ok(!!b && b.notes !== null && !/(^|\n)#|\*\*|`|\]\(|\r/.test(b.notes), 'no hashes, stars, ticks or link brackets on screen');
+                ok(!!b && b.elementsInNotes === 0, 'and still written as text: no element was made from them');
+
+                section('an update that does not go through says why');
+                const REASON = 'Download failed: no room to store the update';
+                await click('#update-install');
+                await pu.until(`return (window.__apkAsked || 0) === 1;`, 4000);
+                b = await box();
+                ok(!!b && b.asked === 1 && /\/releases\/download\/v9\.9\.9\/ANI-MATE-9\.9\.9-mobile\.apk$/.test(b.url) && b.buttons.join() === 'HIDE',
+                   'UPDATE NOW hands the installer the release\'s own file, and the box shows HIDE while it downloads: ' + JSON.stringify(b && { url: b.url, buttons: b.buttons }));
+                await pu.evalJs(`window.__apk.fail(${JSON.stringify(REASON)}); return true;`);
+                await pu.until(`const e = document.getElementById('update-install'); return !!e && e.getClientRects().length > 0;`, 4000);
+                b = await box();
+                ok(!!b && b.words.includes(REASON) && b.reasonAboveButtons, 'the installer\'s reason is on screen, above the buttons: "' + REASON + '"');
+                ok(!!b && b.buttons.includes('LATER') && b.buttons.includes('UPDATE NOW') && !b.buttons.includes('HIDE'), 'with LATER and UPDATE NOW back under it: ' + JSON.stringify(b && b.buttons));
+                await click('#update-install');
+                await pu.until(`return (window.__apkAsked || 0) === 2;`, 4000);
+                b = await box();
+                ok(!!b && b.asked === 2 && !b.words.includes(REASON) && b.buttons.join() === 'HIDE', 'a second try takes the old reason away while it downloads');
+                await pu.evalJs(`window.__apk.fail(''); return true;`);
+                await pu.until(`const e = document.getElementById('update-install'); return !!e && e.getClientRects().length > 0;`, 4000);
+                b = await box();
+                ok(!!b && b.words.includes('The update could not be installed'), 'a failure that gives no reason still says, in the box, that it failed');
+                await click('#update-install');
+                await pu.until(`return (window.__apkAsked || 0) === 3;`, 4000);
+                await pu.evalJs(`window.__apk.done(); return true;`);
+                const installing = await pu.until(`const e = document.getElementById('update-progress-text'); return !!e && e.getClientRects().length > 0 && e.textContent === 'Installing...';`, 4000);
+                b = await box();
+                ok(!!installing && !!b && !b.words.some((w) => /could not|failed/i.test(w)), 'and a try that goes through says Installing..., with no failure left on screen');
+
+                section('a first launch with an update waiting: what\'s new, the update box, then the sync question');
+                world.releaseBody = null;
+                await start({});
+                await pu.until(`return !!document.getElementById('update-dialog-overlay');`, 12000);
+                p = await panels();
+                r = await reach('update-install');
+                ok(p.update && p.whatsNew && !p.sheet && r === 'reachable', 'the update box is up over what\'s new, its UPDATE NOW ' + r + ', and the sync question is not up');
+                await click('#update-later');
+                await pu.settle(1800);
+                p = await panels();
+                ok(!p.update && p.whatsNew && !p.sheet, 'LATER: what\'s new is still to be answered, and the question still waits');
+                await click('.changelog-dismiss');
+                const askedLast = await pu.until(`return !!document.getElementById('s-intro-no');`, 6000);
+                ok(!!askedLast, 'GOT IT, and the sync question comes last');
+                ok(pu.thrown.length === 0, 'nothing was thrown in any of it' + (pu.thrown.length ? ': ' + JSON.stringify(pu.thrown.slice(0, 3)) : ''));
+            } finally { world.releaseBody = null; await pu.close(); }
         }
 
         // ── two phones ─────────────────────────────────────────────────────────────

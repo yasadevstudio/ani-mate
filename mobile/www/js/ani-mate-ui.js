@@ -2413,9 +2413,33 @@
         return typeof url === 'string' && url.toLowerCase().startsWith(want);
     }
 
+    /* ── ONE PANEL AT A TIME ───────────────────────────────────────────────────────
+     * The sync panel is a full-screen sheet drawn above this box (.sync-sheet). An update
+     * found while that sheet was open went up underneath it: the box showed through the
+     * sheet and its buttons were out of reach until the sheet was dealt with. Seen
+     * 2026-11-14 on 0.7.2, where a phone that had not answered the first-run sync
+     * question got the two on top of each other at every start.
+     *
+     * The sheet's first-run question already waits for this box (ani-mate-sync-ui.js).
+     * This is the other half: while a sheet is open the box waits, and it goes up the
+     * moment the sheet is gone. Whichever is up first is answered first. */
+    let updateWaiting = null;
+
     function showUpdateDialog(version, downloadUrl, changelog) {
         if (!isReleaseDownload(downloadUrl)) {
             console.warn('Update skipped: the download is not on this project\'s release page');
+            return;
+        }
+        if (updateWaiting) { updateWaiting.disconnect(); updateWaiting = null; }
+        if (document.querySelector('.sync-sheet')) {
+            /* The sheet is a child of <body>, put there and taken away whole. */
+            updateWaiting = new MutationObserver(() => {
+                if (document.querySelector('.sync-sheet')) return;
+                updateWaiting.disconnect();
+                updateWaiting = null;
+                showUpdateDialog(version, downloadUrl, changelog);
+            });
+            updateWaiting.observe(document.body, { childList: true });
             return;
         }
         // Remove existing dialog if any
@@ -2438,6 +2462,7 @@
                         <button class="update-btn-later" id="update-hide">HIDE</button>
                     </div>
                 </div>
+                <div class="update-dialog-error hidden" id="update-error" role="alert"></div>
                 <div class="update-dialog-buttons" id="update-buttons">
                     <button class="update-btn-later" id="update-later">LATER</button>
                     <button class="update-btn-install" id="update-install">UPDATE NOW</button>
@@ -2447,9 +2472,14 @@
         document.body.appendChild(overlay);
 
         /* ⚠ THE NOTES ARE WRITTEN AS TEXT. They are whatever the release page says,
-         * fetched over the network, and they used to be put into the page as HTML. */
+         * fetched over the network, and they used to be put into the page as HTML.
+         * They are written for that page, so as typed they read "## Heading" and
+         * "**bold**": ani-mate-notes.js takes those marks off and cuts the text where a
+         * sentence ends. It returns a string; nothing here becomes an element. */
         const notes = overlay.querySelector('#update-notes');
-        const text = String(changelog || '').trim().substring(0, 300);
+        const text = window.AniMateNotes
+            ? window.AniMateNotes.plain(changelog, 300)
+            : String(changelog || '').trim().substring(0, 300);
         if (text) {
             notes.style.whiteSpace = 'pre-line';
             notes.textContent = text;
@@ -2475,10 +2505,12 @@
         const progress = document.getElementById('update-progress');
         const progressFill = document.getElementById('update-progress-fill');
         const progressText = document.getElementById('update-progress-text');
+        const errorLine = document.getElementById('update-error');
 
         // Switch to progress view
         buttons.classList.add('hidden');
         progress.classList.remove('hidden');
+        if (errorLine) { errorLine.classList.add('hidden'); errorLine.textContent = ''; }
 
         if (ApkInstaller) {
             // Listen for progress events
@@ -2496,7 +2528,14 @@
                 progressText.textContent = 'Installing...';
                 // Dialog stays until Android installer takes over
             } catch (e) {
-                progressText.textContent = 'Update failed: ' + (e.message || 'Unknown error');
+                /* ⚠ THE REASON STAYS ON SCREEN. It used to be written into the progress
+                 * line one statement before that line was hidden, so every failure read
+                 * the same: "Update failed. Try again later." The installer says which
+                 * it was in plain words (no room, a connection that dropped, a download
+                 * that is not this app: see ApkInstaller.java). Those words are shown
+                 * above the two buttons, and stay until the next try. */
+                const why = String((e && e.message) || '').trim() || 'The update could not be installed';
+                if (errorLine) { errorLine.textContent = why; errorLine.classList.remove('hidden'); }
                 buttons.classList.remove('hidden');
                 progress.classList.add('hidden');
                 toast('Update failed. Try again later.', 'error');
@@ -2695,6 +2734,12 @@
 
         // Show changelog on version update
         showChangelog();
+        /* From here the page's own start-up panel has had its turn. The sync panel's
+         * first-run question waits for this (ani-mate-sync-ui.js). It used to wait only
+         * for the what's-new panel to be gone, and on a slow start it looked before the
+         * line above had run: it opened first and what's-new came up underneath it.
+         * Seen on an Android 14 emulator, 2026-11-14. */
+        window.__animateStarted = true;
 
         // Fill the content index in the background on a fresh install, so a query
 

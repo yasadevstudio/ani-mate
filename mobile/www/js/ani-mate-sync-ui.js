@@ -743,6 +743,11 @@
         const introWait = setInterval(() => {
             waited += 800;
             if (!SYNC.needsIntro() || waited > 120000) { clearInterval(introWait); return; }
+            /* ⚠ NOT BEFORE THE PAGE HAS STARTED. ani-mate-ui.js reads the phone's storage
+             * before it puts the what's-new panel up, and on a slow start that took longer
+             * than the first look here: this opened, and what's-new came up underneath it.
+             * The page says when its own panel has had its turn. */
+            if (!window.__animateStarted) return;
             if (document.querySelector('.changelog-overlay, .update-dialog') || sheet) return;
             if (!document.getElementById('sync-open-btn')) return;      // UI not mounted yet
             clearInterval(introWait);

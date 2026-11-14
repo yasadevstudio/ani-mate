@@ -78,8 +78,8 @@ for (const [label, src] of [['ui/ani-mate-ui.html', main],
 /* ── every other shipped JS file ────────────────────────────────────────────────── */
 const FILES = ['server/ani-mate-franchise.js', 'server/ani-mate-sync.js',
                'server/ani-mate-server.js', 'mobile/www/js/ani-mate-ui.js',
-               'mobile/www/js/ani-mate-sync.js', 'scripts/verify-shared.js',
-               'tests/lift-js.js'];
+               'mobile/www/js/ani-mate-sync.js', 'mobile/www/js/ani-mate-notes.js',
+               'scripts/verify-shared.js', 'tests/lift-js.js'];
 console.log('');
 for (const f of FILES) {
     const p = path.join(ROOT, f);
@@ -108,6 +108,11 @@ const srv = fs.readFileSync(path.join(ROOT, 'server/ani-mate-server.js'), 'utf8'
 ok(srv.includes("pathname === '/ani-mate-franchise.js'"),
    'server/ani-mate-server.js serves it — a page asking for a route the server does not '
    + 'have gets a 404 and silently loses the feature');
+
+/* ── the phone's page loads what its update box asks ───────────────────────────── */
+ok(/<script src="js\/ani-mate-notes\.js">/.test(mi) && mi.indexOf('js/ani-mate-notes.js') < mi.indexOf('js/ani-mate-ui.js'),
+   'mobile/www/index.html loads ani-mate-notes.js before ani-mate-ui.js: without it the '
+   + 'update box shows a release\'s notes as typed, hashes and stars included');
 
 console.log('\n  ' + passes + ' passing, ' + fails + ' failing\n');
 process.exit(fails ? 1 : 0);
