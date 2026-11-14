@@ -319,23 +319,42 @@ function nodeDevice(label) {
             ok(!!pid, 'and it is running');
 
             section('its own check, and its UPDATE NOW button');
+            /* ⛔ WHAT IS ON TOP FIRST. Android's description of the screen lists what a
+             * page holds whether or not something else covers it. On 0.7.2 the first-run
+             * sync panel sits on top of the update box: tapping where UPDATE NOW is drawn
+             * taps the panel, and nothing starts (seen 2026-11-14, with the picture). So
+             * the app's own panels are answered first, the way a person has to, and
+             * UPDATE NOW is only tapped once none of them is left. Then the tap is
+             * checked: the box must have gone on to downloading, or it is tapped again.
+             * (Never LATER: that is the update box's other button.) */
             let tapped = false;
+            let taps = 0;
             const words = [];
-            const until1 = Date.now() + 170000;
+            const until1 = Date.now() + 200000;
             while (Date.now() < until1 && !tapped) {
                 const nodes = screen().filter((n) => n.label);
                 for (const n of nodes) if (!words.includes(n.label)) words.push(n.label);
-                const go = nodes.find((n) => /^UPDATE NOW$/i.test(n.label));
-                if (go) { tapOn(go); tapped = true; break; }
-                /* Its own first-run panels sit on top of everything: put them away the way
-                 * a person does. (Never LATER: that is the update box's other button.) */
                 const away = nodes.find((n) => /^(GOT IT|NOT NOW)$/i.test(n.label));
-                if (away) { tapOn(away); await sleep(1500); continue; }
-                await sleep(2500);
+                if (away) { tapOn(away); await sleep(1800); continue; }
+                const go = nodes.find((n) => /^UPDATE NOW$/i.test(n.label));
+                if (!go) { await sleep(2500); continue; }
+                tapOn(go); taps++;
+                /* Did the box take it? It hides its two buttons and says it is downloading,
+                 * or Android's installer is already in front. */
+                for (let i = 0; i < 6 && !tapped; i++) {
+                    await sleep(1500);
+                    const after = screen().filter((n) => n.label);
+                    for (const n of after) if (!words.includes(n.label)) words.push(n.label);
+                    tapped = after.some((n) => /^(Downloading|Installing)/i.test(n.label) || /packageinstaller/.test(n.pkg))
+                        || versionNow() === want || !after.some((n) => /^UPDATE NOW$/i.test(n.label));
+                }
+                if (!tapped && taps >= 3) break;
             }
             const offer = words.find((w) => /→|->/.test(w) && /\d+\.\d+\.\d+/.test(w)) || words.find((w) => /UPDATE AVAILABLE/i.test(w)) || '';
-            ok(tapped, 'the app offers the update by itself (' + (offer || 'no offer seen') + ') and UPDATE NOW is tapped');
-            if (!tapped) console.log('        (words on its screen: ' + words.slice(0, 30).join(' | ').slice(0, 400) + ')');
+            ok(tapped, 'the app offers the update by itself (' + (offer || 'no offer seen') + ') and UPDATE NOW is tapped' + (taps > 1 ? ' (' + taps + ' taps)' : ''));
+            const progress = words.filter((w) => /^(Downloading|Installing|Update failed)/i.test(w));
+            if (progress.length) console.log('        (its box said: ' + progress.slice(-3).join(' | ').slice(0, 200) + ')');
+            if (!tapped) console.log('        (words on its screen: ' + words.slice(0, 40).join(' | ').slice(0, 500) + ')');
 
             section('Android\'s installer');
             let confirmed = false;
@@ -375,7 +394,7 @@ function nodeDevice(label) {
             const crashed = sh('logcat -d -b crash').split('\n').filter((l) => l.includes(APP));
             ok(crashed.length === 0, 'with nothing of the app\'s in the crash log' + (crashed.length ? ': ' + crashed.slice(0, 2).join(' | ').slice(0, 200) : ''));
             const shown = screen().filter((n) => n.label && n.pkg === APP).map((n) => n.label);
-            console.log('        (on its screen now: ' + shown.slice(0, 8).join(' | ').slice(0, 260) + ')');
+            console.log('        (on its screen now: ' + shown.slice(0, 24).join(' | ').slice(0, 420) + ')');
             if (SHOT) takePicture(SHOT);
             console.log('\n  ' + passes + ' passing, ' + fails + ' failing\n');
             return finish(fails ? 1 : 0);
