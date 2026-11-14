@@ -45,14 +45,21 @@
         // AniList is POST-only; NET is a GET layer, so this one call uses fetch directly
         // and falls through to the next provider on any failure.
         try {
-            const r = await fetch(ANILIST, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify({ query: gql, variables: { q: query } }),
-                signal: AbortSignal.timeout(9000)
-            });
-            if (!r.ok) return null;
-            const j = await r.json();
+            let j = null;
+            if (typeof window.anilistPost === 'function') {
+                /* The counted door in ani-mate-api.js. It throws on a refusal, and the
+                 * catch below moves on to the next provider. */
+                j = await window.anilistPost(gql, { q: query }, 9000);
+            } else {
+                const r = await fetch(ANILIST, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify({ query: gql, variables: { q: query } }),
+                    signal: AbortSignal.timeout(9000)
+                });
+                if (!r.ok) return null;
+                j = await r.json();
+            }
             const m = j?.data?.Media;
             if (!m) return null;
             return {

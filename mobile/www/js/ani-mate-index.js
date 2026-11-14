@@ -162,13 +162,22 @@
         let total = 0;
         for (let p = 1; p <= pages; p++) {
             try {
-                const resp = await fetch('https://graphql.anilist.co', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                    body: JSON.stringify({ query: gql, variables: { page: p, perPage } }),
-                    signal: AbortSignal.timeout(15000),
-                });
-                const json = await resp.json();
+                /* The counted door in ani-mate-api.js, as a spare question: these
+                 * pages come out of the same thirty a minute a search does. null means
+                 * no room to spare, and the rest of the seeding waits. */
+                let json;
+                if (typeof window.anilistPost === 'function') {
+                    json = await window.anilistPost(gql, { page: p, perPage }, 15000, 'spare');
+                    if (json === null) break;
+                } else {
+                    const resp = await fetch('https://graphql.anilist.co', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                        body: JSON.stringify({ query: gql, variables: { page: p, perPage } }),
+                        signal: AbortSignal.timeout(15000),
+                    });
+                    json = await resp.json();
+                }
                 const media = json?.data?.Page?.media || [];
                 if (!media.length) break;
                 total += upsert(media.map(m => ({

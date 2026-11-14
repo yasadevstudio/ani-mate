@@ -34,7 +34,5 @@ DOWNLOADS:
 DATA:
     App data stored in: %APPDATA%\ANI-MATE\data\
 
-Version 0.2.0
-
 YASA Development Studio
 https://yasa.work

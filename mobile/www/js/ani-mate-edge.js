@@ -33,6 +33,16 @@
 //   demands; the phone fetches the bytes itself through its own native transport, exactly
 //   as it does today. Proxying video through a Worker would bill every byte and break the
 //   referer gating anyway.
+//
+// ⚠ THE CALLER SAYS WHAT THE SHOW IS CALLED (2026-11-12).
+//   The edge finds a show by TITLE. This file used to work the title out for itself, from
+//   a map of "ids seen in a search". A show that came from favorites, history, a sync
+//   from the desktop, or a previous session was never in that map: the episode list came
+//   back empty and play refused with "no title known". The 18+ switch was read from
+//   window.state, which does not exist (the UI's state is private to its own file), so it
+//   was never sent. getEpisodeList and getEpisodeUrl now take the titles and the switch
+//   from the caller, as their last argument:
+//       { title, alt, nsfw }
 
 (function () {
     'use strict';
@@ -47,9 +57,8 @@
     };
     if (!window.API) { console.warn('[edge] window.API missing; nothing to overlay'); return; }
 
-    /* THE UI CALLS getEpisodeUrl WITH AN ID, NOT A TITLE, and the edge resolves by title --
-     * it has to, because an AllAnime id means nothing to hianime. Rather than change the UI
-     * (and every other caller), remember what each id was called when we saw it. */
+    /* A second source for the title, for a caller that did not pass one: what each id was
+     * called when a search returned it. The caller's own title always wins. */
     const titleOf = new Map();
     function remember(items) {
         for (const r of (items || [])) {
@@ -58,18 +67,35 @@
     }
     window.__edgeRemember = remember;        // so the AniList half can contribute too
 
+    /* ── WHEN THE EDGE CANNOT BE REACHED, STOP ASKING IT FOR A WHILE ───────────────
+     * Every call used to wait out the whole 20 seconds before the local path got its
+     * turn: search, then the episode list, then play. On a phone with no route to the
+     * Worker that is a minute of spinner in front of an app that works. One failure to
+     * CONNECT (a timeout or a network error; an HTTP answer does not count) rests the
+     * edge for five minutes, and the local path is used at once in the meantime. A 429
+     * rests it for one minute, because the edge has asked for exactly that. */
+    let restUntil = 0;
+    const REST_UNREACHABLE = 5 * 60 * 1000;
+    const REST_BUSY = 60 * 1000;
+
     async function edge(path, params) {
+        if (Date.now() < restUntil) throw new Error('edge resting');
         const u = new URL(EDGE + path);
         for (const [k, v] of Object.entries(params || {})) {
             if (v !== undefined && v !== null && v !== '') u.searchParams.set(k, v);
         }
         const ctl = new AbortController();
         const t = setTimeout(() => ctl.abort(), TIMEOUT);
+        let r;
         try {
-            const r = await fetch(u.toString(), { signal: ctl.signal, headers: { Accept: 'application/json' } });
-            if (!r.ok) throw new Error('edge ' + r.status);
-            return await r.json();
+            r = await fetch(u.toString(), { signal: ctl.signal, headers: { Accept: 'application/json' } });
+        } catch (e) {
+            restUntil = Date.now() + REST_UNREACHABLE;
+            throw new Error('edge unreachable (' + (e && e.name === 'AbortError' ? 'timeout' : (e && e.message)) + ')');
         } finally { clearTimeout(t); }
+        if (r.status === 429) restUntil = Date.now() + REST_BUSY;
+        if (!r.ok) throw new Error('edge ' + r.status);
+        return await r.json();
     }
 
     /* Every override degrades to the old local implementation. A phone on a captive
@@ -82,6 +108,19 @@
             const orig = original[name];
             return orig ? orig.apply(window.API, args) : null;
         }
+    }
+
+    /* The edge asks AllAnime by id and everything else by title. Only an id AllAnime
+     * could have issued is worth sending: a "search:Title" id, a source-tagged id or a
+     * sync identity ("al:123") would cost the edge an upstream request for nothing. */
+    const allanimeId = (id) => (/^[A-Za-z0-9]{8,32}$/.test(String(id || '')) ? String(id) : '');
+
+    function names(showId, opts) {
+        const o = opts || {};
+        const id = String(showId || '');
+        const title = String(o.title || titleOf.get(id) || (id.startsWith('search:') ? id.slice(7) : '') || '').trim();
+        const alt = String(o.alt || '').trim();
+        return { title, alt: alt && alt.toLowerCase() !== title.toLowerCase() ? alt : '', nsfw: !!o.nsfw };
     }
 
     // ── SEARCH ────────────────────────────────────────────────────────────────────
@@ -119,7 +158,7 @@
                 }
             } catch { /* art is optional, playing is not */ }
             if (!allowAdult) {
-                return hits.filter((h) => !/\b(hentai|uncensored)\b/i.test(h.name) || allowAdult);
+                return hits.filter((h) => !/\b(hentai|uncensored)\b/i.test(h.name));
             }
             return hits;
         }, [query, mode, allowAdult]);
@@ -129,30 +168,39 @@
     // AllAnime first on the edge, then hianime by title. That second step is the one that
     // makes adult titles playable: they are in AniList and hianime but almost never in
     // AllAnime, so the list came back empty and there was nothing on screen to tap.
-    window.API.getEpisodeList = function (showId, mode = 'sub', anilistId = null) {
+    //
+    // Returns { episodes, arcs }, the same shape as the local path. It used to return a
+    // bare list, so a show opened through the edge never had its story arcs.
+    window.API.getEpisodeList = function (showId, mode = 'sub', anilistId = null, opts) {
         return withFallback('getEpisodeList', async () => {
+            const n = names(showId, opts);
+            const id = allanimeId(showId);
+            if (!id && !n.title) throw new Error('nothing to ask the edge with');
             const d = await edge('/api/episodes', {
-                id: showId,
-                title: titleOf.get(String(showId)) || '',
-                mode,
-                nsfw: window.state && window.state.nsfw ? 'true' : '',
+                id, title: n.title, alt: n.alt, mode, nsfw: n.nsfw ? 'true' : '',
             });
-            return d.episodes || [];
-        }, [showId, mode, anilistId]);
+            const episodes = (d.episodes || []).map(String);
+            /* An empty answer is "the edge did not find it", not "it has no episodes".
+             * The local path gets its turn. */
+            if (!episodes.length) throw new Error('edge found no episodes');
+            const arcs = window.API.arcsFor ? window.API.arcsFor(anilistId, episodes.length) : null;
+            return { episodes, arcs };
+        }, [showId, mode, anilistId, opts]);
     };
 
     // ── PLAY ──────────────────────────────────────────────────────────────────────
     // Shape matches what the mobile player already consumes: url, referer, subtitles,
-    // resolution, all_links. Changing the UI was avoidable, so it was avoided.
-    window.API.getEpisodeUrl = function (showId, episodeString, mode = 'sub', quality = 'best') {
+    // resolution, all_links.
+    window.API.getEpisodeUrl = function (showId, episodeString, mode = 'sub', quality = 'best', opts) {
         return withFallback('getEpisodeUrl', async () => {
-            const title = titleOf.get(String(showId));
-            if (!title) throw new Error('no title known for ' + showId);
+            const n = names(showId, opts);
+            if (!n.title) throw new Error('no title known for ' + showId);
             const d = await edge('/api/play', {
-                title,
+                title: n.title,
+                alt: n.alt,
                 episode: episodeString,
                 mode,
-                nsfw: window.state && window.state.nsfw ? 'true' : '',
+                nsfw: n.nsfw ? 'true' : '',
             });
             if (!d || !d.url) throw new Error('edge returned no url');
             return {
@@ -160,13 +208,13 @@
                 referer: d.referer || null,
                 subtitles: d.subtitles || [],
                 malId: d.mal_id || null,
-                resolution: d.quality || quality,
+                resolution: d.quality || '',
                 provider: d.source || 'edge',
                 all_links: [],            // the edge hands back one resolved stream
                 subs_quality: d.subs_quality || null,
                 subs_cues: d.subs_cues || null,
             };
-        }, [showId, episodeString, mode, quality]);
+        }, [showId, episodeString, mode, quality, opts]);
     };
 
     console.log('[edge] ANI-MATE pointed at ' + EDGE + ' (search, episodes, play). ' +

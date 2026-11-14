@@ -41,6 +41,13 @@ const XOR_KEY = Buffer.from('otaku-embed-v1');
  * of them -- see the header of server/title-match.js. */
 const { queryLadder, bestTrack, acceptableTier } = require('./title-match');
 
+/* `mode` reaches a RegExp below. It arrives from an HTTP query string on the desktop and on
+ * the public Worker, and until 2026-11-12 it was pasted in as received: a value such as
+ * `(.+)+!` made one match call run for more than 30 seconds on a 34 character input,
+ * which hangs the desktop server and burns the Worker's CPU limit. There are exactly two
+ * modes, so anything that is not 'dub' is 'sub'. */
+const modeOf = (m) => (m === 'dub' ? 'dub' : 'sub');
+
 function makeProvider(afetch) {
     async function get(url, referer) {
         const r = await afetch(url, {
@@ -184,6 +191,7 @@ function makeProvider(afetch) {
 
     /** Every subtitle track hianime has for one episode in one mode, across all its servers. */
     async function tracksForMode(episodeId, mode) {
+        mode = modeOf(mode);
         const servers = await serversFor(episodeId);
         let out = [];
         for (const key of Object.keys(servers)) {
@@ -196,6 +204,7 @@ function makeProvider(afetch) {
     }
 
     async function stream(episodeId, mode = 'sub') {
+        mode = modeOf(mode);
         const { body } = await get(`${BASE}/api/theme/episode/servers?episodeId=${episodeId}`);
         let html = '';
         try { html = (JSON.parse(body).html || ''); } catch { return null; }
@@ -351,6 +360,7 @@ function makeProvider(afetch) {
     }
 
     async function streamByTitle(title, episodeNumber, mode = 'sub', opts = {}) {
+        mode = modeOf(mode);
         // Widen the net until an ACCEPTABLE listing appears, then rank. Asking the
         // host for the exact title can return fewer and worse hits than asking for
         // less, so a single wrong hit is not a reason to stop looking.

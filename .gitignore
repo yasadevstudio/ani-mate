@@ -16,3 +16,18 @@ DEVELOPMENT.md
 
 # CSL working backups
 *.bak-*
+
+# Python caches (tests/franchise-regression.py)
+__pycache__/
+*.pyc
+
+# PRIVATE. A library file used as a fixture, and the three suites written against it,
+# which name what is in it. They stay on the machine they came from and are never
+# committed; scripts/local-suite.js, scripts/test-live.js and scripts/test-dom.js say so
+# and carry on where they are missing.
+tests/fixtures/
+tests/franchise-ui.test.js
+tests/favorites-franchise.test.js
+tests/season-nav-e2e.test.js
+tests/AFTER.json
+tests/BEFORE.json

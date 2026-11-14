@@ -48,6 +48,8 @@ const INFO_CACHE_TTL = 60 * 60 * 1000;
 // Cloudflare challenges due to TLS fingerprint differences.
 const CapHttp = window.Capacitor?.Plugins?.CapacitorHttp;
 
+const ALLANIME_TIMEOUT = 12000;
+
 const ALLANIME_HEADERS = {
     'User-Agent': AGENT,
     'Referer': ALLANIME_REFR,
@@ -90,6 +92,10 @@ async function allanimeGet(url) {
             url: endpoint,
             headers: { ...ALLANIME_HEADERS, 'Content-Type': 'application/json' },
             data: JSON.parse(body),
+            /* Without these a request to a host that accepts the connection and then
+             * says nothing waits for as long as the system allows. */
+            connectTimeout: ALLANIME_TIMEOUT,
+            readTimeout: ALLANIME_TIMEOUT,
         });
         if (resp.status !== 200) throw new Error(`AllAnime HTTP ${resp.status}`);
         // CapHttp auto-parses JSON if content-type is application/json
@@ -104,6 +110,7 @@ async function allanimeGet(url) {
         method: 'POST',
         headers: { ...ALLANIME_HEADERS, 'Content-Type': 'application/json' },
         body,
+        signal: AbortSignal.timeout(ALLANIME_TIMEOUT),
     });
     if (!resp.ok) throw new Error(`AllAnime HTTP ${resp.status}`);
     return resp.json();
@@ -122,6 +129,77 @@ async function allanimeGetSafe(url) {
     catch (e) { return null; }
 }
 
+/* ── ALLANIME KEEPS A COUNT, SO THIS DOES TOO ───────────────────────────────────────
+ * Ten searches and six episode lists in ten seconds, measured 2026-11-12. The eleventh
+ * is answered HTTP 200 with {"errors":[{"message":"Too many requests, ..."}]}, which
+ * parses, carries no result list, and used to read as "nothing found". The count and the
+ * rules for who waits and who is skipped are in ani-mate-budget.js, the same file the
+ * desktop server uses. A search and an episode list go through allanimeAsk(). */
+const AA_BUDGET = window.AniMateBudget
+    ? window.AniMateBudget.create(window.AniMateBudget.ALLANIME) : null;
+const AA_SEARCHES = window.AniMateBudget
+    ? window.AniMateBudget.memo({ ttlMs: 5 * 60 * 1000, emptyTtlMs: 2 * 60 * 1000, keep: 200 }) : null;
+
+/**
+ * One counted question to AllAnime.
+ * @param {string} kind   'shows' (a search) or 'show' (an episode list)
+ * @param {string} url    as allanimeGet takes it
+ * @param {string} [need] 'user' waits for room. 'spare' is asked only while there is room
+ *                        to spare, and resolves null when it was not asked.
+ * @returns {Promise<any>} the parsed answer. Throws when there was none.
+ */
+function allanimeAsk(kind, url, need) {
+    if (!AA_BUDGET) return allanimeGet(url);
+    return AA_BUDGET.ask(kind, () => allanimeGet(url), { need: need || 'user' });
+}
+
+/* ── ANILIST: ONE DOOR ──────────────────────────────────────────────────────────────
+ * Thirty requests a minute for everything this address sends (AniList's own
+ * x-ratelimit-limit header, read 2026-11-12), and the desktop app on the same network
+ * spends from the same thirty. Eight places in the phone's code asked AniList on their
+ * own; most did not look at the status, so a refusal read as "no data", and for covers
+ * was remembered that way for five minutes.
+ *
+ *   need 'user'    what someone is waiting on: a search, a show's description, a tab
+ *   need 'spare'   covers and details for cards, the airing crawl, the content index.
+ *                  Asked only while there is room to spare. Resolves NULL when it was
+ *                  not asked: write nothing down for it, and ask on a later call.
+ *
+ * Resolves the parsed body. Throws when AniList refused or did not answer; a caller that
+ * catches must not remember the throw as an empty answer. */
+const AL_BUDGET = window.AniMateBudget
+    ? window.AniMateBudget.create(window.AniMateBudget.ANILIST, { patienceMs: 5000 }) : null;
+
+async function anilistPost(query, variables, timeoutMs = 8000, need = 'user') {
+    const send = async () => {
+        const resp = await fetch('https://graphql.anilist.co', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ query, variables }),
+            signal: AbortSignal.timeout(timeoutMs)
+        });
+        if (AL_BUDGET && resp.headers) {
+            const left = resp.headers.get('x-ratelimit-remaining');
+            AL_BUDGET.note('anilist', {
+                limit: parseInt(resp.headers.get('x-ratelimit-limit')) || 0,
+                remaining: left === null ? undefined : parseInt(left),
+            });
+        }
+        if (resp.status === 429) {
+            const named = resp.headers ? parseInt(resp.headers.get('retry-after') || '60') : 60;
+            const wait = Math.min(300, Math.max(5, named || 60));
+            return { errors: [{ message: 'Too many requests, please try again in ' + wait + ' seconds.' }] };
+        }
+        if (!resp.ok) throw new Error('AniList answered HTTP ' + resp.status);
+        return resp.json();
+    };
+    if (AL_BUDGET) return AL_BUDGET.ask('anilist', send, { need });
+    const json = await send();
+    if (json && json.errors && !json.data) throw new Error('AniList refused');
+    return json;
+}
+window.anilistPost = anilistPost;
+
 // AllAnime GET request returning raw text
 async function allanimeGetText(url) {
     if (CapHttp) {
@@ -130,7 +208,9 @@ async function allanimeGetText(url) {
             url: endpoint,
             headers: { ...ALLANIME_HEADERS, 'Content-Type': 'application/json' },
             data: JSON.parse(body),
-            responseType: 'text'
+            responseType: 'text',
+            connectTimeout: ALLANIME_TIMEOUT,
+            readTimeout: ALLANIME_TIMEOUT,
         });
         if (resp.status !== 200) throw new Error(`AllAnime HTTP ${resp.status}`);
         return typeof resp.data === 'object' ? JSON.stringify(resp.data) : String(resp.data);
@@ -140,6 +220,7 @@ async function allanimeGetText(url) {
         method: 'POST',
         headers: { ...ALLANIME_HEADERS, 'Content-Type': 'application/json' },
         body,
+        signal: AbortSignal.timeout(ALLANIME_TIMEOUT),
     });
     return resp.text();
 }
@@ -320,7 +401,7 @@ function rankResults(q, items, norm) {
 // Raw AllAnime title search. Split out of searchAnime() so the content-index
 // fallback can resolve a concept hit back to a playable entry without recursing
 // through the whole merge.
-async function allAnimeSearchRaw(query, mode = 'sub', allowAdult = false) {
+async function allAnimeSearchRaw(query, mode = 'sub', allowAdult = false, need = 'user') {
     const searchGql = `query($search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } } }`;
 
     const variables = JSON.stringify({
@@ -333,17 +414,28 @@ async function allAnimeSearchRaw(query, mode = 'sub', allowAdult = false) {
 
     const params = new URLSearchParams({ variables, query: searchGql });
     const apiUrl = `${ALLANIME_API}?${params.toString()}`;
-    const data = await allanimeGetSafe(apiUrl);
+
+    const key = mode + '|' + (allowAdult ? 1 : 0) + '|' + String(query).trim().toLowerCase();
+    const kept = AA_SEARCHES ? AA_SEARCHES.recall(key) : null;
+    if (kept) return kept;
+
+    /* No answer and a refusal both leave `data` empty and neither is remembered: only an
+     * answer that carries a result list is an answer. This does not throw either way;
+     * the caller has other sources to ask. */
+    let data = null;
+    try { data = await allanimeAsk('shows', apiUrl, need); } catch (e) { data = null; }
 
     const out = [];
-    if (data?.data?.shows?.edges) {
-        for (const show of data.data.shows.edges) {
+    const edges = data && data.data && data.data.shows && data.data.shows.edges;
+    if (Array.isArray(edges)) {
+        for (const show of edges) {
             const epCount = show.availableEpisodes?.[mode] || 0;
             if (epCount > 0) {
                 const type = epCount === 1 ? 'movie' : epCount <= 12 ? 'short' : 'series';
                 out.push({ id: show._id, name: show.name, episodes: epCount, type });
             }
         }
+        if (AA_SEARCHES) AA_SEARCHES.remember(key, out);
     }
     return out;
 }
@@ -499,7 +591,8 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
                 limit: 5, page: 1, translationType: mode, countryOrigin: 'ALL'
             });
             const subParams = new URLSearchParams({ variables: subVars, query: subGql });
-            const subData = await allanimeGet(`${ALLANIME_API}?${subParams.toString()}`);
+            /* A lookup, not the search: asked only while AllAnime has room to spare. */
+            const subData = await allanimeAsk('shows', `${ALLANIME_API}?${subParams.toString()}`, 'spare');
             const subShows = subData?.data?.shows?.edges || [];
             for (const show of subShows) {
                 const epCount = show.availableEpisodes?.[mode] || 0;
@@ -575,23 +668,12 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
         for (const rel of a.relations) ufUnion(a.anilist_id, rel.id);
     }
 
-    // Name-pattern franchise overrides (catches series AniList doesn't link)
-    // KEEP IN STEP WITH server/ani-mate-server.js. Mobile had 18 of these while the
-    // server had 36, so half the franchises the desktop grouped did not group here.
-    // Mobile does NOT call our server — it talks to AllAnime and AniList directly —
-    // so every franchise rule has to exist in both files or the two apps disagree.
-    const FRANCHISE_PATTERNS = [
-        'jujutsu kaisen', 'one piece', 'attack on titan', 'shingeki no kyojin',
-        'demon slayer', 'kimetsu no yaiba', 'my hero academia', 'boku no hero academia',
-        'sword art online', 'naruto', 'dragon ball', 'bleach', 'hunter x hunter',
-        'fullmetal alchemist', 'mob psycho', 're zero', 'overlord', 'konosuba',
-        'jojo', "jojo's bizarre adventure", 'spy x family', 'spy family',
-        'dr stone', 'dr. stone', 'solo leveling', 'ore dake level up',
-        'mushoku tensei', 'that time i got reincarnated as a slime', 'tensei shitara slime',
-        'danmachi', 'is it wrong to try to pick up girls in a dungeon',
-        'chainsaw man', 'vinland saga', 'mashle', 'blue lock', 'frieren',
-        'oshi no ko',
-    ];
+    // Name-pattern franchise overrides (catches series AniList doesn't link).
+    // The list lives in the shared module (ani-mate-franchise.js), the same file the
+    // desktop server reads it from. It used to be written out here as well, under a
+    // note that said KEEP IN STEP, and it had already fallen out of step once: this
+    // file had 18 names while the server had 36.
+    const FRANCHISE_PATTERNS = (window.AniMateFranchise && window.AniMateFranchise.PATTERNS) || [];
     // patternFid gives these franchises a STABLE id. ufFind() returns the smallest
     // AniList id in whatever union THIS query happened to build, so the same show came
     // back under different franchise ids from different searches and anything stored
@@ -688,7 +770,7 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
             for (const h of hits) {
                 const nm = h.entry.romaji || h.entry.english;
                 if (!nm || have.has(normName(nm))) continue;
-                const sub = await allAnimeSearchRaw(nm, mode, allowAdult).catch(() => []);
+                const sub = await allAnimeSearchRaw(nm, mode, allowAdult, 'spare').catch(() => []);
                 if (!sub.length) continue;
                 const match = sub[0];
                 if (have.has(normName(match.name))) continue;
@@ -736,8 +818,17 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
 }
 
 // Provider-tagged ids come from window.SOURCES and must route back to their owner.
+//
+// ⛔ "al:<number>" IS NOT ONE OF THEM. It is a sync identity: the AniList id of a show
+// that was added on another device and has no id from any source on this one yet. This
+// test used to say yes to it, so the show was handed to a source named "al", which does
+// not exist, and came back with no episodes and nothing to play. It is found by TITLE
+// (see byTitle below), which is the only thing the two platforms have in common.
+function isPlaceholder(id) {
+    return typeof id === 'string' && /^al:\d+$/.test(id);
+}
 function isTagged(id) {
-    return typeof id === 'string' && /^[a-z]+:/.test(id);
+    return typeof id === 'string' && /^[a-z]+:/.test(id) && !isPlaceholder(id);
 }
 
 // The trending list is built from AniList, which knows titles but no streaming ids.
@@ -789,13 +880,7 @@ async function searchAniList(query, limit = 15) {
                 }
             }
         }`;
-        const resp = await fetch('https://graphql.anilist.co', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({ query: gql, variables: { search: query, perPage: limit } }),
-            signal: AbortSignal.timeout(5000)
-        });
-        const json = await resp.json();
+        const json = await anilistPost(gql, { search: query, perPage: limit }, 5000);
         return (json?.data?.Page?.media || []).map(m => ({
             anilist_id: m.id,
             title_english: m.title?.english || null,
@@ -835,12 +920,41 @@ function arcsFor(anilistId, epCount) {
     return k ? T[k].arcs : null;
 }
 
-async function getEpisodeList(showId, mode = 'sub', anilistId = null) {
+/* The show's episodes on whichever source lists it under this NAME. Used for a show
+ * that has no id here (a sync identity), and for one AllAnime has no row for. Both of
+ * the show's names are tried, because a row that has been through sync can carry the
+ * name the other platform knows it by. */
+async function byTitle(opts, mode) {
+    const o = opts || {};
+    if (!window.SOURCES) return null;
+    const seen = new Set();
+    for (const name of [o.title, o.alt]) {
+        const n = String(name || '').trim();
+        if (!n || seen.has(n.toLowerCase())) continue;
+        seen.add(n.toLowerCase());
+        const real = await resolveSearchId('search:' + n, mode);
+        if (!real) continue;
+        const eps = await window.SOURCES.episodes(real, mode).catch(() => []);
+        if (eps.length) return { real, eps };
+    }
+    return null;
+}
+
+/**
+ * @param {{title?: string, alt?: string, nsfw?: boolean}} [opts] what the show is called. Optional, and needed for
+ *             any show whose id did not come from AllAnime.
+ */
+async function getEpisodeList(showId, mode = 'sub', anilistId = null, opts) {
+    if (isPlaceholder(showId)) {
+        const found = await byTitle(opts, mode);
+        const nums = found ? found.eps.map(e => String(e.number)) : [];
+        return { episodes: nums, arcs: arcsFor(anilistId, nums.length) };
+    }
     if (isTagged(showId) && window.SOURCES) {
         const real = await resolveSearchId(showId, mode);
         if (!real) return { episodes: [], arcs: null };
         const eps = await window.SOURCES.episodes(real, mode).catch(() => []);
-        const nums = eps.map(e => e.number);
+        const nums = eps.map(e => String(e.number));
         return { episodes: nums, arcs: arcsFor(anilistId, nums.length) };
     }
     const gql = `query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail } }`;
@@ -848,15 +962,24 @@ async function getEpisodeList(showId, mode = 'sub', anilistId = null) {
     const params = new URLSearchParams({ variables, query: gql });
     const apiUrl = `${ALLANIME_API}?${params.toString()}`;
 
-    const data = await allanimeGetSafe(apiUrl);
+    /* Counted: AllAnime takes six of these in ten seconds, and a refusal used to read as
+     * "this show has no episodes". No answer still falls through to the title lookup. */
+    let data = null;
+    try { data = await allanimeAsk('show', apiUrl, 'user'); } catch (e) { data = null; }
 
     let episodes = [];
     try {
         const detail = data?.data?.show?.availableEpisodesDetail;
         if (detail && detail[mode]) {
-            episodes = detail[mode].sort((a, b) => parseFloat(a) - parseFloat(b));
+            episodes = detail[mode].sort((a, b) => parseFloat(a) - parseFloat(b)).map(String);
         }
     } catch { /* ignore */ }
+    /* AllAnime has no row for a lot of what the other lists return. The desktop falls
+     * through to the next source by name; so does this. */
+    if (!episodes.length) {
+        const found = await byTitle(opts, mode);
+        if (found) episodes = found.eps.map(e => String(e.number));
+    }
     return { episodes, arcs: arcsFor(anilistId, episodes.length) };
 }
 
@@ -890,24 +1013,36 @@ function decodeProviderId(encoded) {
 }
 
 // Get streaming URL for an episode
-async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'best') {
+/* One episode's stream from a source-tagged show id. */
+async function streamFromSource(real, eps, episodeString, mode) {
+    const pid = real.slice(0, real.indexOf(':'));
+    const hit = (eps || []).find(e => String(e.number) === String(episodeString)) || null;
+    if (!hit) return null;
+    const s = await window.SOURCES.stream(hit.id, mode).catch(() => null);
+    // SUBTITLES MUST BE CARRIED THROUGH. This used to build a fresh object with only
+    // url/referer/source, which silently dropped the subtitle array the provider had
+    // just resolved, so even a source that returns tracks produced a player with none,
+    // indistinguishable from a source that has none.
+    return s ? { url: s.url, referer: s.referer, source: s.providerName || pid,
+                 provider: s.providerName || pid,
+                 subtitles: s.subtitles || [], malId: s.malId || null, all_links: [] }
+             : null;
+}
+
+async function streamByTitle(opts, episodeString, mode) {
+    const found = await byTitle(opts, mode);
+    return found ? streamFromSource(found.real, found.eps, episodeString, mode) : null;
+}
+
+/** @param {{title?: string, alt?: string, nsfw?: boolean}} [opts] see getEpisodeList. */
+async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'best', opts) {
+    if (isPlaceholder(showId)) return streamByTitle(opts, episodeString, mode);
     if (isTagged(showId) && window.SOURCES) {
         // The provider owns the episode id; SOURCES built it during getEpisodeList.
         const real = await resolveSearchId(showId, mode);
         if (!real) return null;
-        const pid = real.slice(0, real.indexOf(':'));
         const eps = await window.SOURCES.episodes(real, mode).catch(() => []);
-        const hit = eps.find(e => String(e.number) === String(episodeString)) || null;
-        if (hit) {
-            const s = await window.SOURCES.stream(hit.id, mode).catch(() => null);
-            // SUBTITLES MUST BE CARRIED THROUGH. This line used to build a fresh object
-            // with only url/referer/source, which silently dropped the subtitle array the
-            // provider had just resolved — so even a source that returns tracks produced a
-            // player with none, indistinguishable from a source that has none.
-            if (s) return { url: s.url, referer: s.referer, source: s.providerName || pid,
-                            subtitles: s.subtitles || [], malId: s.malId || null };
-        }
-        return null;
+        return streamFromSource(real, eps, episodeString, mode);
     }
     const gql = `query ($showId: String!, $translationType: VaildTranslationTypeEnumType!, $episodeString: String!) { episode( showId: $showId translationType: $translationType episodeString: $episodeString ) { episodeString sourceUrls } }`;
 
@@ -915,7 +1050,10 @@ async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'bes
     const params = new URLSearchParams({ variables, query: gql });
     const apiUrl = `${ALLANIME_API}?${params.toString()}`;
 
-    const text = await allanimeGetText(apiUrl);
+    /* AllAnime being down is not the end: the show may still be found by name below.
+     * This call used to throw straight out of the function. */
+    let text = '';
+    try { text = await allanimeGetText(apiUrl); } catch { text = ''; }
 
     const sourceUrls = [];
     const sourceRegex = /"sourceUrl":"--([^"]*)"[^}]*"sourceName":"([^"]*)"/g;
@@ -975,7 +1113,8 @@ async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'bes
         }
     }
 
-    if (allLinks.length === 0) return null;
+    /* Nothing from AllAnime for this id: the same fall-through as the episode list. */
+    if (allLinks.length === 0) return streamByTitle(opts, episodeString, mode);
 
     // Sort: prefer HLS (adaptive bitrate) over direct MP4
     allLinks.sort((a, b) => {
@@ -1007,14 +1146,8 @@ async function getEpisodeUrl(showId, episodeString, mode = 'sub', quality = 'bes
 async function getTrendingFallback(mode = 'sub') {
     const gql = `query { Page(page:1, perPage:25) { media(sort:TRENDING_DESC, type:ANIME, isAdult:false) {
         id title{romaji english} episodes format coverImage{large} description(asHtml:false) } } }`;
-    const r = await fetch('https://graphql.anilist.co', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ query: gql }),
-        signal: AbortSignal.timeout(10000)
-    });
-    if (!r.ok) return [];
-    const j = await r.json();
+    let j = null;
+    try { j = await anilistPost(gql, undefined, 10000); } catch (e) { return []; }
     const media = j?.data?.Page?.media || [];
     return media.map(m => {
         const eps = Number(m.episodes) || 0;
@@ -1113,13 +1246,17 @@ async function getAiringSchedule(dateStr) {
         }
     }`;
 
+    /* A page that was refused is not "no more pages". A day cut short that way used to
+     * be remembered for five minutes as the whole day. */
+    let complete = true;
     while (hasNext && page <= 10) {
-        const resp = await fetch('https://graphql.anilist.co', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({ query: gql, variables: { page, gt: dayStart, lt: dayEnd } })
-        });
-        const json = await resp.json();
+        let json = null;
+        try { json = await anilistPost(gql, { page, gt: dayStart, lt: dayEnd }, 8000); }
+        catch (e) {
+            if (!allSchedules.length) throw e;          // nothing at all: the caller says so
+            complete = false;
+            break;
+        }
         const pg = json?.data?.Page;
         if (pg?.airingSchedules) allSchedules.push(...pg.airingSchedules);
         hasNext = pg?.pageInfo?.hasNextPage || false;
@@ -1137,7 +1274,7 @@ async function getAiringSchedule(dateStr) {
         totalEpisodes: s.media?.episodes
     }));
 
-    airingCache[cacheKey] = { data: results, at: Date.now() };
+    if (complete) airingCache[cacheKey] = { data: results, at: Date.now() };
     return results;
 }
 
@@ -1158,8 +1295,11 @@ async function getAniListCovers(titles) {
         }, {});
     }
 
-    for (let i = 0; i < needed.length; i += 5) {
-        const batch = needed.slice(i, i + 5);
+    /* 25 titles to a request. It was 5, and AniList counts requests, not titles: a
+     * 25-row search spent five of the thirty a minute here. Measured 2026-11-12: one
+     * request with 25 of these fragments answers HTTP 200 and counts as one. */
+    for (let i = 0; i < needed.length; i += 25) {
+        const batch = needed.slice(i, i + 25);
         try {
             const varDefs = batch.map((_, idx) => `$s${idx}: String`).join(', ');
             const fragments = batch.map((_, idx) => {
@@ -1172,13 +1312,11 @@ async function getAniListCovers(titles) {
             batch.forEach((title, idx) => { variables[`s${idx}`] = title; });
 
             const gql = `query (${varDefs}) { ${fragments} }`;
-            const resp = await fetch('https://graphql.anilist.co', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify({ query: gql, variables }),
-                signal: AbortSignal.timeout(5000)
-            });
-            const json = await resp.json();
+            const json = await anilistPost(gql, variables, 8000, 'spare');
+            /* Not asked: no room to spare this minute. Nothing is written down, so
+             * these titles are asked about on a later call. */
+            if (json === null) break;
+            if (!json.data) throw new Error('AniList answered without data');
 
             batch.forEach((title, idx) => {
                 const media = json?.data?.[`q${idx}`]?.media?.[0];
@@ -1194,10 +1332,15 @@ async function getAniListCovers(titles) {
                                       start_key: dateKey(media?.startDate, media?.seasonYear),
                                       at: Date.now() };
             });
-        } catch {
-            batch.forEach(title => {
-                if (!coverCache[title]) coverCache[title] = { url: null, at: Date.now() };
-            });
+        } catch (e) {
+            /* A refusal is not "these shows have no cover". Only a real failure is
+             * remembered, for five minutes, so it is not retried for every card. */
+            if (!(e && e.name === 'Refused')) {
+                batch.forEach(title => {
+                    if (!coverCache[title]) coverCache[title] = { url: null, at: Date.now() };
+                });
+            }
+            break;
         }
     }
 
@@ -1212,6 +1355,8 @@ async function getAniListCovers(titles) {
 
 // Anime info lookup (AniList primary, Jikan/MAL fallback)
 async function getAnimeInfo(title) {
+    title = String(title || '').trim();
+    if (!title) return { description: null, cover: null, banner: null, genres: [], score: null, source: null, at: Date.now() };
     const titleMapKey = Object.keys(TITLE_MAP).find(k => k.toLowerCase() === title.toLowerCase());
     const searchTitle = (titleMapKey && TITLE_MAP[titleMapKey]) || title;
     if (infoCache[title] && (Date.now() - infoCache[title].at) < INFO_CACHE_TTL) {
@@ -1221,13 +1366,7 @@ async function getAnimeInfo(title) {
     // Try AniList first (fetch 3 results, prefer non-adult match)
     try {
         const gql = `query ($search: String) { Page(perPage: 3) { media(search: $search, type: ANIME) { description(asHtml: false) coverImage { large } bannerImage genres averageScore isAdult title { romaji english } } } }`;
-        const resp = await fetch('https://graphql.anilist.co', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({ query: gql, variables: { search: searchTitle } }),
-            signal: AbortSignal.timeout(5000)
-        });
-        const json = await resp.json();
+        const json = await anilistPost(gql, { search: searchTitle }, 5000);
         const mediaList = json?.data?.Page?.media || [];
         const infoNorm = (s) => (s || '').toLowerCase()
         // Fold unicode punctuation to ASCII FIRST. AniList writes "Journey’s End" with
@@ -1279,5 +1418,8 @@ window.API = {
     getAiringSchedule,
     getAniListCovers,
     getAnimeInfo,
+    anilistPost,
+    arcsFor,
+    isPlaceholder,
     TITLE_MAP
 };

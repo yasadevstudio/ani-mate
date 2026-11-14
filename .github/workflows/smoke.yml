@@ -1,0 +1,295 @@
+name: Platform smoke
+
+# The apps, started for real on the two platforms nobody can start them on by hand before
+# a release: Windows and Android. Until 2026-11-14 a tag built both and published them
+# with neither ever having run.
+#
+# RUN IT BEFORE TAGGING, on the commit that is about to be tagged:
+#
+#     git push origin HEAD:refs/heads/smoke/<anything>      (main is not touched)
+#     or the "Run workflow" button on the Actions page
+#
+# and delete the branch afterwards. Each job installs the LATEST RELEASE first, gives it a
+# small library, installs this commit's build over it, and checks the library is all still
+# there: that is the path every existing user's copy takes.
+#
+# Nothing here publishes anything. The Windows installer is built the way a release builds
+# it. Android is built twice: the debug variant, whose page and files can be examined, and
+# once signed with the release key, because only that build can be installed over the app
+# phones already have, and only its updater will accept a released file. That second APK
+# is not uploaded anywhere. The Android check makes one throwaway account on the live sync
+# server and deletes it again (scripts/smoke-android.js).
+on:
+  workflow_dispatch:
+  push:
+    branches: ['smoke/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      # scripts/test-env.js makes a two-quality H.264 and AAC stream with it, and the
+      # check plays that in the app. Without ffmpeg that one check says so and is skipped.
+      - name: ffmpeg, for the test stream
+        continue-on-error: true
+        run: choco install ffmpeg --no-progress -y
+
+      # No GH_TOKEN and --publish never: this is `npm run build:win` without the upload.
+      - name: Build the installer the way a release does
+        run: npx electron-builder --win --x64 --publish never
+
+      - name: The files a release uploads are all there
+        shell: bash
+        run: |
+          V=$(node -p "require('./package.json').version")
+          ls -la dist
+          test -f "dist/ANI-MATE-Setup-$V.exe"
+          test -f "dist/ANI-MATE-Setup-$V.exe.blockmap"
+          test -f dist/latest.yml
+          cat dist/latest.yml
+
+      - name: Install the latest release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = gh release view --json tagName -q .tagName
+          Write-Host "the latest release is $tag"
+          # The file is checked against the size the release page gives: an installer cut
+          # short in the download starts, fails its own check, and says nothing.
+          $want = [int64](gh release view $tag --json assets -q '.assets[] | select(.name | endswith(".exe")) | .size')
+          for ($i = 1; $i -le 3; $i++) {
+            gh release download $tag --pattern 'ANI-MATE-Setup-*.exe' --output old-setup.exe --clobber
+            if ((Get-Item old-setup.exe).Length -eq $want) { break }
+            Write-Host "download $i was $((Get-Item old-setup.exe).Length) bytes, expected $want"
+          }
+          .\scripts\wait-installed.ps1 -Installer .\old-setup.exe -Version $tag.TrimStart('v')
+
+      - name: Give that version a library
+        run: node scripts/smoke-windows.js --seed
+
+      - name: Install this build over it
+        shell: pwsh
+        run: |
+          $v = node -p "require('./package.json').version"
+          .\scripts\wait-installed.ps1 -Installer "dist\ANI-MATE-Setup-$v.exe" -Version $v
+
+      - name: The installed app, with the library the release left
+        run: node scripts/smoke-windows.js --installed --seeded --shot window-upgraded.png
+
+      - name: The installed app again, as someone new starts it (no data folder)
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force "$env:APPDATA\ani-mate" -ErrorAction SilentlyContinue
+          node scripts/smoke-windows.js --installed --shot window-new.png
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-smoke
+          path: window-*.png
+          if-no-files-found: ignore
+          retention-days: 5
+
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # 34 is Android 14. 36 is Android 16, which the app is built for (targetSdk).
+        api: [34, 36]
+    env:
+      IMAGE: system-images;android-${{ matrix.api }};google_apis;x86_64
+      # ⛔ SAID OUT LOUD, FOR BOTH TOOLS. On these machines avdmanager makes the device
+      # under $XDG_CONFIG_HOME/.android and the emulator looks under $HOME/.android, so
+      # the emulator exits at once with "Unknown AVD name" and everything after it waits
+      # for a device that is never coming (the first run, 2026-11-14, 25 minutes).
+      ANDROID_AVD_HOME: /home/runner/.android/avd
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The latest release's source, to upgrade from
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          OLD=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName -q .tagName)
+          APK_URL=$(gh release view "$OLD" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[] | select(.name | endswith("-mobile.apk")) | .url')
+          echo "the latest release is $OLD, and its phone build is $APK_URL"
+          echo "OLD=$OLD" >> "$GITHUB_ENV"
+          echo "APK_URL=$APK_URL" >> "$GITHUB_ENV"
+          git clone --quiet --depth 1 --branch "$OLD" "https://github.com/$GITHUB_REPOSITORY" "$RUNNER_TEMP/old"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # Set explicitly for the reason given in release.yml.
+          packages: 'platform-tools'
+
+      # GitHub's Linux machines can run the emulator at full speed, once the device that
+      # allows it is opened to this user.
+      - name: Let the emulator use the processor's virtualization
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Start an emulator (it boots while the two builds run)
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "emulator" "$IMAGE" > /dev/null
+          mkdir -p "$ANDROID_AVD_HOME"
+          echo no | avdmanager create avd --force -n smoke -k "$IMAGE" -d pixel_6
+          "$ANDROID_HOME/emulator/emulator" -list-avds
+          nohup "$ANDROID_HOME/emulator/emulator" -avd smoke -no-window -no-audio -no-boot-anim -no-snapshot \
+              -gpu swiftshader_indirect -memory 4096 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          # If it is going to refuse to start, it does so in its first seconds: say why now.
+          sleep 20
+          if ! pgrep -f qemu-system > /dev/null; then echo "the emulator did not stay up:"; cat "$RUNNER_TEMP/emulator.log"; exit 1; fi
+          head -20 "$RUNNER_TEMP/emulator.log"
+
+      - name: Build the latest release (debug variant)
+        run: |
+          cd "$RUNNER_TEMP/old/mobile"
+          npm install --no-audit --no-fund
+          npx cap sync android
+          cd android && ./gradlew assembleDebug -q
+
+      - name: Build this commit (debug variant)
+        run: |
+          cd mobile
+          npm install --no-audit --no-fund
+          npx cap sync android
+          cd android && ./gradlew assembleDebug -q
+
+      - name: Wait for Android to finish starting
+        run: |
+          timeout 300 adb wait-for-device || { echo "no emulator appeared in five minutes"; tail -40 "$RUNNER_TEMP/emulator.log"; exit 1; }
+          for i in $(seq 1 120); do
+            [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+            sleep 5
+          done
+          [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ] || { tail -40 "$RUNNER_TEMP/emulator.log"; exit 1; }
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          # Android's own "isn't responding" dialogs (the emulator's System UI gets them
+          # when the machine is short of processor) stay off the screen.
+          adb shell settings put global hide_error_dialogs 1
+          adb shell input keyevent 82
+          sleep 15
+          adb shell getprop ro.build.version.release
+
+      - name: The latest release, given a library
+        run: |
+          adb install "$RUNNER_TEMP"/old/mobile/android/app/build/outputs/apk/debug/*.apk
+          node scripts/smoke-android.js --seed --shot "$RUNNER_TEMP/phone-latest-release.png"
+
+      # The updater is given the latest release's real file. This build is signed with a
+      # debug key, the file with the release key, so the right answer here is a refusal.
+      - name: This commit installed over it
+        run: |
+          adb install -r mobile/android/app/build/outputs/apk/debug/*.apk
+          node scripts/smoke-android.js --seeded --updater refuse --update-url "$APK_URL" --shot "$RUNNER_TEMP/phone.png"
+
+      # THE SIGNING KEY IS USED HERE, the way release.yml uses it, for the two things only
+      # a build signed with it can show: that Android installs it over the released app,
+      # and that its updater accepts a released file and gets it to Android's installer.
+      # It differs from a release build in one line: its page may be examined
+      # (webContentsDebuggingEnabled), which is how the check drives it. The APK is not
+      # uploaded and is gone with this machine.
+      - name: This commit again, signed the way a release is
+        if: ${{ !cancelled() }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then echo "no signing key on this machine: the next step is skipped"; exit 0; fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          node -e '
+            const fs = require("fs");
+            const p = "mobile/android/app/src/main/assets/capacitor.config.json";
+            const c = JSON.parse(fs.readFileSync(p, "utf8"));
+            c.android = Object.assign({}, c.android, { webContentsDebuggingEnabled: true });
+            fs.writeFileSync(p, JSON.stringify(c, null, "\t"));'
+          cd mobile/android
+          ./gradlew assembleRelease -q \
+            -PRELEASE_STORE_FILE="$RUNNER_TEMP/release.keystore" \
+            -PRELEASE_STORE_PASSWORD="$KEYSTORE_PASSWORD" \
+            -PRELEASE_KEY_ALIAS=ani-mate \
+            -PRELEASE_KEY_PASSWORD="$KEYSTORE_PASSWORD"
+          rm -f "$RUNNER_TEMP/release.keystore"
+          cp app/build/outputs/apk/release/*.apk "$RUNNER_TEMP/signed.apk"
+
+      - name: The released app as phones have it, then this build installed over it
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f "$RUNNER_TEMP/signed.apk" ]; then echo "skipped: there is no signed build"; exit 0; fi
+          adb uninstall com.yasa.animate
+          gh release download "$OLD" --repo "$GITHUB_REPOSITORY" --pattern '*-mobile.apk' --output "$RUNNER_TEMP/released.apk"
+          adb install "$RUNNER_TEMP/released.apk"
+          adb logcat -c
+          adb shell am start -W -n com.yasa.animate/.MainActivity
+          sleep 25
+          echo "the released app: pid $(adb shell pidof com.yasa.animate), $(adb shell dumpsys package com.yasa.animate | grep -E 'versionName|versionCode' | tr -s ' ' | tr '\n' ' ')"
+          [ -n "$(adb shell pidof com.yasa.animate)" ] || { echo "the released app is not running"; exit 1; }
+          # (grep -c reads to the end. With -q it would stop at the first match, adb would
+          # be cut off, and under pipefail a crash that WAS found would read as "none".)
+          CRASHED=$(adb logcat -d -b crash | grep -c com.yasa.animate || true)
+          if [ "$CRASHED" != "0" ]; then echo "the released app crashed"; adb logcat -d -b crash | tail -20; exit 1; fi
+          # What a phone's update is: this build over that one, with its data kept. Android
+          # refuses it if the key differs or the version code went down.
+          adb install -r "$RUNNER_TEMP/signed.apk"
+          echo "after the update: $(adb shell dumpsys package com.yasa.animate | grep -E 'versionName|versionCode' | tr -s ' ' | tr '\n' ' ')"
+          adb shell appops set com.yasa.animate REQUEST_INSTALL_PACKAGES allow
+          node scripts/smoke-android.js --no-sync --updater accept --update-url "$APK_URL" --shot "$RUNNER_TEMP/phone-signed.png"
+
+      # Crashes and errors only. Capacitor's general log repeats every native call with
+      # its arguments (addresses, headers), and an artifact of a public repository is
+      # public.
+      - name: Keep what Android logged
+        if: always()
+        run: |
+          { adb logcat -d -b crash; adb logcat -d AndroidRuntime:E chromium:E '*:S'; } > "$RUNNER_TEMP/logcat.txt" 2>/dev/null || true
+          tail -30 "$RUNNER_TEMP/emulator.log" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: android-${{ matrix.api }}-smoke
+          path: |
+            ${{ runner.temp }}/phone*.png
+            ${{ runner.temp }}/logcat.txt
+          if-no-files-found: ignore
+          retention-days: 5

@@ -13,6 +13,15 @@
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
         <item name="android:background">@null</item>
+        <!-- THE WINDOW BEHIND THE PAGE IS BLACK. Capacitor's system bars plugin paints
+             the strips behind the status bar and the navigation bar with this color
+             (SystemBars.setStyle), and from Capacitor 8.6 it keeps the page out from
+             under them on every phone whose WebView is older than 140. With the theme's
+             own color those strips were white around a black app: measured on Android 14
+             and 16 emulators on 2026-11-14, where 0.7.1 had been black. The icons in
+             them are set light by plugins.SystemBars.style = DARK in
+             capacitor.config.json. -->
+        <item name="android:windowBackground">@android:color/black</item>
     </style>
 
 

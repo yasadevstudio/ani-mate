@@ -132,6 +132,14 @@
     <script src="js/ani-mate-meta.js"></script>
     <script src="js/arcs.js"></script>
     <script src="js/ani-mate-index.js"></script>
+    <!-- Franchise identity, seasons and grouping. SHARED with the desktop:
+         server/ani-mate-franchise.js is the only copy; npm run sync:shared
+         copies it here and sync:verify fails the release on drift.
+         BEFORE the api layer, which reads the named-franchise list from it. -->
+    <script src="js/ani-mate-franchise.js"></script>
+    <!-- How many questions AllAnime takes in ten seconds, and who waits. The same file
+         the desktop server uses; ani-mate-api.js asks through it. -->
+    <script src="js/ani-mate-budget.js"></script>
     <script src="js/ani-mate-api.js"></script>
     <!-- AFTER the api layer: overlays search/episodes/play onto the shared edge
          backend, keeping the local scraper as the fallback. -->

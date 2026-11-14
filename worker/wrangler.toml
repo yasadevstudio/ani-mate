@@ -59,9 +59,13 @@ database_id = "cc639d9c-3792-4254-aa22-2dfb77c8d049"
 # account-creation spam.
 #
 # ⚠ IT IS NOT WHAT PROTECTS THE PAIRING CODE. Per-colo counting plus IP rotation means
-# an IP limiter cannot be the guard on a 6-digit secret; that job belongs to the
-# 3-attempt counter on the code row itself. This bucket protects the DATABASE from
-# junk rows, nothing more.
+# an IP limiter cannot be the guard on a 6-digit secret. What protects it is the
+# direction the pairing flow runs in: the code is shown by the device that wants IN and
+# typed into one that is already signed in, so the call that grants anything
+# (POST /api/device/approve) carries a real device token, and guessing a code gains
+# nothing. (This comment used to cite a 3-attempt counter on the code row. That counter
+# went away with the old flow; see ACCOUNTS-DESIGN.md, "WHY NOT THE OBVIOUS DIRECTION".)
+# This bucket protects the DATABASE from junk rows, nothing more.
 [[unsafe.bindings]]
 name = "RL_AUTH"
 type = "ratelimit"

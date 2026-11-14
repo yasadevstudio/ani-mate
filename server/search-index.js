@@ -83,9 +83,23 @@ function save() {
             IDX.byId = keep;
         }
         IDX.saved_at = Date.now();
-        fs.writeFileSync(FILE, JSON.stringify(IDX));
+        /* Write beside, then rename. Written in place, a crash mid-write left a file
+         * that would not parse, and load() answers that by starting from nothing. */
+        const tmp = FILE + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(IDX));
+        fs.renameSync(tmp, FILE);
         dirty = false;
     } catch { /* an index that cannot be written is still usable in memory */ }
+}
+
+/* The header of this file says the corpus grows from ordinary use. It did, in memory:
+ * save() was only ever called by seed(), so everything a search taught the index was
+ * gone at exit. Saved a little while after the last change, not on every search. */
+let saveTimer = null;
+function saveSoon() {
+    if (saveTimer || !dirty) return;
+    saveTimer = setTimeout(() => { saveTimer = null; save(); }, 30000);
+    if (saveTimer.unref) saveTimer.unref();
 }
 
 /** Add or refresh entries. Accepts AniList-shaped records. */
@@ -170,7 +184,10 @@ function search(q, { limit = 12, nsfw = false } = {}) {
  * Fill the index from AniList's popularity ranking so concept search works before
  * the user has searched for anything. Safe to call repeatedly; it upserts.
  */
-async function seed(pages = 10, perPage = 50, log = () => {}) {
+/* `post(query, variables)` is the server's counted door to AniList. It resolves null when
+ * AniList has no room to spare this minute; the rest of the seeding then waits for the
+ * next start. Without it (a script run by hand) this asks AniList directly. */
+async function seed(pages = 10, perPage = 50, log = () => {}, post = null) {
     const gql = `query ($page: Int, $perPage: Int) {
         Page(page: $page, perPage: $perPage) {
             media(type: ANIME, sort: [POPULARITY_DESC]) {
@@ -184,13 +201,19 @@ async function seed(pages = 10, perPage = 50, log = () => {}) {
     let total = 0;
     for (let p = 1; p <= pages; p++) {
         try {
-            const resp = await fetch('https://graphql.anilist.co', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify({ query: gql, variables: { page: p, perPage } }),
-                signal: AbortSignal.timeout(15000),
-            });
-            const json = await resp.json();
+            let json;
+            if (post) {
+                json = await post(gql, { page: p, perPage });
+                if (json === null) { log('  AniList has no room to spare; the rest waits for the next start'); break; }
+            } else {
+                const resp = await fetch(process.env.ANI_MATE_TEST_ANILIST || 'https://graphql.anilist.co', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify({ query: gql, variables: { page: p, perPage } }),
+                    signal: AbortSignal.timeout(15000),
+                });
+                json = await resp.json();
+            }
             const media = json?.data?.Page?.media || [];
             if (!media.length) break;
             total += upsert(media.map(m => ({
@@ -226,4 +249,4 @@ function stats() {
     return { entries: n, with_description: withDesc, saved_at: ix.saved_at };
 }
 
-module.exports = { upsert, search, seed, save, stats, tok };
+module.exports = { upsert, search, seed, save, saveSoon, stats, tok };

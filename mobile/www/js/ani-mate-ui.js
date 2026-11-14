@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.7.1';
+    const APP_VERSION = '0.7.2';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -25,7 +25,6 @@
         releasesDate: null,
         releasesResults: [],
         continueResults: [],
-        pendingAutoEpisode: null,
         pendingResumeTime: 0,
         currentRange: 0,
         autoPlay: false,
@@ -35,7 +34,6 @@
         availableLinks: [],
         playerUiVisible: true,
         playerUiTimer: null,
-        playLock: false,
         preferEnglish: true,
         nsfw: false,
         favUpdates: [],
@@ -70,23 +68,84 @@
         return `${m}:${String(s).padStart(2, '0')}`;
     }
 
-    function escAttr(str) {
-        return (str || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-    }
-
+    /* ⚠ EVERY VALUE THAT REACHES innerHTML GOES THROUGH esc(), WHATEVER ITS TYPE. Titles,
+     * ids, episode labels, covers and error messages come from other servers, and with
+     * sync from another device. The old one was `(s || '').replace(...)`: it threw on a
+     * number, so ids and counts were simply written without it. */
     function esc(s) {
-        return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
-
-    function stripHtml(str) {
-        return (str || '').replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, '');
-    }
+    /* One escaper. escAttr was a second one that left '>' and the single quote alone;
+     * its call sites keep the name. */
+    const escAttr = esc;
+    /* One safe class-name token (a result's type is used as a class). */
+    const cls = (s) => String(s == null ? '' : s).replace(/[^A-Za-z0-9_-]/g, '');
+    /* The TEXT of a piece of HTML. A <template> is inert: nothing in it runs or loads.
+     * The old way was a tag-stripping regular expression, which an unclosed tag passes
+     * straight through. */
+    const plainBox = document.createElement('template');
+    const plainText = (html) => {
+        plainBox.innerHTML = String(html == null ? '' : html).replace(/<br\s*\/?>/gi, ' ');
+        const t = plainBox.content.textContent || '';
+        plainBox.innerHTML = '';
+        return t;
+    };
+    /* Two names for the same show, whatever is missing. */
+    const sameText = (a, b) => String(a || '').toLowerCase() === String(b || '').toLowerCase();
+    const isFavId = (id) => (state.favorites || []).some(f => f && String(f.id) === String(id));
+    /* A real episode count, or 0 for "not known yet". */
+    const countOf = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : 0; };
+    const countLabel = (n) => (countOf(n) ? String(countOf(n)) : '?');
 
     // === NETWORK STATUS ===
     function updateNetworkStatus() {
         const online = navigator.onLine;
         $('status-dot').classList.toggle('online', online);
         $('status-text').textContent = online ? 'ONLINE' : 'OFFLINE';
+    }
+
+    /** Re-draw the tab that is showing, from the data already held. Never fetches, and
+     *  never draws a tab that is still waiting for its first answer. */
+    function redrawActiveTab() {
+        const tab = state.activeTab;
+        if (tab === 'favs') renderFavorites();
+        else if (tab === 'search') { if (state.results.length) renderResults(); }
+        else if (tab === 'daily') { if (state.dailyResults.length) renderDaily(); }
+        else if (tab === 'releases') { if (state.releasesDate && state.releasesResults.length) renderReleases(); }
+        else if (tab === 'continue') { if (state.continueLoaded) renderContinue(); }
+    }
+
+    /** Bring every star on screen in line with the favorites list, without re-drawing
+     *  the cards (which would lose the scroll position and close an open group). */
+    function refreshStars() {
+        document.querySelectorAll('#results-container .fav-star-inline').forEach(star => {
+            let on;
+            if (star.dataset.favId !== undefined) on = isFavId(star.dataset.favId);
+            else {
+                /* RELEASES cards are AniList rows with no source id; their star goes by name. */
+                const t = star.dataset.relFavTitle, r = star.dataset.relFavRomaji;
+                on = state.favorites.some(f => f.name === t || (r && f.name === r));
+            }
+            star.classList.toggle('active', on);
+            star.innerHTML = on ? '&#9733;' : '&#9734;';
+        });
+    }
+
+    /** Everything that shows a title, re-drawn in the language now chosen. */
+    function applyTitleLanguage() {
+        redrawActiveTab();
+        const sel = state.selectedAnime;
+        if (sel) {
+            $('panel-title').textContent = (state.preferEnglish && sel.titleEnglish) ? sel.titleEnglish : sel.title;
+            renderSeasonStrip();
+        }
+        if (state.playing && state.nowPlaying) {
+            const a = state.playing.anime;
+            state.nowPlaying.title = (state.preferEnglish && a.titleEnglish) ? a.titleEnglish : a.title;
+            paintNowPlaying();
+        }
     }
 
     // === TAB SWITCHING ===
@@ -118,84 +177,107 @@
     }
 
     // === SEARCH ===
+    let searchSeq = 0;
     async function doSearch(query) {
+        const mine = ++searchSeq;
         resultsContainer.innerHTML = '<div class="loading-indicator">SCANNING DATABASE...</div>';
         try {
-            state.results = await API.searchAnime(query, state.mode, state.nsfw);
+            const found = await API.searchAnime(query, state.mode, state.nsfw);
+            /* An earlier search that answers late must not replace a later one. */
+            if (mine !== searchSeq) return;
+            state.results = found || [];
+            /* Every tab draws into the same container. If the user has moved to another
+             * tab the results are kept, and drawn when they come back. */
+            if (state.activeTab !== 'search') return;
+            /* A NEW search closes whatever show was open. renderResults() used to do
+             * this itself, on every re-draw. */
+            clearOpenShow();
             renderResults();
         } catch (err) {
-            resultsContainer.innerHTML = `<div class="no-results">Error: ${err.message}</div>`;
+            if (mine !== searchSeq || state.activeTab !== 'search') return;
+            resultsContainer.innerHTML = `<div class="no-results">Error: ${esc(err.message)}</div>`;
             toast(err.message, 'error');
         }
     }
 
-    function groupByFranchise(items) {
-        const franchises = {};
-        const ungrouped = [];
-        for (const r of items) {
-            if (r.franchise_id) {
-                if (!franchises[r.franchise_id]) franchises[r.franchise_id] = [];
-                franchises[r.franchise_id].push(r);
-            } else {
-                ungrouped.push(r);
-            }
-        }
-        const groups = [];
-        const FORMAT_RANK = { TV: 0, TV_SHORT: 1, ONA: 2, MOVIE: 3, OVA: 4, SPECIAL: 5, MUSIC: 6 };
-        for (const [fid, members] of Object.entries(franchises)) {
-            if (members.length === 1) {
-                ungrouped.push(members[0]);
-            } else {
-                // Sort: TV format first (main series), then CHRONOLOGICALLY.
-                //
-                // This used to order by episode count descending, which is exactly
-                // backwards for a season that is still airing: it has the fewest
-                // episodes, so it sorted last, and members[0] - the entry the
-                // franchise card opens - was the PREVIOUS season. Apothecary
-                // Diaries S3 (1 aired episode) lost to S2 (24) every time.
-                //
-                // Release date is the only field that orders seasons correctly.
-                // Oldest first, so the card opens season 1 and the season strip in
-                // the episode panel reads left to right in airing order.
-                members.sort((a, b) => {
-                    const aFmt = FORMAT_RANK[a.anilist_format] ?? 99;
-                    const bFmt = FORMAT_RANK[b.anilist_format] ?? 99;
-                    if (aFmt !== bFmt) return aFmt - bFmt;
-                    const aK = a.start_key || 0, bK = b.start_key || 0;
-                    if (aK !== bK) return aK - bK;
-                    return (b.episodes || 0) - (a.episodes || 0);
-                });
-                // members stays chronological — it is the expanded list and the strip.
-                // The CARD, though, must open what the user searched for.
-                //
-                // v0.5.1 made the card open members[0], the oldest, so Apothecary
-                // Diaries would open S1 instead of S2. Right for a three-season show.
-                // Wrong for a franchise: 'dragon ball' is a FRANCHISE_PATTERN prefix
-                // that unions forty years into one card, so searching "Dragon Ball
-                // Super" opened Dragon Ball Z from 1989. rankResults already scored
-                // every row against the query; use it. With no season named, season 1
-                // still scores highest, so the v0.5.1 behavior is preserved rather
-                // than reverted. Measured 2026-10-12.
-                const byScore = members.reduce((best, m) =>
-                    (m.search_score ?? -1) > (best.search_score ?? -1) ? m : best, members[0]);
-                groups.push({ franchise_id: fid, parent: byScore, members });
-            }
-        }
-        return { groups, ungrouped };
+    /* ── FRANCHISE IDENTITY: ONE IMPLEMENTATION, IN server/ani-mate-franchise.js ──
+     *
+     * ⛔ THIS FILE CARRIED ITS OWN COPY OF THE GROUPING AND IT HAD THE SAME BUG AS THE
+     * DESKTOP'S. Both began `if (r.franchise_id)`, and 19 of the 24 rows in a real
+     * library have no franchise_id, so neither grouped anything the server had not
+     * already tagged. The desktop copy was fixed on 2026-10-12 and again on 2026-11-09;
+     * this one was never touched, so the phone stayed broken through both.
+     *
+     * Do not put logic back here. Add an argument to the shared module. */
+    /* If the module is missing the app is misconfigured, and that is worth SAYING —
+     * but not worth taking the player down for. Measured: an earlier version of this
+     * line was `const FR = ... : null`, and the first call threw out of the IIFE and
+     * rendered a blank shell. These stubs turn franchise features off and leave
+     * everything else working. */
+    const FR = (typeof AniMateFranchise !== 'undefined' && AniMateFranchise) ? AniMateFranchise : {
+        franchiseName: (n) => n,
+        franchiseBase: () => '',              // no key resolves -> no grouping, no strip
+        seasonOrdinal: () => 1,
+        seasonLabel: () => 'S1',
+        isSeasonSpine: () => true,
+        sortSeasons: (l) => l,
+        franchiseIndex: () => ({ keyOf: () => '', keyOfLabel: () => '' }),
+        groupFranchises: (items) => ({ groups: [], ungrouped: (items || []).slice() }),
+        siblingsOf: () => [],
+        poolOf: (...lists) => [].concat(...lists.filter(Array.isArray)).filter(r => r && r.id),
+        stripOf: (all) => ({ shown: all || [], hidden: 0, spine: all || [] }),
+        isStarMember: () => true,
+        commonPrefixWords: () => 0,
+        __missing: true,
+    };
+    if (FR.__missing) {
+        console.error('ani-mate-franchise.js did not load (404?). Franchise grouping and '
+                    + 'season navigation are DISABLED; everything else works. If the '
+                    + 'desktop server was started before this file existed, restart it.');
+        try { setTimeout(() => toast('Franchise grouping unavailable \u2014 restart the app',
+                                     'error'), 1500); } catch (e) { /* no toast yet */ }
+    }
+
+    const franchiseName = (n) => FR.franchiseName(n);
+    const franchiseBase = (n) => FR.franchiseBase(n);
+    const seasonOrdinal = (n) => FR.seasonOrdinal(n);
+    const franchiseIndex = (items) => FR.franchiseIndex(items);
+
+    /** Everything the app currently knows about, so grouping and the season strip
+     *  cannot disagree about what a franchise contains.
+     *
+     *  ⚠ ONE ROW PER SHOW, CARRYING EVERYTHING ANY LIST KNOWS ABOUT IT (FR.poolOf). This
+     *  was the lists laid end to end, and whoever read it took the first copy of an id:
+     *  a favorite (a name and an episode count) hid the copy fetched for the season bar
+     *  (format, date). The same call, with the same lists, as the desktop page. */
+    function franchisePool() {
+        return FR.poolOf(state.results, state.dailyResults, state.releasesResults,
+                         state.favorites, state.lookupResults, state.continueResults,
+                         state.history,
+                         ...Object.keys(franchiseCache).map(k => franchiseCache[k]));
+    }
+
+    /** The franchise key for one row, resolved against everything known. */
+    function franchiseKeyOf(item) {
+        return FR.keyIn(item, franchisePool());
+    }
+
+    function groupByFranchise(items, parentMode) {
+        return FR.groupFranchises(items, franchisePool(), parentMode);
     }
 
     function renderFranchiseCard(group) {
         const r = group.parent;
-        const isFav = state.favorites.some(f => f.id === r.id);
-        const coverHtml = r.cover ? `<div class="cover-wrap"><img src="${r.cover}" loading="lazy" alt=""></div>` : '';
-        const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
+        const isFav = isFavId(r.id);
+        const coverHtml = r.cover ? `<div class="cover-wrap"><img src="${esc(r.cover)}" loading="lazy" alt=""></div>` : '';
+        const hasEn = !!r.title_english && !sameText(r.title_english, r.name);
         const primaryTitle = (state.preferEnglish && hasEn) ? r.title_english : r.name;
         const count = group.members.length;
 
-        let html = `<div class="franchise-group" data-franchise="${group.franchise_id}">
-            <div class="result-card franchise-parent" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
+        let html = `<div class="franchise-group" data-franchise="${esc(group.franchise_id)}">
+            <div class="result-card franchise-parent" data-id="${esc(r.id)}" data-title="${escAttr(r.name)}" data-eps="${countOf(r.episodes)}">
                 <div class="result-card-row">
-                    <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}" data-fav-cover="${escAttr(r.cover || '')}">${isFav ? '&#9733;' : '&#9734;'}</button>
+                    <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${esc(r.id)}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${countOf(r.episodes)}" data-fav-english="${escAttr(r.title_english || '')}" data-fav-franchise="${esc(r.franchise_id)}" data-fav-cover="${escAttr(r.cover || '')}">${isFav ? '&#9733;' : '&#9734;'}</button>
                     ${coverHtml}
                     <div class="result-info">
                         <div class="result-title">${esc(primaryTitle)}</div>
@@ -206,16 +288,16 @@
             <div class="franchise-entries" style="display:none;">`;
 
         for (const m of group.members) {
-            const mFav = state.favorites.some(f => f.id === m.id);
+            const mFav = isFavId(m.id);
             const typeLabel = m.type === 'series' ? 'SERIES' : m.type === 'short' ? 'SHORT' : 'MOVIE';
-            const mHasEn = m.title_english && m.title_english.toLowerCase() !== m.name.toLowerCase();
+            const mHasEn = !!m.title_english && !sameText(m.title_english, m.name);
             const mTitle = (state.preferEnglish && mHasEn) ? m.title_english : m.name;
-            html += `<div class="result-card franchise-entry" data-id="${m.id}" data-title="${escAttr(m.name)}" data-eps="${m.episodes}">
+            html += `<div class="result-card franchise-entry" data-id="${esc(m.id)}" data-title="${escAttr(m.name)}" data-eps="${countOf(m.episodes)}">
                 <div class="result-card-row">
-                    <button class="fav-star-inline ${mFav ? 'active' : ''}" data-fav-id="${m.id}" data-fav-name="${escAttr(m.name)}" data-fav-eps="${m.episodes}" data-fav-english="${escAttr(m.title_english || '')}" data-fav-franchise="${m.franchise_id || ''}" data-fav-cover="${escAttr(m.cover || '')}">${mFav ? '&#9733;' : '&#9734;'}</button>
+                    <button class="fav-star-inline ${mFav ? 'active' : ''}" data-fav-id="${esc(m.id)}" data-fav-name="${escAttr(m.name)}" data-fav-eps="${countOf(m.episodes)}" data-fav-english="${escAttr(m.title_english || '')}" data-fav-franchise="${esc(m.franchise_id)}" data-fav-cover="${escAttr(m.cover || '')}">${mFav ? '&#9733;' : '&#9734;'}</button>
                     <div class="result-info">
                         <div class="result-title">${esc(mTitle)}</div>
-                        <div class="result-meta"><span class="result-type ${m.type}">${typeLabel}</span>${m.episodes} EP</div>
+                        <div class="result-meta"><span class="result-type ${cls(m.type)}">${typeLabel}</span>${countLabel(m.episodes)} EP</div>
                     </div>
                 </div>
             </div>`;
@@ -276,8 +358,12 @@
         }
     }
 
+    /* ⚠ DRAWS THE RESULTS AND NOTHING ELSE. This used to begin by closing whatever show
+     * was open, and it runs for every re-draw: a star, the English switch, coming back to
+     * the tab, and a background sync. Starring the open show from its own panel emptied
+     * that panel, and a sync that pulled anything cleared the selection under a playing
+     * video. Closing the open show belongs to a NEW search, and doSearch does it. */
     function renderResults() {
-        clearOpenShow();
         if (state.results.length === 0) {
             // "No results" is the same thing on screen whether the query genuinely has
             // no match or every source is unreachable. Ask the sources which it is and
@@ -315,22 +401,22 @@
 
     function renderCardGroup(items) {
         return items.map(r => {
-            const isFav = state.favorites.some(f => f.id === r.id);
+            const isFav = isFavId(r.id);
             const typeLabel = r.type === 'series' ? 'SERIES' : r.type === 'short' ? 'SHORT' : 'MOVIE';
             const coverHtml = r.cover
-                ? `<div class="cover-wrap"><img src="${r.cover}" loading="lazy" alt=""></div>`
+                ? `<div class="cover-wrap"><img src="${esc(r.cover)}" loading="lazy" alt=""></div>`
                 : '';
-            const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
+            const hasEn = !!r.title_english && !sameText(r.title_english, r.name);
             const primaryTitle = (state.preferEnglish && hasEn) ? r.title_english : r.name;
             const secondaryTitle = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : '');
-            return `<div class="result-card" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
+            return `<div class="result-card" data-id="${esc(r.id)}" data-title="${escAttr(r.name)}" data-eps="${countOf(r.episodes)}">
                 <div class="result-card-row">
-                    <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}" data-fav-cover="${escAttr(r.cover || '')}">${isFav ? '&#9733;' : '&#9734;'}</button>
+                    <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${esc(r.id)}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${countOf(r.episodes)}" data-fav-english="${escAttr(r.title_english || '')}" data-fav-franchise="${esc(r.franchise_id)}" data-fav-cover="${escAttr(r.cover || '')}">${isFav ? '&#9733;' : '&#9734;'}</button>
                     ${coverHtml}
                     <div class="result-info">
                         <div class="result-title">${esc(primaryTitle)}</div>
                         ${secondaryTitle ? `<div class="result-title-en">${esc(secondaryTitle)}</div>` : ''}
-                        <div class="result-meta"><span class="result-type ${r.type}">${typeLabel}</span>${r.episodes} EP</div>
+                        <div class="result-meta"><span class="result-type ${cls(r.type)}">${typeLabel}</span>${countLabel(r.episodes)} EP</div>
                     </div>
                 </div>
             </div>`;
@@ -363,66 +449,13 @@
 
     const franchiseCache = {};   // franchise_id -> array of sibling results
 
-    // Label a strip chip. Season number if the title carries one; otherwise the part
-    // of the title that DISTINGUISHES it from its siblings.
-    //
-    // The old fallback returned 'S1' for any TV entry with no season number and no
-    // colon, so the Dragon Ball spine rendered as seven chips all reading "S1" —
-    // Z, GT, Kai, Super and Daima were indistinguishable. A franchise whose entries
-    // are named rather than numbered needs the name. Added 2026-10-12.
-    function commonPrefixWords(names) {
-        if (names.length < 2) return 0;
-        // Compare words with trailing punctuation stripped. "Tokyo Revengers" and
-        // "Tokyo Revengers: Seiya Kessen-hen" differ at word 2 only because of the
-        // colon, so the shared prefix collapsed to "Tokyo" and every chip read
-        // "Revengers...". 2026-10-13.
-        const w = (x) => (x || '').toLowerCase().replace(/[:：\-\u2013\u2014,.]+$/, '');
-        const split = names.map(n => n.split(/\s+/));
-        let i = 0;
-        while (split.every(s => s[i] !== undefined && w(s[i]) === w(split[0][i]))) i++;
-        return i;
-    }
+    /* commonPrefixWords (how many leading words a set of titles share, for labeling a
+     * chip by what distinguishes it) lives in server/ani-mate-franchise.js now. This file
+     * and the desktop page each carried the same copy and handed it in as an argument. */
 
-    function seasonLabel(r, siblings) {
-        const n = r.name || '';
-        let m = n.match(/(\d+)\s*(?:st|nd|rd|th)\s+Season/i)
-             || n.match(/\bSeason\s*(\d+)/i)
-             || n.match(/\bPart\s*(\d+)/i)
-             || n.match(/\bS(\d+)\b/);
-        if (m) return 'S' + m[1];
-        const k = commonPrefixWords((siblings || []).map(s => s.name).filter(Boolean));
-        if (k > 0) {
-            const rest = n.split(/\s+/).slice(k).join(' ').replace(/^[:\-\u2013\u2014]\s*/, '').trim();
-            if (rest) return rest.length > 18 ? rest.slice(0, 17) + '\u2026' : rest;
-            return 'S1';   // this entry IS the shared title: the original
-        }
-        // "Show: Arc Name" -> "Arc Name"
-        const c = n.split(':');
-        if (c.length > 1) {
-            const tail = c.slice(1).join(':').trim();
-            if (tail) return tail.length > 18 ? tail.slice(0, 17) + '\u2026' : tail;
-        }
-        const f = (r.anilist_format || '').toUpperCase();
-        if (f === 'MOVIE' || f === 'OVA' || f === 'ONA' || f === 'SPECIAL') return f;
-        return 'S1';
-    }
+    const seasonLabel = (r, siblings) => FR.seasonLabel(r, siblings);
 
-    function franchiseSiblings(fid) {
-        const pool = [...(state.results || []), ...(state.dailyResults || []),
-                      ...(state.favorites || []), ...(franchiseCache[fid] || [])];
-        const seen = new Set();
-        const out = [];
-        for (const r of pool) {
-            if (String(r.franchise_id || '') !== String(fid)) continue;
-            if (!r.id || seen.has(r.id)) continue;
-            seen.add(r.id);
-            out.push(r);
-        }
-        // Chronological, same rule the franchise card uses.
-        out.sort((a, b) => (a.start_key || 0) - (b.start_key || 0)
-                        || (a.episodes || 0) - (b.episodes || 0));
-        return out;
-    }
+    const franchiseSiblings = (fid) => FR.siblingsOf(fid, franchisePool());
 
     function renderSeasonStrip() {
         // expansion is per show, not sticky across selections
@@ -433,8 +466,17 @@
         const el = document.getElementById('season-strip');
         if (!el) return;
         const sel = state.selectedAnime;
-        if (!sel || !sel.franchiseId) { el.style.display = 'none'; el.innerHTML = ''; return; }
-        const all = franchiseSiblings(sel.franchiseId);
+        if (!sel) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        /* ⛔ THIS LINE WAS THE "NO NAVIGATION" BUG, ON BOTH PLATFORMS. It read
+         *     if (!sel || !sel.franchiseId) { ... return; }
+         * so any show the server never gave a franchise_id — 19 of the 24 rows in a real
+         * library — got no season bar at all, from any season, no matter how many
+         * siblings were sitting in the pool. The key is always derivable from the title,
+         * so the gate is now about whether siblings EXIST. */
+        const fkey = sel.franchiseId || franchiseKeyOf({ id: sel.id, name: sel.title,
+                                                         title_english: sel.titleEnglish });
+        if (!fkey) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        const all = franchiseSiblings(fkey);
         if (all.length < 2) { el.style.display = 'none'; el.innerHTML = ''; return; }
 
         // A SEASON strip should list seasons. With a whole franchise under one id,
@@ -442,29 +484,34 @@
         // three ONAs and an OVA — with two different chips both reading "S1".
         // Series form the spine; everything else sits behind one toggle. The entry
         // currently open is always on the spine, whatever its format.
-        const isSpine = (x) => {
-            const f = (x.anilist_format || '').toUpperCase();
-            return f === 'TV' || f === 'TV_SHORT' || String(x.id) === String(sel.id);
-        };
+        /* Format alone is wrong in both directions — Netflix ships seasons as ONA, and
+         * a null format on this provider is usually an old movie. The rule and its
+         * measurements are in server/ani-mate-franchise.js. */
+        /* What is shown, and HOW MANY ARE NOT, is one decision made in the shared
+         * module (FR.stripOf), so the button below cannot offer rows that are already
+         * on screen. */
+        const strip = FR.stripOf(all, sel.id, state.seasonStripExpanded);
         // The label's sibling basis is the SPINE, not every entry. Across all 39
         // Dragon Ball rows the shared prefix is zero words, because "Super Dragon
         // Ball Heroes" starts with "Super" — and the labels collapsed back to seven
         // chips reading "S1". Over the spine the prefix is "Dragon Ball" and the
         // remainders are Z, GT, Kai, Super, Daima.
-        const spine = all.filter(isSpine);
-        const extra = all.filter(x => !isSpine(x));
-        const sibs = state.seasonStripExpanded ? all : (spine.length >= 2 ? spine : all);
-        if (sibs.length < 2 && !extra.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+        const spine = strip.spine;
+        const sibs = strip.shown;
+        if (sibs.length < 2) { el.style.display = 'none'; el.innerHTML = ''; return; }
         el.innerHTML = sibs.map(s => {
             const on = String(s.id) === String(sel.id) ? ' active' : '';
             return `<button class="season-chip${on}" data-id="${escAttr(String(s.id))}"`
-                 + ` data-title="${escAttr(s.name)}" data-eps="${s.episodes || 0}"`
+                 + ` data-title="${escAttr(s.name)}" data-eps="${countOf(s.episodes)}"`
                  + ` title="${escAttr(s.name)}">${esc(seasonLabel(s, spine))}</button>`;
         }).join('');
-        if (extra.length && !state.seasonStripExpanded) {
+        /* ⚠ ONLY WHEN SOMETHING IS HIDDEN. This was "whenever the franchise has a film",
+         * and a franchise with one season shows every row already: the button read
+         * "+3 more" and did nothing. */
+        if (strip.hidden > 0) {
             el.innerHTML += `<button class="season-chip season-more"`
                           + ` title="Films, OVAs and specials in this franchise">`
-                          + `+${extra.length} more</button>`;
+                          + `+${strip.hidden} more</button>`;
         }
         el.style.display = 'flex';
         const more = el.querySelector('.season-more');
@@ -485,7 +532,15 @@
     // Search once on the season-stripped title and cache whatever shares the id.
     async function ensureFranchiseSiblings() {
         const sel = state.selectedAnime;
-        if (!sel || !sel.franchiseId) return;
+        if (!sel) return;
+        /* Same correction as the strip gate: a missing franchise_id used to abort the
+         * fetch, so a show with no siblings in the pool could never acquire any and the
+         * bar stayed empty forever. Resolve a key first, then fetch. */
+        if (!sel.franchiseId) {
+            sel.franchiseId = franchiseKeyOf({ id: sel.id, name: sel.title,
+                                               title_english: sel.titleEnglish });
+        }
+        if (!sel.franchiseId) return;
         if (franchiseCache[sel.franchiseId]) return;
         // There used to be an early return here when two siblings were already on
         // hand. franchiseSiblings() reads from whatever the CURRENT SEARCH returned,
@@ -506,16 +561,18 @@
         // which is exactly the right query. Fall back to the stripped title otherwise.
         // 2026-10-13.
         const fid = String(sel.franchiseId);
-        const base = fid.startsWith('fp:')
-            ? fid.slice(3)
-            : (sel.title || '')
-                .replace(/\b(\d+\s*(?:st|nd|rd|th)\s+Season|Season\s*\d+|Part\s*\d+)\b/gi, '')
-                .replace(/\s+/g, ' ').trim();
+        /* Search the FRANCHISE, not the open title. A derived key carries the franchise
+         * name already ("fp:beastars"), which is exactly the right query. */
+        const base = fid.startsWith('fp:') ? fid.slice(3) : FR.franchiseBase(sel.title || '');
         if (!base) return;
         try {
             const found = await API.searchAnime(base, state.mode, state.nsfw);
-            franchiseCache[sel.franchiseId] =
-                (found || []).filter(r => String(r.franchise_id || '') === String(sel.franchiseId));
+            /* Keep everything whose RESOLVED key matches — filtering on the raw
+             * franchise_id threw away exactly the untagged rows we went looking for. */
+            const got = (found || []).filter(r => r && r.id);
+            const idx = FR.franchiseIndex(franchisePool().concat(got));
+            const mine = idx.keyOfLabel(sel.franchiseId) || idx.keyOf(sel.id);
+            franchiseCache[sel.franchiseId] = got.filter(r => idx.keyOf(r.id) === mine);
             if (state.selectedAnime && state.selectedAnime.franchiseId === sel.franchiseId) {
                 renderSeasonStrip();
             }
@@ -523,15 +580,40 @@
     }
 
     // === EPISODES ===
-    async function loadEpisodes(animeId, title, epCount) {
+    /** Everything the app knows about a show id, from every list it is holding. It
+     *  used to look in three of them, so a show opened from a season chip, RELEASES,
+     *  CONTINUE or a favorite that arrived by sync lost its English title, cover and
+     *  AniList id. */
+    function knownShow(animeId) {
+        const id = String(animeId);
+        const row = franchisePool().find(r => r && String(r.id) === id);
+        if (row) return row;
+        const h = (state.history || []).find(x => x && String(x.anime_id) === id);
+        return h ? { id, name: h.title, title_english: h.title_english || '',
+                     episodes: h.total_episodes || 0 } : null;
+    }
+
+    /**
+     * @param {{autoEpisode?: string, resumeTime?: number}} [opts] CONTINUE's "open this show, at this
+     *             episode, from here". They travel WITH the call. They used to be left
+     *             in two globals for whichever load finished next, so opening a second
+     *             show before the first had loaded auto-played the second one at the
+     *             first one's offset.
+     */
+    async function loadEpisodes(animeId, title, epCount, opts) {
+        opts = opts || {};
         // Close player if open (don't auto-show video when switching anime)
         if (state.isPlaying) hidePlayer();
+        /* ...and call off a play that is still loading for the show being left. */
+        playSeq++;
 
-        // Look up English title from available data
-        const allSources = [...(state.results || []), ...(state.dailyResults || []), ...(state.favorites || [])];
-        const matched = allSources.find(r => r.id === animeId);
+        // Look up English title and franchise from everything currently known
+        const matched = knownShow(animeId);
+        epCount = countOf(epCount) || countOf(matched && matched.episodes);
         const titleEnglish = matched?.title_english || '';
-        const franchiseId = matched?.franchise_id || '';
+        /* Resolved, not read: `matched?.franchise_id || ''` left this empty for every
+         * untagged show, which is what disabled the season bar downstream. */
+        const franchiseId = franchiseKeyOf(matched || { id: animeId, name: title });
         const cover = matched?.cover || '';
         state.selectedAnime = { id: animeId, title, epCount, titleEnglish, franchiseId, cover,
                                 anilist_id: matched?.anilist_id || null };
@@ -551,31 +633,60 @@
         // Show episode panel with preferred title
         const displayTitle = (state.preferEnglish && titleEnglish) ? titleEnglish : title;
         $('panel-title').textContent = displayTitle;
-        $('panel-meta').textContent = `${epCount || '?'} episodes // ${state.mode.toUpperCase()}`;
+        $('panel-meta').textContent = `${countLabel(epCount)} episodes // ${state.mode.toUpperCase()}`;
         updatePanelFavStar();
         showEpisodePanel();
         renderSeasonStrip();
         ensureFranchiseSiblings();
+
+        /* ⚠ EVERY ANSWER BELOW IS CHECKED AGAINST THE SHOW THAT ASKED FOR IT. Both
+         * requests used to draw into whatever was open when they landed, so opening A
+         * (slow) and then B left B's title over A's episode grid, and PLAY then asked
+         * for B with an episode number picked from A's list. */
+        const stillThis = () => !!state.selectedAnime && String(state.selectedAnime.id) === String(animeId);
 
         // Fetch description with cover image (background)
         const descEl = $('anime-description');
         descEl.style.display = 'none';
         descEl.innerHTML = '';
         API.getAnimeInfo(title).then(info => {
-            if (info && (info.description || info.cover)) {
-                const bannerHtml = info.banner ? `<img class="anime-banner-img" src="${esc(info.banner)}" alt="" loading="lazy" style="width:100%;max-height:140px;object-fit:cover;border-radius:6px;margin-bottom:8px;">` : '';
-                const cleanDesc = info.description ? stripHtml(info.description) : '';
-                const coverHtml = info.cover ? `<img class="anime-cover-img" src="${esc(info.cover)}" alt="${esc(title)}" loading="lazy">` : '';
-                let textHtml = cleanDesc;
-                if (info.genres && info.genres.length > 0) {
-                    textHtml += `<div class="anime-genres">${info.genres.join(' // ')}</div>`;
-                }
-                if (info.score) {
-                    textHtml += `<span class="anime-score"> ${info.score}%</span>`;
-                }
-                descEl.innerHTML = `${bannerHtml}<div class="anime-desc-row">${coverHtml}<div class="anime-desc-text">${textHtml}</div></div>`;
-                descEl.style.display = 'block';
+            if (!stillThis() || !info || !(info.description || info.cover)) return;
+            /* ⚠ BUILT AS NODES AND WRITTEN AS TEXT. The description comes from AniList
+             * or MAL and used to be put in innerHTML after a tag-stripping regular
+             * expression, which an unclosed tag passes straight through. */
+            const img = (className, src, alt) => {
+                const el = document.createElement('img');
+                el.className = className; el.loading = 'lazy'; el.alt = alt || '';
+                if (/^https?:\/\//i.test(String(src))) el.src = String(src);
+                return el;
+            };
+            descEl.textContent = '';
+            if (info.banner) {
+                const b = img('anime-banner-img', info.banner, '');
+                b.style.cssText = 'width:100%;max-height:140px;object-fit:cover;border-radius:6px;margin-bottom:8px;';
+                descEl.appendChild(b);
             }
+            const row = document.createElement('div');
+            row.className = 'anime-desc-row';
+            if (info.cover) row.appendChild(img('anime-cover-img', info.cover, title));
+            const body = document.createElement('div');
+            body.className = 'anime-desc-text';
+            body.appendChild(document.createTextNode(info.description ? plainText(info.description) : ''));
+            if (Array.isArray(info.genres) && info.genres.length > 0) {
+                const g = document.createElement('div');
+                g.className = 'anime-genres';
+                g.textContent = info.genres.map(String).join(' // ');
+                body.appendChild(g);
+            }
+            if (Number(info.score) > 0) {
+                const sc = document.createElement('span');
+                sc.className = 'anime-score';
+                sc.textContent = ' ' + Number(info.score) + '%';
+                body.appendChild(sc);
+            }
+            row.appendChild(body);
+            descEl.appendChild(row);
+            descEl.style.display = 'block';
         }).catch(() => {});
 
         // Fetch episodes
@@ -583,34 +694,43 @@
         grid.innerHTML = '<div class="loading-indicator">LOADING EPISODES...</div>';
 
         try {
+            /* ⚠ THE TITLES GO WITH THE ID. The backend finds a show by name; an id from
+             * favorites, history or a sync means nothing to it. Both names, because a
+             * row that has been through sync can carry the one the desktop knows. */
             const epRes = await API.getEpisodeList(animeId, state.mode,
-                                                   matched && matched.anilist_id);
+                                                   matched && matched.anilist_id,
+                                                   { title, alt: titleEnglish, nsfw: state.nsfw });
+            if (!stillThis()) return;            // another show was opened while this loaded
             // getEpisodeList may return a bare array (older path) or {episodes, arcs}
-            state.episodes = Array.isArray(epRes) ? epRes : (epRes.episodes || []);
-            state.arcs = Array.isArray(epRes) ? null : (epRes.arcs || null);
+            const list = Array.isArray(epRes) ? epRes : ((epRes && epRes.episodes) || []);
+            state.episodes = list.map(String);
+            state.arcs = Array.isArray(epRes) ? null : ((epRes && epRes.arcs) || null);
             renderEpisodeGrid();
+            /* The count is known now even when the card that opened this carried none. */
+            if (!countOf(state.selectedAnime.epCount) && state.episodes.length) {
+                state.selectedAnime.epCount = state.episodes.length;
+                $('panel-meta').textContent = `${state.episodes.length} episodes // ${state.mode.toUpperCase()}`;
+            }
 
-            // Auto-select pending episode (from Continue tab)
-            if (state.pendingAutoEpisode) {
-                const autoEp = state.pendingAutoEpisode;
-                const hasResume = state.pendingResumeTime > 0;
-                state.pendingAutoEpisode = null;
+            // Auto-select the episode CONTINUE asked for
+            const autoEp = (opts.autoEpisode == null || opts.autoEpisode === '') ? '' : String(opts.autoEpisode);
+            if (autoEp && state.episodes.includes(autoEp)) {
+                const resumeAt = Number(opts.resumeTime) > 0 ? Number(opts.resumeTime) : 0;
+                state.selectedEpisode = autoEp;
+                updatePlayButton();
+                highlightEpisode(autoEp);
 
-                if (state.episodes.includes(autoEp) || state.episodes.includes(String(autoEp))) {
-                    state.selectedEpisode = String(autoEp);
-                    updatePlayButton();
-                    highlightEpisode(String(autoEp));
-
-                    if (hasResume) {
-                        toast(`Resuming EP ${autoEp} at ${formatTime(state.pendingResumeTime)}...`, 'info');
-                        playEpisode();
-                    } else {
-                        toast(`Ready: EP ${autoEp}`, 'info');
-                    }
+                if (resumeAt) {
+                    toast(`Resuming EP ${autoEp} at ${formatTime(resumeAt)}...`, 'info');
+                    playEpisode({ anime: state.selectedAnime, episode: autoEp,
+                                  episodes: state.episodes, resumeAt });
+                } else {
+                    toast(`Ready: EP ${autoEp}`, 'info');
                 }
             }
         } catch (err) {
-            grid.innerHTML = `<div class="no-results">Error: ${err.message}</div>`;
+            if (!stillThis()) return;
+            grid.innerHTML = `<div class="no-results">Error: ${esc(err.message)}</div>`;
             toast(err.message, 'error');
         }
     }
@@ -666,14 +786,14 @@
         const visibleEps = state.episodes.slice(band.from - 1, band.to);
 
         // Find watched episodes from history
-        const histEntry = state.history.find(h => h.anime_id === state.selectedAnime?.id);
-        const watchedEps = histEntry?.episodes_watched || [];
+        const histEntry = state.history.find(h => String(h.anime_id) === String(state.selectedAnime?.id));
+        const watchedEps = (histEntry?.episodes_watched || []).map(String);
 
         grid.innerHTML = visibleEps.map(ep => {
             const isWatched = watchedEps.includes(String(ep));
-            const isPlaying = state.selectedEpisode === ep || state.selectedEpisode === String(ep);
+            const isPlaying = String(state.selectedEpisode) === String(ep);
             return `<button class="episode-btn ${isWatched ? 'watched' : ''} ${isPlaying ? 'playing' : ''}"
-                data-ep="${ep}">${isWatched ? '&#10003; ' : ''}${ep}</button>`;
+                data-ep="${esc(ep)}">${isWatched ? '&#10003; ' : ''}${esc(ep)}</button>`;
         }).join('');
 
         grid.querySelectorAll('.episode-btn').forEach(btn => {
@@ -707,72 +827,162 @@
     function updatePanelFavStar() {
         if (!state.selectedAnime) return;
         const star = $('panel-fav');
-        const isFav = state.favorites.some(f => f.id === state.selectedAnime.id);
+        const isFav = isFavId(state.selectedAnime.id);
         star.innerHTML = isFav ? '&#9733;' : '&#9734;';
         star.classList.toggle('active', isFav);
     }
 
     // === VIDEO PLAYER ===
-    async function playEpisode() {
-        if (!state.selectedAnime || !state.selectedEpisode || state.playLock) return;
-        state.playLock = true;
+    /* ── WHAT IS PLAYING IS ITS OWN RECORD ────────────────────────────────────────────
+     * state.selectedAnime / state.selectedEpisode say what is SELECTED in the grid.
+     * state.playing says what the video element is showing:
+     *     { anime, episode, episodes, mode, finished }
+     *
+     * ⛔ They used to be one thing, and all of the playback bookkeeping read the
+     * selection:
+     *   - a background sync that pulled anything re-drew the search results, which
+     *     cleared the selection under a playing video. From then on nothing was saved,
+     *     nothing was marked watched, auto-play stopped and the previous and next
+     *     buttons did nothing;
+     *   - when an episode ended the selection moved to the next one while the finished
+     *     video was still loaded, so closing the player filed the finished video's end
+     *     time under the NEXT episode.
+     * Progress, watched marks, the watch clock's genres, the previous and next buttons
+     * and "what comes next" all read state.playing now. */
+    const showingPlaying = () => !!state.playing && !!state.selectedAnime
+        && String(state.selectedAnime.id) === String(state.playing.anime.id);
 
+    /* A source's own word for the quality, or AUTO. The label used to print the quality
+     * that was ASKED FOR as if it were the one playing. */
+    const qualityLabel = (r) => {
+        const t = String(r || '').trim();
+        return t && !/^(best|worst|auto)$/i.test(t) ? t.toUpperCase() : 'AUTO';
+    };
+
+    function paintNowPlaying() {
+        const n = state.nowPlaying;
+        if (!n) return;
+        $('player-info').textContent = `${n.title} // EP ${n.episode} // ${n.quality}`;
+        if (showingPlaying()) {
+            $('panel-meta').textContent = `EP ${n.episode} // ${n.quality} // ${String(n.mode || 'sub').toUpperCase()}`;
+        }
+    }
+
+    /* The panel under the player describes the SELECTION whenever nothing is playing. */
+    function describeSelection() {
+        const sel = state.selectedAnime;
+        if (!sel) return;
+        $('panel-meta').textContent = state.selectedEpisode
+            ? `EP ${state.selectedEpisode} selected // ${state.mode.toUpperCase()}`
+            : `${countLabel(sel.epCount || state.episodes.length)} episodes // ${state.mode.toUpperCase()}`;
+    }
+
+    /* Every play request takes a number. Closing the player, opening another show or
+     * asking for something else moves the number on, and an answer that comes back
+     * holding an old one is dropped. */
+    let playSeq = 0;
+    let playPending = null;       // { key, seq } of the request in flight
+
+    /**
+     * Play one episode. With no argument it plays the selection (the PLAY button and
+     * Enter). CONTINUE, auto-play and the previous/next buttons hand it exactly what to
+     * play: { anime, episode, episodes, resumeAt }
+     *
+     * ⚠ WHAT WAS ASKED FOR IS FIXED HERE, BEFORE THE REQUEST. Everything after the await
+     * used to read the selection again, live: tap episode 5 while episode 4 was loading
+     * and 4 played under 5's name, with 5's progress and 5's watched mark.
+     *
+     * ⚠ THE RESUME OFFSET TRAVELS WITH THE REQUEST. It used to sit in a global until
+     * some player started, so a play that failed, or was dropped by the old lock, left
+     * it armed for whatever was played next.
+     */
+    async function playEpisode(target) {
+        const t = (target && target.anime) ? target
+            : { anime: state.selectedAnime, episode: state.selectedEpisode, episodes: state.episodes };
+        if (!t.anime || t.episode == null || t.episode === '') return;
+        const anime = t.anime;
+        const episode = String(t.episode);
+        const episodes = (t.episodes || []).map(String);
+        const mode = state.mode;
         const quality = $('quality-select').value;
-        toast(`Loading EP ${state.selectedEpisode}...`, 'info');
+
+        /* A second tap while exactly this is loading changes nothing. Anything else
+         * replaces what was loading: the newest request is the one that plays. (This
+         * was a lock, and a lock drops the NEW request, which is the wrong one.) */
+        const key = `${anime.id}|${episode}|${mode}`;
+        if (playPending && playPending.key === key && playPending.seq === playSeq) return;
+        const seq = ++playSeq;
+        playPending = { key, seq };
+
+        toast(`Loading EP ${episode}...`, 'info');
 
         try {
-            const data = await API.getEpisodeUrl(
-                state.selectedAnime.id,
-                state.selectedEpisode,
-                state.mode,
-                quality
-            );
+            const data = await API.getEpisodeUrl(anime.id, episode, mode, quality,
+                { title: anime.title, alt: anime.titleEnglish || '', nsfw: state.nsfw });
+
+            /* Closed, replaced, or another show opened while this loaded. */
+            if (seq !== playSeq) return;
 
             if (!data || !data.url) {
-                toast('No streams available — episode may not be uploaded yet. Try again later.', 'error');
+                toast('No streams available. The episode may not be uploaded yet. Try again later.', 'error');
                 return;
             }
 
+            /* Something else is still on screen: file where it got to before it goes. */
+            if (state.isPlaying) saveProgress();
+
             state.availableLinks = data.all_links || [];
 
-            // Update history
+            /* ⚠ skip_watched: AN EPISODE IS WATCHED AT 80%, NOT WHEN IT STARTS. Without
+             * this flag the store put the episode in the watched list the moment the
+             * stream came back, so a film opened for ten seconds counted as seen, and
+             * through sync counted as seen on the desktop too. The desktop has passed
+             * this flag from the start; the 80% rule below is what marks it. */
             await Storage.addToHistory({
-                anime_id: state.selectedAnime.id,
-                title: state.selectedAnime.title,
-                episode: state.selectedEpisode,
+                anime_id: anime.id,
+                title: anime.title,
+                episode,
                 quality: data.resolution || quality,
-                mode: state.mode,
-                total_episodes: state.selectedAnime.epCount || null
+                mode,
+                total_episodes: countOf(anime.epCount) || episodes.length || null,
+                skip_watched: true
             });
             state.history = await Storage.loadHistory();
+            if (seq !== playSeq) return;       // closed while the history was written
 
-            // Update UI with preferred title
-            const playTitle = (state.preferEnglish && state.selectedAnime.titleEnglish) ? state.selectedAnime.titleEnglish : state.selectedAnime.title;
-            $('player-info').textContent =
-                `${playTitle} // EP ${state.selectedEpisode} // ${(data.resolution || quality).toUpperCase()}`;
-            $('panel-meta').textContent =
-                `EP ${state.selectedEpisode} // ${(data.resolution || quality).toUpperCase()} // ${state.mode.toUpperCase()}`;
-            highlightEpisode(state.selectedEpisode);
+            state.playing = { anime, episode, episodes, mode, finished: false };
+            /* If the panel is showing this show, its selection follows what plays. */
+            if (showingPlaying()) {
+                state.selectedEpisode = episode;
+                updatePlayButton();
+                highlightEpisode(episode);
+            }
+
+            const playTitle = (state.preferEnglish && anime.titleEnglish) ? anime.titleEnglish : anime.title;
+            state.nowPlaying = { title: playTitle, episode, quality: qualityLabel(data.resolution), mode };
+            paintNowPlaying();
 
             // Reset watched tracking
             state.watchedMarked = false;
             state.currentPlaybackTime = 0;
 
-            // Launch player. Subtitles ride along: the API layer now passes them
-            // through instead of rebuilding a url/referer-only object.
+            // Launch player. Subtitles ride along: the API layer passes them through
+            // instead of rebuilding a url/referer-only object.
             state.streamSubtitles = data.subtitles || [];
             state.streamReferer = data.referer || null;
+            state.pendingResumeTime = Number(t.resumeAt) > 0 ? Number(t.resumeAt) : 0;
             showPlayer(data.url);
-            toast(`Playing: ${playTitle} EP ${state.selectedEpisode}`, 'success');
+            toast(`Playing: ${playTitle} EP ${episode}`, 'success');
         } catch (err) {
+            if (seq !== playSeq) return;       // replaced: its failure is not news
             const msg = err.message || 'Unknown error';
             if (msg.includes('No stream') || msg.includes('404') || msg.includes('not found')) {
-                toast('No streams available — try again later', 'error');
+                toast('No streams available. Try again later', 'error');
             } else {
                 toast(`Playback error: ${msg}`, 'error');
             }
         } finally {
-            state.playLock = false;
+            if (playPending && playPending.seq === seq) playPending = null;
         }
     }
 
@@ -896,6 +1106,27 @@
         video.removeEventListener('timeupdate', watchTimeHandler);
         video.addEventListener('timeupdate', watchTimeHandler);
 
+        /* ── WATCH CLOCK ──────────────────────────────────────────────────────────
+         * Counts REAL seconds in front of a playing video, never currentTime --
+         * currentTime is a POSITION, so a scrub forward would bank time nobody watched
+         * and a rewatch would run the total backwards.
+         *
+         * ⚠ THE GAP GUARD IS THE WHOLE TRICK, AND IT MATTERS MORE ON A PHONE. timeupdate
+         * fires ~4x a second, so a healthy delta is ~0.25s. Anything bigger means the
+         * clock ran while the video did not -- and a phone does that constantly: screen
+         * off, app backgrounded, a call. Counting those would inflate the number by
+         * hours. Discarded rather than clamped, because a clamp is still a guess about
+         * time nobody was watching. */
+        wtLast = Date.now();
+        video.removeEventListener('timeupdate', watchClockTick);
+        video.addEventListener('timeupdate', watchClockTick);
+        for (const evName of ['play', 'playing', 'seeked']) {
+            video.removeEventListener(evName, watchClockResume);
+            video.addEventListener(evName, watchClockResume);
+        }
+        document.removeEventListener('visibilitychange', watchClockResume);
+        document.addEventListener('visibilitychange', watchClockResume);
+
         // Save progress every 30s
         if (state.progressSaveInterval) clearInterval(state.progressSaveInterval);
         state.progressSaveInterval = setInterval(saveProgress, 30000);
@@ -919,103 +1150,176 @@
         attachSubtitles(video, state.streamSubtitles || [], state.streamReferer);
 
         const isM3u8 = streamUrl.includes('.m3u8') || streamUrl.includes('master.txt');
+        state.currentStreamUrl = streamUrl;
+
+        /* Listeners from an earlier attempt must not outlive it. The MP4 path added
+         * one-shot `loadeddata` and `error` listeners and left the unused one in place,
+         * so a later error ran an old closure and loaded an EARLIER episode's link. */
+        if (state.playerAbort) state.playerAbort.abort();
+        state.playerAbort = new AbortController();
+        const lifetime = state.playerAbort.signal;
+
+        const started = () => {
+            $('player-loading').classList.add('hidden');
+            if (state.pendingResumeTime > 0) {
+                video.currentTime = state.pendingResumeTime;
+                state.pendingResumeTime = 0;
+            }
+            video.play().catch(() => {});
+        };
+        /* The next link in the list, from where this one stopped. Every retry used to
+         * start the episode again from 0:00. Returns false when there is no next link. */
+        const tryNextLink = () => {
+            const remaining = (state.availableLinks || []).filter(l => l.url !== streamUrl);
+            if (!remaining.length) return false;
+            const next = remaining[0];
+            state.availableLinks = remaining;
+            const at = video.currentTime || 0;
+            if (at > 0) state.pendingResumeTime = at;
+            toast(`Trying ${next.provider} (${next.resolution})...`, 'info');
+            showPlayer(next.url);
+            return true;
+        };
+        const giveUp = () => {
+            $('player-loading').classList.add('hidden');
+            toast('All streams failed. Try again in a moment', 'error');
+        };
 
         if (isM3u8 && Hls.isSupported()) {
-            // REFERER ON THE MEDIA REQUESTS. The CDNs behind the working sources answer 403
-            // without it — measured on hls.dramahot.top: m3u8 403 direct, 200 with Referer.
-            //
-            // A browser REFUSES setRequestHeader('Referer', ...) as a forbidden header. This
-            // works anyway because CapacitorHttp (enabled in capacitor.config.json) REPLACES
-            // XMLHttpRequest with a JS shim and sends the request natively, and the forbidden
-            // header list is enforced by the browser's native XHR, not by a shim. The same
-            // path already carries Referer for every scraping call in ani-mate-net.js.
-            const hls = new Hls({
-                // Keep hls.js out of the native text-track business — see the note in
-                // attachSubtitles(). Without this it disables the <track> we just enabled.
-                renderTextTracksNatively: false,
-                subtitleDisplay: false,
-                xhrSetup: (xhr, url) => {
-                    if (!state.streamReferer) return;
-                    try { xhr.setRequestHeader('Referer', state.streamReferer); } catch (e) {}
-                }
-            });
-            state.hlsInstance = hls;
-
-            hls.loadSource(streamUrl);
-            hls.attachMedia(video);
-
-            hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                $('player-loading').classList.add('hidden');
-                if (state.pendingResumeTime > 0) {
-                    video.currentTime = state.pendingResumeTime;
-                    state.pendingResumeTime = 0;
-                }
-                video.play().catch(() => {});
-                applySubtitleMode(video);
-            });
-            // A level switch re-runs hls.js's track handling, so re-assert after each one.
-            hls.on(Hls.Events.LEVEL_SWITCHED, () => applySubtitleMode(video));
-
-            hls.on(Hls.Events.ERROR, (event, data) => {
-                if (data.fatal) {
-                    // Auto-fallback: try next available link
-                    const currentUrl = streamUrl;
-                    const remaining = state.availableLinks.filter(l => l.url !== currentUrl);
-                    if (remaining.length > 0) {
-                        const next = remaining[0];
-                        state.availableLinks = remaining;
-                        toast(`Trying ${next.provider} (${next.resolution})...`, 'info');
-                        hls.destroy();
-                        state.hlsInstance = null;
-                        showPlayer(next.url);
-                    } else {
-                        $('player-loading').classList.add('hidden');
-                        toast('All streams failed — try another quality', 'error');
+            /* ONE function builds the player, for the first attempt and for the second
+             * one on the referer-capable transport (see hls-loader-fix.js). */
+            const startHls = (native) => {
+                const config = {
+                    // Keep hls.js out of the native text-track business — see the note in
+                    // attachSubtitles(). Without this it disables the <track> we just enabled.
+                    renderTextTracksNatively: false,
+                    subtitleDisplay: false,
+                    /* ⚠ READ hls-loader-fix.js BEFORE TRUSTING THIS. The comment that
+                     * used to sit here said this header is sent because CapacitorHttp
+                     * replaces XMLHttpRequest. Capacitor's own code, as installed, does
+                     * not read that way: for a GET the patched object hands this call to
+                     * the WebView's real XMLHttpRequest, which refuses "Referer". It is
+                     * kept because it is harmless and would start working on a transport
+                     * that honors it; the second attempt below does not depend on it. */
+                    xhrSetup: (xhr, url) => {
+                        if (!state.streamReferer) return;
+                        try { xhr.setRequestHeader('Referer', state.streamReferer); } catch (e) {}
                     }
-                }
-            });
+                };
+                if (native) config.loader = window.AniMateNativeHlsLoader(() => state.streamReferer);
+                const hls = new Hls(config);
+                state.hlsInstance = hls;
+                let parsed = false, fragments = 0, netRetries = 0, mediaRetries = 0;
+
+                hls.loadSource(streamUrl);
+                hls.attachMedia(video);
+
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    parsed = true;
+                    started();
+                    applySubtitleMode(video);
+                    applyQualityChoice();
+                });
+                hls.on(Hls.Events.FRAG_LOADED, () => { fragments++; netRetries = 0; });
+                // A level switch re-runs hls.js's track handling, so re-assert after each one.
+                hls.on(Hls.Events.LEVEL_SWITCHED, (ev, d) => {
+                    applySubtitleMode(video);
+                    const lv = hls.levels && hls.levels[d.level];
+                    if (lv && lv.height && state.nowPlaying) {
+                        state.nowPlaying.quality = lv.height + 'P';
+                        paintNowPlaying();
+                    }
+                });
+
+                hls.on(Hls.Events.ERROR, (event, data) => {
+                    if (!data.fatal || state.hlsInstance !== hls) return;
+                    const at = video.currentTime || 0;
+                    const network = data.type === Hls.ErrorTypes.NETWORK_ERROR;
+
+                    /* 1. Nothing arrived at all, and the stream came with a referer: the
+                     *    host is very likely refusing requests that lack it. Try once on
+                     *    the transport that can send it. */
+                    if (network && !native && fragments === 0 && state.streamReferer
+                        && window.AniMateNativeHlsLoader) {
+                        console.log('[player] no data on the standard transport; trying the referer-capable one');
+                        if (at > 0) state.pendingResumeTime = at;
+                        hls.destroy();
+                        startHls(true);
+                        return;
+                    }
+                    /* 2. A stream that WAS playing and dropped: ask again where it
+                     *    stopped. This had no recovery at all. */
+                    if (network && parsed && fragments > 0 && netRetries < 3) {
+                        netRetries++;
+                        toast('Connection dropped, reconnecting...', 'info');
+                        setTimeout(() => { if (state.hlsInstance === hls) hls.startLoad(); }, 1500 * netRetries);
+                        return;
+                    }
+                    if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaRetries < 2) {
+                        mediaRetries++;
+                        hls.recoverMediaError();
+                        return;
+                    }
+                    /* 3. Another link, if the source gave more than one. */
+                    hls.destroy();
+                    state.hlsInstance = null;
+                    if (!tryNextLink()) giveUp();
+                });
+            };
+            startHls(false);
         } else if (video.canPlayType('application/vnd.apple.mpegurl') && isM3u8) {
             // Native HLS (Safari/WebKit)
+            video.addEventListener('loadedmetadata', started, { once: true, signal: lifetime });
             video.src = streamUrl;
-            video.addEventListener('loadedmetadata', () => {
-                $('player-loading').classList.add('hidden');
-                if (state.pendingResumeTime > 0) {
-                    video.currentTime = state.pendingResumeTime;
-                    state.pendingResumeTime = 0;
-                }
-                video.play().catch(() => {});
-            }, { once: true });
         } else {
             // Direct MP4 or other format
+            video.addEventListener('loadeddata', started, { once: true, signal: lifetime });
+            video.addEventListener('error', () => { if (!tryNextLink()) giveUp(); },
+                                   { once: true, signal: lifetime });
             video.src = streamUrl;
-            video.addEventListener('loadeddata', () => {
-                $('player-loading').classList.add('hidden');
-                if (state.pendingResumeTime > 0) {
-                    video.currentTime = state.pendingResumeTime;
-                    state.pendingResumeTime = 0;
-                }
-                video.play().catch(() => {});
-            }, { once: true });
-            video.addEventListener('error', () => {
-                const remaining = state.availableLinks.filter(l => l.url !== streamUrl);
-                if (remaining.length > 0) {
-                    const next = remaining[0];
-                    state.availableLinks = remaining;
-                    toast(`Trying ${next.provider} (${next.resolution})...`, 'info');
-                    showPlayer(next.url);
-                } else {
-                    $('player-loading').classList.add('hidden');
-                    toast('All streams failed — try another quality', 'error');
-                }
-            }, { once: true });
         }
 
         // Show player UI initially, auto-hide after 4s
         showPlayerUi();
     }
 
+    /* ── QUALITY ─────────────────────────────────────────────────────────────────────
+     * A stream from the backend is ONE adaptive stream with several levels inside it,
+     * and no list of separate links. The control used to look only for separate links,
+     * find none, and return without a word. It chooses among the stream's own levels:
+     *   BEST    automatic: the highest level the connection sustains
+     *   WORST   the lowest level
+     *   1080 / 720 / 480 / 360   that height, or the nearest one below it
+     * Returns the label it applied, or '' when the stream has nothing to choose from. */
+    function applyQualityChoice() {
+        const hls = state.hlsInstance;
+        const wanted = $('quality-select').value;
+        const levels = (hls && hls.levels) ? hls.levels.map((l, i) => ({ i, h: l.height || 0, b: l.bitrate || 0 })) : [];
+        if (levels.length < 2) return '';
+        let pick = -1, label = 'AUTO';
+        if (wanted === 'worst') {
+            const low = levels.slice().sort((a, b) => (a.h - b.h) || (a.b - b.b))[0];
+            pick = low.i; label = low.h ? low.h + 'P' : 'LOW';
+        } else if (wanted !== 'best') {
+            const want = parseInt(wanted, 10) || 0;
+            const below = levels.filter(l => l.h && l.h <= want).sort((a, b) => b.h - a.h)[0];
+            const nearest = levels.slice().sort((a, b) => Math.abs(a.h - want) - Math.abs(b.h - want))[0];
+            const got = below || nearest;
+            pick = got.i; label = got.h ? got.h + 'P' : 'AUTO';
+        }
+        hls.currentLevel = pick;
+        if (state.nowPlaying) { state.nowPlaying.quality = label; paintNowPlaying(); }
+        return label;
+    }
+
     function hidePlayer() {
+        /* A play that is still waiting on the network must not open the player after
+         * the user has closed it. */
+        playSeq++;
+        if (state.playerAbort) { state.playerAbort.abort(); state.playerAbort = null; }
         saveProgress();
+        state.playing = null;
+        state.nowPlaying = null;
         if (state.progressSaveInterval) {
             clearInterval(state.progressSaveInterval);
             state.progressSaveInterval = null;
@@ -1031,96 +1335,122 @@
             state.hlsInstance = null;
         }
         state.isPlaying = false;
+        state.pendingResumeTime = 0;
 
         // Capacitor: unlock orientation + allow sleep + show status bar
         try { ScreenOrientation?.unlock(); } catch (e) {}
         try { KeepAwake?.allowSleep(); } catch (e) {}
         try { StatusBar?.show(); } catch (e) {}
+
+        /* The panel under the player: its line of text, and the watched marks. */
+        describeSelection();
+        if (state.selectedAnime && state.episodes.length) renderEpisodeGrid();
+    }
+
+    /* The watched list in memory, brought in line with what was just written. */
+    function noteWatchedLocally(playing) {
+        const ep = String(playing.episode);
+        const histEntry = state.history.find(h => String(h.anime_id) === String(playing.anime.id));
+        if (histEntry) {
+            if (!Array.isArray(histEntry.episodes_watched)) histEntry.episodes_watched = [];
+            if (!histEntry.episodes_watched.includes(ep)) histEntry.episodes_watched.push(ep);
+        }
+        if (showingPlaying()) renderEpisodeGrid();
     }
 
     function watchTimeHandler() {
-        if (state.watchedMarked || !state.selectedAnime || !state.selectedEpisode) return;
+        const playing = state.playing;
+        if (state.watchedMarked || !playing || playing.finished) return;
         const currentTime = video.currentTime;
         const duration = video.duration || Infinity;
         state.currentPlaybackTime = currentTime;
 
-        // Mark as watched after 80% of video OR 20 minutes
-        const threshold = Math.min(1200, duration * 0.8);
+        /* Watched at 80% of the video. The 20 minute mark is used ONLY when the length
+         * is not known. It used to be "whichever comes first", which marked a two hour
+         * film watched at minute 20. */
+        const threshold = Number.isFinite(duration) && duration > 0 ? duration * 0.8 : 1200;
         if (currentTime >= threshold) {
             state.watchedMarked = true;
-            Storage.markWatched(state.selectedAnime.id, state.selectedEpisode);
-
-            // Update local state
-            const histEntry = state.history.find(h => h.anime_id === state.selectedAnime.id);
-            if (histEntry) {
-                if (!Array.isArray(histEntry.episodes_watched)) histEntry.episodes_watched = [];
-                if (!histEntry.episodes_watched.includes(String(state.selectedEpisode))) {
-                    histEntry.episodes_watched.push(String(state.selectedEpisode));
-                }
-            }
-            renderEpisodeGrid();
+            Storage.markWatched(playing.anime.id, playing.episode);
+            noteWatchedLocally(playing);
         }
     }
 
     function saveProgress() {
-        if (!state.selectedAnime || !state.selectedEpisode || !video || !video.currentTime) return;
-        Storage.saveProgress(
-            state.selectedAnime.id,
-            state.selectedEpisode,
-            Math.floor(video.currentTime)
-        );
+        const playing = state.playing;
+        /* ⛔ NOT AFTER THE VIDEO HAS ENDED. The 'ended' handler has already filed the
+         * finished episode; its end time is not a place to resume from. */
+        if (!playing || playing.finished || !video || !video.currentTime || video.ended) return;
+        Storage.saveProgress(playing.anime.id, playing.episode, Math.floor(video.currentTime));
     }
 
     // Handle episode end — autoplay next or mark watched and queue next
     video.addEventListener('ended', async () => {
-        if (!state.selectedAnime || !state.episodes.length) return;
+        /* What ENDED is what was playing, whatever is selected by now. */
+        const playing = state.playing;
+        if (!playing || playing.finished) return;
+        playing.finished = true;
 
-        // Mark current episode as watched and clear progress
-        if (state.selectedEpisode) {
-            try { await Storage.markWatched(state.selectedAnime.id, state.selectedEpisode); } catch (e) {}
-            checkFavoritesUpdates();
+        if (state.progressSaveInterval) {
+            clearInterval(state.progressSaveInterval);
+            state.progressSaveInterval = null;
         }
 
-        const currentIdx = state.episodes.indexOf(state.selectedEpisode);
-        const hasNext = currentIdx !== -1 && currentIdx < state.episodes.length - 1;
+        // Mark the finished episode as watched and clear its progress
+        state.watchedMarked = true;
+        try { await Storage.markWatched(playing.anime.id, playing.episode); } catch (e) {}
+        noteWatchedLocally(playing);
+        checkFavoritesUpdates();
+        if (state.playing !== playing) return;      // closed or replaced while that was written
+
+        const eps = playing.episodes || [];
+        const currentIdx = eps.indexOf(String(playing.episode));
+        const hasNext = currentIdx !== -1 && currentIdx < eps.length - 1;
 
         if (!hasNext) {
-            toast('Series complete!', 'info');
+            toast(currentIdx === -1 ? 'Episode finished' : 'Series complete!', 'info');
             hidePlayer();
             return;
         }
 
-        const nextEp = state.episodes[currentIdx + 1];
-        state.selectedEpisode = nextEp;
-        state.pendingResumeTime = 0;
-        updatePlayButton();
-        highlightEpisode(nextEp);
-        $('panel-meta').textContent = `EP ${nextEp} // ${state.mode.toUpperCase()}`;
+        const nextEp = eps[currentIdx + 1];
+        /* The panel follows only if it is still showing the show that was playing. */
+        if (showingPlaying()) {
+            state.selectedEpisode = nextEp;
+            updatePlayButton();
+            highlightEpisode(nextEp);
+        }
 
         if (state.autoPlay) {
             toast(`Auto-playing EP ${nextEp}...`, 'info');
-            playEpisode();
+            playEpisode({ anime: playing.anime, episode: nextEp, episodes: eps });
         } else {
             hidePlayer();
-            toast(`EP ${nextEp} ready — press Play`, 'info');
+            toast(`EP ${nextEp} ready. Press Play`, 'info');
         }
     });
 
-    // Quality switching during playback (uses cached links)
+    // Quality switching during playback
     $('quality-select').addEventListener('change', (e) => {
-        if (!state.isPlaying || state.availableLinks.length === 0) return;
+        if (!state.isPlaying) return;          // it is read when the next episode starts
+        /* The stream's own levels first (see applyQualityChoice). */
+        const label = applyQualityChoice();
+        if (label) { toast(`Quality: ${label}`, 'info'); return; }
+        /* Otherwise the separate links, when the source gave more than one. */
         const wanted = e.target.value;
-        let match;
-        if (wanted === 'best') match = state.availableLinks[0];
-        else if (wanted === 'worst') match = state.availableLinks[state.availableLinks.length - 1];
-        else match = state.availableLinks.find(l => l.resolution.includes(wanted));
-
-        if (match) {
+        const links = state.availableLinks || [];
+        const match = wanted === 'best' ? links[0]
+            : wanted === 'worst' ? links[links.length - 1]
+            : links.find(l => String(l.resolution || '').includes(wanted));
+        if (match && match.url !== state.currentStreamUrl) {
             toast(`Switching to ${match.resolution}...`, 'info');
             state.pendingResumeTime = video.currentTime;
+            if (state.nowPlaying) { state.nowPlaying.quality = qualityLabel(match.resolution); paintNowPlaying(); }
             showPlayer(match.url);
+        } else if (!match && links.length > 1) {
+            toast(`${wanted} is not offered for this episode`, 'error');
         } else {
-            toast(`${wanted} not available`, 'error');
+            toast('This stream has one quality', 'info');
         }
     });
 
@@ -1268,41 +1598,28 @@
             resetUiHideTimer();
         });
 
-        $('ctrl-next-ep').addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (!state.selectedAnime || !state.episodes.length) return;
-            const idx = state.episodes.indexOf(state.selectedEpisode);
-            if (idx < 0 || idx >= state.episodes.length - 1) {
-                toast('No next episode', 'info');
+        /* One step from the episode that is PLAYING, through that show's own list. These
+         * read the selection and the open show's list, so they went dead the moment
+         * anything cleared the selection under the player. */
+        const stepEpisode = (dir) => {
+            const playing = state.playing;
+            if (!playing || !playing.episodes.length) return;
+            const idx = playing.episodes.indexOf(String(playing.episode));
+            const to = idx + dir;
+            if (idx < 0 || to < 0 || to >= playing.episodes.length) {
+                toast(dir > 0 ? 'No next episode' : 'No previous episode', 'info');
                 return;
             }
-            const nextEp = state.episodes[idx + 1];
-            state.selectedEpisode = nextEp;
-            state.pendingResumeTime = 0;
-            updatePlayButton();
-            highlightEpisode(nextEp);
-            $('panel-meta').textContent = `EP ${nextEp} // ${state.mode.toUpperCase()}`;
-            toast(`Loading EP ${nextEp}...`, 'info');
-            playEpisode();
-        });
-
-        $('ctrl-prev-ep').addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (!state.selectedAnime || !state.episodes.length) return;
-            const idx = state.episodes.indexOf(state.selectedEpisode);
-            if (idx <= 0) {
-                toast('No previous episode', 'info');
-                return;
+            const ep = playing.episodes[to];
+            if (showingPlaying()) {
+                state.selectedEpisode = ep;
+                updatePlayButton();
+                highlightEpisode(ep);
             }
-            const prevEp = state.episodes[idx - 1];
-            state.selectedEpisode = prevEp;
-            state.pendingResumeTime = 0;
-            updatePlayButton();
-            highlightEpisode(prevEp);
-            $('panel-meta').textContent = `EP ${prevEp} // ${state.mode.toUpperCase()}`;
-            toast(`Loading EP ${prevEp}...`, 'info');
-            playEpisode();
-        });
+            playEpisode({ anime: playing.anime, episode: ep, episodes: playing.episodes });
+        };
+        $('ctrl-next-ep').addEventListener('click', (e) => { e.stopPropagation(); stepEpisode(1); });
+        $('ctrl-prev-ep').addEventListener('click', (e) => { e.stopPropagation(); stepEpisode(-1); });
     }
     setupControlButtons();
 
@@ -1360,9 +1677,9 @@
 
             const rows = h.sources.map(s => {
                 const label = s.state === 'disabled' ? 'not enabled' : s.state;
-                const ms = s.ms != null ? ` &middot; ${s.ms}ms` : '';
+                const ms = s.ms != null ? ` &middot; ${Number(s.ms) || 0}ms` : '';
                 return `<div class="src-row"><span class="src-name">${esc(s.name)}</span>` +
-                       `<span class="src-state src-${s.state}">${label}${ms}</span></div>`;
+                       `<span class="src-state src-${cls(s.state)}">${esc(label)}${ms}</span></div>`;
             }).join('');
             const t = h.transports || {};
             const transports = Object.keys(t).filter(k => t[k]).join(', ') || 'none';
@@ -1377,14 +1694,20 @@
         } catch { /* leave the plain message */ }
     }
 
+    /* ⚠ EVERY TAB DRAWS INTO THE SAME CONTAINER. Each loader below used to draw when its
+     * answer arrived, whichever tab was showing by then: tap DAILY, then FAVS, and a slow
+     * DAILY answer replaced the favorites under the FAVS tab. Each one keeps what it
+     * fetched and draws only if its own tab is still the one on screen. */
     // === CONTINUE WATCHING ===
     async function loadContinue() {
         resultsContainer.innerHTML = '<div class="loading-indicator">LOADING...</div>';
         try {
             state.continueResults = await Storage.getContinueList();
-            renderContinue();
+            state.continueLoaded = true;
+            if (state.activeTab === 'continue') renderContinue();
         } catch (err) {
-            resultsContainer.innerHTML = `<div class="no-results">Error: ${err.message}</div>`;
+            if (state.activeTab !== 'continue') return;
+            resultsContainer.innerHTML = `<div class="no-results">Error: ${esc(err.message)}</div>`;
         }
     }
 
@@ -1412,15 +1735,15 @@
                 const contPrimary = (state.preferEnglish && contHasEn) ? contEnglish : (r.title || r.anime_id);
                 const contSecondary = (state.preferEnglish && contHasEn) ? r.title : (contHasEn ? contEnglish : '');
 
-                return `<div class="result-card" data-id="${r.anime_id}" data-title="${escAttr(r.title)}"
-                    data-eps="${r.total_episodes || '?'}" data-resume-ep="${resumeEp}" data-resume-time="${resumeTime}">
+                return `<div class="result-card" data-id="${esc(r.anime_id)}" data-title="${escAttr(r.title)}"
+                    data-eps="${countOf(r.total_episodes)}" data-resume-ep="${esc(resumeEp == null ? '' : resumeEp)}" data-resume-time="${Number(resumeTime) || 0}">
                     <div class="result-card-row">
                         <div class="result-info">
                             <div class="result-title">${esc(contPrimary)}</div>
                             ${contSecondary ? `<div class="result-title-en">${esc(contSecondary)}</div>` : ''}
                             <div class="result-meta">
-                                <span class="result-type series">${resumeLabel}</span>
-                                ${totalLabel} // ${(r.mode || 'sub').toUpperCase()}
+                                <span class="result-type series">${esc(resumeLabel)}</span>
+                                ${esc(totalLabel)} // ${esc(String(r.mode || 'sub').toUpperCase())}
                             </div>
                         </div>
                     </div>
@@ -1429,25 +1752,38 @@
 
         // Click to load episodes and auto-select resume episode
         resultsContainer.querySelectorAll('.result-card').forEach(card => {
+            /* A long press that ended in the dialog below is not also a tap. */
+            let longPressed = false;
             card.addEventListener('click', () => {
-                state.pendingAutoEpisode = card.dataset.resumeEp;
-                state.pendingResumeTime = parseFloat(card.dataset.resumeTime) || 0;
-                loadEpisodes(card.dataset.id, card.dataset.title, parseInt(card.dataset.eps) || 0);
+                if (longPressed) { longPressed = false; return; }
+                /* The episode and the offset travel WITH this request (see loadEpisodes). */
+                loadEpisodes(card.dataset.id, card.dataset.title, countOf(card.dataset.eps), {
+                    autoEpisode: card.dataset.resumeEp,
+                    resumeTime: parseFloat(card.dataset.resumeTime) || 0,
+                });
             });
             // Long-press to remove from continue watching
             let lpTimer;
             card.addEventListener('touchstart', () => {
-                lpTimer = setTimeout(() => {
+                lpTimer = setTimeout(async () => {
+                    longPressed = true;
                     const id = card.dataset.id;
                     const title = card.dataset.title;
-                    if (confirm(`Remove "${title}" from history?`)) {
-                        Storage.removeFromHistory(id);
-                        state.continueResults = state.continueResults.filter(r => r.anime_id !== id);
+                    if (!confirm(`Remove "${title}" from history?`)) return;
+                    try {
+                        /* Waited for, and the list in memory follows it. This called
+                         * showToast(), which does not exist, so the row was removed and
+                         * the handler threw before it could say so. */
+                        await Storage.removeFromHistory(id);
+                        state.history = await Storage.loadHistory();
+                        state.continueResults = state.continueResults.filter(r => String(r.anime_id) !== String(id));
                         renderContinue();
-                        showToast(`Removed "${title}"`);
+                        toast(`Removed "${title}"`, 'info');
+                    } catch (err) {
+                        toast('Could not remove it: ' + err.message, 'error');
                     }
                 }, 600);
-            });
+            }, { passive: true });
             card.addEventListener('touchend', () => clearTimeout(lpTimer));
             card.addEventListener('touchmove', () => clearTimeout(lpTimer));
         });
@@ -1457,10 +1793,11 @@
     async function loadDaily() {
         resultsContainer.innerHTML = '<div class="loading-indicator">LOADING TRENDING...</div>';
         try {
-            state.dailyResults = await API.getDailyPopular(state.mode);
-            renderDaily();
+            state.dailyResults = (await API.getDailyPopular(state.mode)) || [];
+            if (state.activeTab === 'daily') renderDaily();
         } catch (err) {
-            resultsContainer.innerHTML = `<div class="no-results">Error: ${err.message}</div>`;
+            if (state.activeTab !== 'daily') return;
+            resultsContainer.innerHTML = `<div class="no-results">Error: ${esc(err.message)}</div>`;
         }
     }
 
@@ -1472,21 +1809,21 @@
 
         resultsContainer.innerHTML = '<div class="section-label">TRENDING TODAY</div>' +
             state.dailyResults.map((r, i) => {
-                const isFav = state.favorites.some(f => f.id === r.id);
+                const isFav = isFavId(r.id);
                 const coverHtml = r.cover
-                    ? `<div class="cover-wrap"><img src="${r.cover}" loading="lazy" alt=""></div>`
+                    ? `<div class="cover-wrap"><img src="${esc(r.cover)}" loading="lazy" alt=""></div>`
                     : '';
-                const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
+                const hasEn = !!r.title_english && !sameText(r.title_english, r.name);
                 const primary = (state.preferEnglish && hasEn) ? r.title_english : r.name;
                 const secondary = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : '');
-                return `<div class="result-card" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
+                return `<div class="result-card" data-id="${esc(r.id)}" data-title="${escAttr(r.name)}" data-eps="${countOf(r.episodes)}">
                     <div class="result-card-row">
-                        <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}" data-fav-cover="${escAttr(r.cover || '')}">${isFav ? '&#9733;' : '&#9734;'}</button>
+                        <button class="fav-star-inline ${isFav ? 'active' : ''}" data-fav-id="${esc(r.id)}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${countOf(r.episodes)}" data-fav-english="${escAttr(r.title_english || '')}" data-fav-cover="${escAttr(r.cover || '')}">${isFav ? '&#9733;' : '&#9734;'}</button>
                         ${coverHtml}
                         <div class="result-info">
                             <div class="result-title">${esc(primary)}</div>
                             ${secondary ? `<div class="result-title-en">${esc(secondary)}</div>` : ''}
-                            <div class="result-meta"><span class="result-type series">#${i + 1}</span>${r.episodes} EP</div>
+                            <div class="result-meta"><span class="result-type series">#${i + 1}</span>${countLabel(r.episodes)} EP</div>
                         </div>
                     </div>
                 </div>`;
@@ -1502,11 +1839,17 @@
         const dateStr = `${y}-${mo}-${dd}`;
         resultsContainer.innerHTML = '<div class="loading-indicator">SCANNING SCHEDULE...</div>';
 
+        /* PREV and NEXT each make a new date object, so "is this still the day that was
+         * asked for" is one comparison. */
+        const asked = state.releasesDate;
         try {
-            state.releasesResults = await API.getAiringSchedule(dateStr);
-            renderReleases();
+            const found = await API.getAiringSchedule(dateStr);
+            if (state.releasesDate !== asked) return;
+            state.releasesResults = found || [];
+            if (state.activeTab === 'releases') renderReleases();
         } catch (err) {
-            resultsContainer.innerHTML = `<div class="no-results">Error: ${err.message}</div>`;
+            if (state.releasesDate !== asked || state.activeTab !== 'releases') return;
+            resultsContainer.innerHTML = `<div class="no-results">Error: ${esc(err.message)}</div>`;
         }
     }
 
@@ -1547,7 +1890,7 @@
             html += items.map(r => {
                 const airTime = new Date(r.airingAt * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
                 const coverHtml = r.cover
-                    ? `<div class="cover-wrap"><img src="${r.cover}" loading="lazy" alt=""></div>`
+                    ? `<div class="cover-wrap"><img src="${esc(r.cover)}" loading="lazy" alt=""></div>`
                     : '';
                 const isFav = state.favorites.some(f => f.name === r.title || f.name === r.title_romaji);
                 const hoursSinceAir = (nowSec - r.airingAt) / 3600;
@@ -1556,20 +1899,20 @@
                     : hoursSinceAir < 6
                         ? '<span class="release-tag publishing">PUBLISHING</span>'
                         : '<span class="release-tag released">AIRED</span>';
-                const relHasEn = r.title && r.title_romaji && r.title.toLowerCase() !== r.title_romaji.toLowerCase();
+                const relHasEn = !!r.title && !!r.title_romaji && !sameText(r.title, r.title_romaji);
                 const relPrimary = (state.preferEnglish || !relHasEn) ? r.title : r.title_romaji;
                 const relSecondary = (state.preferEnglish && relHasEn) ? r.title_romaji : (relHasEn ? r.title : '');
-                return `<div class="result-card release-card" data-release-title="${escAttr(r.title)}" data-release-romaji="${escAttr(r.title_romaji)}">
+                return `<div class="result-card release-card" data-release-title="${escAttr(r.title)}" data-release-romaji="${escAttr(r.title_romaji)}" data-release-anilist-id="${esc(r.anilist_id || '')}">
                     <div class="result-card-row">
-                        <button class="fav-star-inline ${isFav ? 'active' : ''}" data-rel-fav-title="${escAttr(r.title)}" data-rel-fav-romaji="${escAttr(r.title_romaji || '')}" data-rel-fav-eps="${r.totalEpisodes || 0}">${isFav ? '&#9733;' : '&#9734;'}</button>
+                        <button class="fav-star-inline ${isFav ? 'active' : ''}" data-rel-fav-title="${escAttr(r.title)}" data-rel-fav-romaji="${escAttr(r.title_romaji || '')}" data-rel-fav-eps="${countOf(r.totalEpisodes)}">${isFav ? '&#9733;' : '&#9734;'}</button>
                         ${coverHtml}
                         <div class="result-info">
                             <div class="result-title">${esc(relPrimary)} ${tagHtml}</div>
                             ${relSecondary ? `<div class="result-title-en">${esc(relSecondary)}</div>` : ''}
                             <div class="result-meta">
-                                <span class="result-type series">${r.format || 'TV'}</span>
-                                EP ${r.episode}${r.totalEpisodes ? '/' + r.totalEpisodes : ''}
-                                — <span class="release-time">${airTime}</span>
+                                <span class="result-type series">${esc(r.format || 'TV')}</span>
+                                EP ${esc(r.episode)}${r.totalEpisodes ? '/' + esc(r.totalEpisodes) : ''}
+                                — <span class="release-time">${esc(airTime)}</span>
                             </div>
                         </div>
                     </div>
@@ -1608,69 +1951,88 @@
         return results[0];
     }
 
+    /* What the last RELEASES tap found. Kept so the show that opens knows its English
+     * title, cover and AniList id (see knownShow); these rows used to be dropped. */
+    state.lookupResults = [];
+    let releaseSeq = 0;
+
+    async function findRelease(title, romaji) {
+        let results = (await API.searchAnime(title, state.mode, state.nsfw)) || [];
+        if (results.length === 0 && romaji && romaji !== title) {
+            results = (await API.searchAnime(romaji, state.mode, state.nsfw)) || [];
+        }
+        return results;
+    }
+
     function bindReleaseCards() {
         document.querySelectorAll('.release-card').forEach(card => {
             card.addEventListener('click', async (e) => {
                 if (e.target.closest('.fav-star-inline')) return;
                 const title = card.dataset.releaseTitle;
                 const romaji = card.dataset.releaseRomaji;
+                /* Two cards tapped one after the other: only the last one opens. */
+                const mine = ++releaseSeq;
                 toast(`Searching for ${title}...`, 'info');
 
                 try {
-                    let results = await API.searchAnime(title, state.mode, state.nsfw);
-                    if (results.length === 0 && romaji && romaji !== title) {
-                        results = await API.searchAnime(romaji, state.mode, state.nsfw);
-                    }
+                    const results = await findRelease(title, romaji);
+                    if (mine !== releaseSeq) return;
                     if (results.length > 0) {
                         const match = bestTitleMatch(results, title, romaji);
+                        /* The schedule row is an AniList row, so its id is exact, but
+                         * only for a result whose name IS that title. bestTitleMatch
+                         * falls back to "close" and then to "first". */
+                        const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                        const wanted = [norm(title), norm(romaji)].filter(Boolean);
+                        const exact = [norm(match.name), norm(match.title_english)].some(n => n && wanted.includes(n));
+                        const aid = parseInt(card.dataset.releaseAnilistId, 10);
+                        if (exact && aid > 0 && !match.anilist_id) match.anilist_id = aid;
+                        state.lookupResults = results;
                         loadEpisodes(match.id, match.name, match.episodes);
                     } else {
                         toast('Not found on streaming source', 'error');
                     }
                 } catch (err) {
-                    toast(`Search error: ${err.message}`, 'error');
+                    if (mine === releaseSeq) toast(`Search error: ${err.message}`, 'error');
                 }
             });
         });
 
-        // Bind favorite stars on release cards (async AllAnime lookup)
+        // Bind favorite stars on release cards (the show is looked up by name first)
         document.querySelectorAll('.release-card .fav-star-inline').forEach(star => {
+            let working = false;
             star.addEventListener('click', async (e) => {
                 e.stopPropagation();
+                if (working) return;             // a second tap while the first is looking it up
+                working = true;
                 const title = star.dataset.relFavTitle;
                 const romaji = star.dataset.relFavRomaji;
-
-                // Check if already favorited by name
-                const existing = state.favorites.find(f => f.name === title || (romaji && f.name === romaji));
-                if (existing) {
-                    state.favorites = await Storage.removeFavorite(existing.id);
-                    star.classList.remove('active');
-                    star.innerHTML = '&#9734;';
-                    toast('Removed from favorites', 'info');
+                try {
+                    // Check if already favorited by name
+                    const existing = state.favorites.find(f => f.name === title || (romaji && f.name === romaji));
+                    if (existing) {
+                        state.favorites = await Storage.removeFavorite(existing.id);
+                        toast('Removed from favorites', 'info');
+                    } else {
+                        toast('Adding to favorites...', 'info');
+                        const results = await findRelease(title, romaji);
+                        if (!results.length) { toast('Not found on streaming source', 'error'); return; }
+                        /* The result that MATCHES the title. This took the first hit,
+                         * whatever it was, and starred that. */
+                        const match = bestTitleMatch(results, title, romaji);
+                        const fav = { id: match.id, name: match.name, episodes: match.episodes || 0,
+                                      title_english: match.title_english || title };
+                        if (match.cover) fav.cover = match.cover;
+                        state.favorites = await Storage.addFavorite(fav);
+                        toast('Added to favorites', 'success');
+                    }
+                    refreshStars();
                     updatePanelFavStar();
                     checkFavoritesUpdates();
-                    return;
-                }
-
-                toast('Adding to favorites...', 'info');
-                try {
-                    let results = await API.searchAnime(title, state.mode, state.nsfw);
-                    if (results.length === 0 && romaji && romaji !== title) {
-                        results = await API.searchAnime(romaji, state.mode, state.nsfw);
-                    }
-                    if (results.length > 0) {
-                        const match = results[0];
-                        state.favorites = await Storage.addFavorite({ id: match.id, name: match.name, episodes: match.episodes || 0, title_english: match.title_english || title });
-                        star.classList.add('active');
-                        star.innerHTML = '&#9733;';
-                        toast('Added to favorites', 'success');
-                        updatePanelFavStar();
-                        checkFavoritesUpdates();
-                    } else {
-                        toast('Not found on streaming source', 'error');
-                    }
                 } catch (err) {
                     toast(`Favorites error: ${err.message}`, 'error');
+                } finally {
+                    working = false;
                 }
             });
         });
@@ -1683,33 +2045,31 @@
             return;
         }
 
-        // Group favorites by franchise
-        const franchises = {};
-        const ungrouped = [];
-        for (const r of state.favorites) {
-            if (r.franchise_id) {
-                if (!franchises[r.franchise_id]) franchises[r.franchise_id] = [];
-                franchises[r.franchise_id].push(r);
-            } else {
-                ungrouped.push(r);
-            }
-        }
+        /* ⛔ THIS WAS A SECOND, HAND-COPIED GROUPING keyed on `if (r.franchise_id)` —
+         * a copy of a copy. One implementation now, shared with the desktop and with
+         * the results grid.
+         *
+         * 'first' — "show cards should only be the first season card on FAV". The old
+         * parent was members[0] of an insertion-ordered list, i.e. whichever season was
+         * starred first. */
+        const { groups, ungrouped } = groupByFranchise(state.favorites, 'first');
 
         const updatedIds = new Set((state.favUpdates || []).map(u => u.id));
         let html = '<div class="section-label">FAVORITES</div>';
 
-        for (const [fid, members] of Object.entries(franchises)) {
-            if (members.length === 1) { ungrouped.push(members[0]); continue; }
-            const parent = members[0];
-            const hasEn = parent.title_english && parent.title_english.toLowerCase() !== parent.name.toLowerCase();
+        for (const group of groups) {
+            const fid = group.franchise_id;
+            const members = group.members;
+            const parent = group.parent;
+            const hasEn = !!parent.title_english && !sameText(parent.title_english, parent.name);
             const primary = (state.preferEnglish && hasEn) ? parent.title_english : parent.name;
             const franchiseHasUpdate = members.some(m => updatedIds.has(m.id));
             const franchiseDot = franchiseHasUpdate ? '<span class="fav-new-dot" title="New episode this week"></span>' : '';
 
-            html += `<div class="franchise-group" data-franchise="${fid}">
-                <div class="result-card franchise-parent" data-id="${parent.id}" data-title="${escAttr(parent.name)}" data-eps="${parent.episodes}">
+            html += `<div class="franchise-group" data-franchise="${esc(fid)}">
+                <div class="result-card franchise-parent" data-id="${esc(parent.id)}" data-title="${escAttr(parent.name)}" data-eps="${countOf(parent.episodes)}">
                     <div class="result-card-row">
-                        <button class="fav-star-inline active" data-fav-id="${parent.id}" data-fav-name="${escAttr(parent.name)}" data-fav-eps="${parent.episodes}" data-fav-english="${escAttr(parent.title_english || '')}" data-fav-franchise="${fid}" data-fav-cover="${escAttr(parent.cover || '')}">&#9733;</button>
+                        <button class="fav-star-inline active" data-fav-id="${esc(parent.id)}" data-fav-name="${escAttr(parent.name)}" data-fav-eps="${countOf(parent.episodes)}" data-fav-english="${escAttr(parent.title_english || '')}" data-fav-franchise="${esc(fid)}" data-fav-cover="${escAttr(parent.cover || '')}">&#9733;</button>
                         ${parent.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${escAttr(parent.cover)}" loading="lazy" alt=""></div>` : ''}
                         <div class="result-info">
                             <div class="result-title">${esc(primary)}${franchiseDot}</div>
@@ -1719,15 +2079,15 @@
                 </div>
                 <div class="franchise-entries" style="display:none;">`;
             for (const m of members) {
-                const mHasEn = m.title_english && m.title_english.toLowerCase() !== m.name.toLowerCase();
+                const mHasEn = !!m.title_english && !sameText(m.title_english, m.name);
                 const mTitle = (state.preferEnglish && mHasEn) ? m.title_english : m.name;
-                html += `<div class="result-card franchise-entry" data-id="${m.id}" data-title="${escAttr(m.name)}" data-eps="${m.episodes}">
+                html += `<div class="result-card franchise-entry" data-id="${esc(m.id)}" data-title="${escAttr(m.name)}" data-eps="${countOf(m.episodes)}">
                     <div class="result-card-row">
-                        <button class="fav-star-inline active" data-fav-id="${m.id}" data-fav-name="${escAttr(m.name)}" data-fav-eps="${m.episodes}" data-fav-english="${escAttr(m.title_english || '')}" data-fav-franchise="${fid}" data-fav-cover="${escAttr(m.cover || '')}">&#9733;</button>
+                        <button class="fav-star-inline active" data-fav-id="${esc(m.id)}" data-fav-name="${escAttr(m.name)}" data-fav-eps="${countOf(m.episodes)}" data-fav-english="${escAttr(m.title_english || '')}" data-fav-franchise="${esc(fid)}" data-fav-cover="${escAttr(m.cover || '')}">&#9733;</button>
                         ${m.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${escAttr(m.cover)}" loading="lazy" alt=""></div>` : ''}
                         <div class="result-info">
                             <div class="result-title">${esc(mTitle)}</div>
-                            <div class="result-meta">${m.episodes} EP</div>
+                            <div class="result-meta">${countLabel(m.episodes)} EP</div>
                         </div>
                     </div>
                 </div>`;
@@ -1736,18 +2096,18 @@
         }
 
         html += ungrouped.map(r => {
-            const hasEn = r.title_english && r.title_english.toLowerCase() !== r.name.toLowerCase();
+            const hasEn = !!r.title_english && !sameText(r.title_english, r.name);
             const primary = (state.preferEnglish && hasEn) ? r.title_english : r.name;
             const secondary = (state.preferEnglish && hasEn) ? r.name : (hasEn ? r.title_english : '');
             const newDot = updatedIds.has(r.id) ? '<span class="fav-new-dot" title="New episode this week"></span>' : '';
-            return `<div class="result-card" data-id="${r.id}" data-title="${escAttr(r.name)}" data-eps="${r.episodes}">
+            return `<div class="result-card" data-id="${esc(r.id)}" data-title="${escAttr(r.name)}" data-eps="${countOf(r.episodes)}">
                 <div class="result-card-row">
-                    <button class="fav-star-inline active" data-fav-id="${r.id}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${r.episodes}" data-fav-english="${escAttr(r.title_english || '')}" data-fav-franchise="${r.franchise_id || ''}" data-fav-cover="${escAttr(r.cover || '')}">&#9733;</button>
+                    <button class="fav-star-inline active" data-fav-id="${esc(r.id)}" data-fav-name="${escAttr(r.name)}" data-fav-eps="${countOf(r.episodes)}" data-fav-english="${escAttr(r.title_english || '')}" data-fav-franchise="${esc(r.franchise_id)}" data-fav-cover="${escAttr(r.cover || '')}">&#9733;</button>
                     ${r.cover ? `<div class="release-cover-wrap"><img class="release-cover" src="${escAttr(r.cover)}" loading="lazy" alt=""></div>` : ''}
                     <div class="result-info">
                         <div class="result-title">${esc(primary)}${newDot}</div>
                         ${secondary ? `<div class="result-title-en">${esc(secondary)}</div>` : ''}
-                        <div class="result-meta">${r.episodes} EP</div>
+                        <div class="result-meta">${countLabel(r.episodes)} EP</div>
                     </div>
                 </div>
             </div>`;
@@ -1758,30 +2118,91 @@
         bindFranchiseToggles(resultsContainer);
     }
 
+    /* Every season of this franchise we can name, fetching once if the pool does not
+     * already hold them: "all seasons should always be brough up for a show". Starring
+     * from FAVS or history means the siblings were never searched for, so the local pool
+     * holds exactly one row and a fetch is the only way to know the rest. */
+    async function franchiseMembers(self, key) {
+        /* Seasons, not the whole franchise. Films and OVAs are reachable from the strip's
+         * "+N more" and do not belong in a favorites list of shows. The rules
+         * (FR.narrowToFranchise, FR.starSet) are shared with the desktop; what is this
+         * file's own is how it searches. */
+        let sibs = key ? franchiseSiblings(key) : [];
+        if (sibs.length < 2) {
+            const base = key && key.startsWith('fp:') ? key.slice(3) : FR.franchiseBase(self.name);
+            if (base) {
+                try {
+                    const found = await API.searchAnime(base, state.mode, state.nsfw);
+                    const got = (found || []).filter(r => r && r.id);
+                    const mine = FR.narrowToFranchise(self, franchisePool(), got);
+                    franchiseCache[key || mine.key] = mine.rows;
+                    sibs = franchiseSiblings(key || mine.key);
+                } catch { /* offline or no match: star just the one row */ }
+            }
+        }
+        return FR.starSet(self, sibs);
+    }
+
+    /** Which favorites belong to the same franchise as `id`. */
+    function favoritesInFranchise(id, self) {
+        return FR.inFranchiseOf(id, state.favorites, franchisePool(), self);
+    }
+
+    /* ⛔ FAVORITING IS A FRANCHISE ACTION, NOT A ROW ACTION.
+     * "it should fav all seasons of it, not just one and all seasons should always be
+     * brough up for a show." Both directions, or the star lies: starring a franchise and
+     * then un-starring it would leave the other seasons behind. */
+    const favBusy = new Set();
     async function toggleFavorite(id, name, episodes, titleEnglish, franchiseId, cover) {
-        const isFav = state.favorites.some(f => f.id === id);
+        /* One toggle per show at a time. A double tap ran two of these side by side:
+         * both saw "not a favorite" and both added. */
+        if (favBusy.has(String(id))) return;
+        favBusy.add(String(id));
+        const isFav = state.favorites.some(f => String(f.id) === String(id));
+        const self = { id, name, episodes: parseInt(episodes) || 0,
+                       title_english: titleEnglish || '', cover: cover || '',
+                       franchise_id: franchiseId || '' };
         try {
             if (isFav) {
-                state.favorites = await Storage.removeFavorite(id);
-                toast('Removed from favorites', 'info');
+                const doomed = favoritesInFranchise(id, self);
+                for (const f of doomed) state.favorites = await Storage.removeFavorite(f.id);
+                toast(doomed.length > 1 ? `Removed ${doomed.length} seasons from favorites`
+                                        : 'Removed from favorites', 'info');
             } else {
-                const favData = { id, name, episodes: parseInt(episodes) || 0, title_english: titleEnglish || '' };
-                if (franchiseId) favData.franchise_id = franchiseId;
-                if (cover) favData.cover = cover;
-                state.favorites = await Storage.addFavorite(favData);
-                toast('Added to favorites', 'success');
+                const key = franchiseKeyOf(self);
+                const members = await franchiseMembers(self, key);
+                for (const m of members) {
+                    const favData = { id: m.id, name: m.name,
+                                      episodes: parseInt(m.episodes) || 0,
+                                      title_english: m.title_english || '' };
+                    /* Never overwrite a real server franchise_id with a derived one —
+                     * only fill the blank, so the grouping survives a cold start where
+                     * state.favorites is the entire pool. */
+                    const fx = m.franchise_id || (key.startsWith('fp:') ? key : '');
+                    if (fx) favData.franchise_id = fx;
+                    if (m.cover) favData.cover = m.cover;
+                    state.favorites = await Storage.addFavorite(favData);
+                }
+                toast(members.length > 1 ? `Added ${members.length} seasons to favorites`
+                                         : 'Added to favorites', 'success');
             }
         } catch (err) {
             toast(`Favorites error: ${err.message}`, 'error');
+            /* Part of a franchise may have been saved before the failure. Read the list
+             * back instead of guessing. */
+            try { state.favorites = await Storage.loadFavorites(); } catch (e) { /* keep what is held */ }
+        } finally {
+            favBusy.delete(String(id));
         }
 
         updatePanelFavStar();
         checkFavoritesUpdates();
-        // Re-render current tab if it shows stars
+        /* FAVS is re-drawn, because a show leaves the list. Everywhere else only the
+         * stars change, in place. This re-drew the search results, and re-drawing them
+         * closed the open show: starring a show from its own panel emptied the panel.
+         * On RELEASES it fetched the whole day's schedule again. */
         if (state.activeTab === 'favs') renderFavorites();
-        else if (state.activeTab === 'daily') renderDaily();
-        else if (state.activeTab === 'releases') loadReleases();
-        else if (state.activeTab === 'search' && state.results.length > 0) renderResults();
+        else refreshStars();
     }
 
     // === BACK BUTTON (Android) ===
@@ -1810,6 +2231,9 @@
                 searchInput.focus();
                 break;
             case 'Enter':
+                /* Enter on the episode that is already playing used to start it again
+                 * from the beginning. */
+                if (state.isPlaying) break;
                 if (state.selectedEpisode) playEpisode();
                 break;
             case 'Escape':
@@ -1864,7 +2288,9 @@
     });
 
     // Play button
-    $('play-btn').addEventListener('click', playEpisode);
+    /* Not `playEpisode` itself: a listener is handed the click event, and playEpisode
+     * takes "what to play" as its argument. */
+    $('play-btn').addEventListener('click', () => playEpisode());
 
     // Episode panel back
     $('panel-back').addEventListener('click', hideEpisodePanel);
@@ -1887,12 +2313,7 @@
         state.preferEnglish = e.target.checked;
         localStorage.setItem('ani-mate-english-titles', e.target.checked);
         toast(state.preferEnglish ? 'English titles primary' : 'Japanese titles primary', 'info');
-        // Re-render current tab
-        if (state.activeTab === 'daily') renderDaily();
-        else if (state.activeTab === 'releases') renderReleases();
-        else if (state.activeTab === 'search' && state.results.length > 0) renderResults();
-        else if (state.activeTab === 'favs') renderFavorites();
-        else if (state.activeTab === 'continue') renderContinue();
+        applyTitleLanguage();
     });
 
     // Auto-play toggle
@@ -1934,13 +2355,16 @@
             if (http) {
                 const resp = await http.get({
                     url: `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
-                    headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'ANI-MATE-Android' }
+                    headers: { 'Accept': 'application/vnd.github.v3+json', 'User-Agent': 'ANI-MATE-Android' },
+                    connectTimeout: 10000,
+                    readTimeout: 10000
                 });
                 if (resp.status !== 200) return;
                 release = typeof resp.data === 'string' ? JSON.parse(resp.data) : resp.data;
             } else {
                 const resp = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-                    headers: { 'Accept': 'application/vnd.github.v3+json' }
+                    headers: { 'Accept': 'application/vnd.github.v3+json' },
+                    signal: AbortSignal.timeout(10000)
                 });
                 if (!resp.ok) return;
                 release = await resp.json();
@@ -1957,7 +2381,8 @@
             } catch { /* corrupted — ignore */ }
 
             // Find the mobile APK asset
-            const apk = (release.assets || []).find(a => a.name.toLowerCase().includes('mobile') && a.name.endsWith('.apk'));
+            const apk = (release.assets || []).find(a => a && typeof a.name === 'string'
+                && a.name.toLowerCase().includes('mobile') && a.name.endsWith('.apk'));
             if (!apk) return;
 
             // Show update dialog
@@ -1980,7 +2405,19 @@
         return false;
     }
 
+    /* Only this project's own release downloads. The address comes out of an API answer;
+     * the native installer checks it again (see ApkInstaller.java), and this is the
+     * same rule on the near side so a bad one never gets that far. */
+    function isReleaseDownload(url) {
+        const want = ('https://github.com/' + GITHUB_REPO + '/releases/download/').toLowerCase();
+        return typeof url === 'string' && url.toLowerCase().startsWith(want);
+    }
+
     function showUpdateDialog(version, downloadUrl, changelog) {
+        if (!isReleaseDownload(downloadUrl)) {
+            console.warn('Update skipped: the download is not on this project\'s release page');
+            return;
+        }
         // Remove existing dialog if any
         const existing = document.getElementById('update-dialog-overlay');
         if (existing) existing.remove();
@@ -1989,16 +2426,17 @@
         overlay.id = 'update-dialog-overlay';
         overlay.className = 'update-overlay';
 
-        const cl = changelog.replace(/\n/g, '<br>').substring(0, 300);
-
         overlay.innerHTML = `
             <div class="update-dialog">
                 <div class="update-dialog-title">UPDATE AVAILABLE</div>
-                <div class="update-dialog-version">v${APP_VERSION} → v${version}</div>
-                ${cl ? `<div class="update-dialog-changelog">${cl}</div>` : ''}
+                <div class="update-dialog-version">v${esc(APP_VERSION)} → v${esc(version)}</div>
+                <div class="update-dialog-changelog" id="update-notes"></div>
                 <div class="update-dialog-progress hidden" id="update-progress">
                     <div class="update-progress-bar"><div class="update-progress-fill" id="update-progress-fill"></div></div>
                     <div class="update-progress-text" id="update-progress-text">Downloading...</div>
+                    <div class="update-dialog-buttons" style="margin-top:12px">
+                        <button class="update-btn-later" id="update-hide">HIDE</button>
+                    </div>
                 </div>
                 <div class="update-dialog-buttons" id="update-buttons">
                     <button class="update-btn-later" id="update-later">LATER</button>
@@ -2008,10 +2446,24 @@
         `;
         document.body.appendChild(overlay);
 
+        /* ⚠ THE NOTES ARE WRITTEN AS TEXT. They are whatever the release page says,
+         * fetched over the network, and they used to be put into the page as HTML. */
+        const notes = overlay.querySelector('#update-notes');
+        const text = String(changelog || '').trim().substring(0, 300);
+        if (text) {
+            notes.style.whiteSpace = 'pre-line';
+            notes.textContent = text;
+        } else {
+            notes.remove();
+        }
+
         document.getElementById('update-later').onclick = () => {
             localStorage.setItem('ani-mate-update-dismissed', JSON.stringify({ version, at: Date.now() }));
             overlay.remove();
         };
+        /* Once a download had started the dialog had no way out, and a download that
+         * stalled left it over the whole app. The download carries on behind it. */
+        document.getElementById('update-hide').onclick = () => overlay.remove();
         document.getElementById('update-install').onclick = () => {
             localStorage.removeItem('ani-mate-update-dismissed');
             startUpdate(downloadUrl, overlay);
@@ -2061,17 +2513,20 @@
 
     // === CHANGELOG ===
     // Optional line shown above the list in the update popup. Empty string hides it.
-    const CHANGELOG_NOTE = "Browsing is a poster wall now instead of a list of thumbnails, with filters that work on every tab. Adult titles finally play. And the phone and the desktop run the same backend, so a fix lands on both at once.";
+    const CHANGELOG_NOTE = "Scrolling is fixed -- the browse grid was growing instead of scrolling, so anything past the first screenful could not be reached. Cards are a uniform size now. And sync is here: one optional account keeps your list, your history and your place in every episode the same on your computer and your phone, with no email and no password.";
 
     const CHANGELOG = [
-        "Browse is a full-width poster grid. Posters are more than twice the size they were, and each card shows the year, the format and its genres",
-        "A filter rail with sort, type and genre. The genres are built from whatever is on screen, so it works the same on search, continue, daily, releases and favorites",
-        "Franchise navigation. Opening a show gives you a labeled season bar and a way back to what you were browsing, instead of three small chips that looked like episode numbers",
-        "Favorites group by franchise, name the franchise rather than its newest season, and can be filtered and sorted like everything else",
-        "Adult titles play. Their episode list came back empty because it was looked up somewhere that does not carry them, so there was nothing on screen to tap even though the stream was there",
-        "With the 18+ switch on you get the uncensored cut. It was being refused for carrying a word the search did not ask for",
-        "The phone and the desktop now use one shared backend for search, episodes and playback, so mobile gets every fix at the same time instead of waiting for a second implementation",
-        "The on-screen scanlines are gone. They sat on top of everything including the video",
+        "Scrolling works again. Favorites, search, daily, releases and continue all share one container, and it was growing to fit its contents instead of scrolling -- so everything past the first screenful was simply unreachable",
+        "Cards are all the same size. They were four different heights depending on whether a title ran to two lines and whether the show had a separate English name",
+        "The bar above the grid no longer bunches up. The quality and audio controls stay together, and SYNC, PLAY and DL move as one block instead of scattering across a second row",
+        "Sync across your devices. Favorites, watch history and your exact resume position stay the same on the desktop and the phone",
+        "ANI-MATE asks you once, on first launch, whether you want sync on. Say no and nothing changes; the SYNC button is there whenever you change your mind",
+        "No email, no password, no username. You get a recovery key to write down, and that is the whole account -- nothing stored about you has a name on it",
+        "You can pull your recovery key back up any time from the device you made it on, so missing the first popup costs you nothing",
+        "Adding a second device is the TV flow: the new one shows six digits and you type them into the device you are already signed in on",
+        "A device list you can rename and sign out of, from any of your devices. Signing out shows you your recovery key first, because without it there is no way back in",
+        "MY WATCHING: how long you have actually watched, by day, which genres you really reach for, and the shows you have put the most episodes into. It counts whether or not you use sync, and adds up across your devices when you do",
+        "Deleting your account really deletes it, immediately, including the watch history and the stats",
     ];
 
     function showChangelog() {
@@ -2100,17 +2555,24 @@
     }
 
     // === FAVORITES BADGE (new episode in last 7 days detection) ===
-    async function checkFavoritesUpdates() {
-        if (state.favorites.length === 0) {
-            const badge = document.querySelector('.fav-badge');
-            if (badge) badge.remove();
-            return;
-        }
-        try {
-            // Query AniList for all episodes aired in last 7 days
-            const now = Math.floor(Date.now() / 1000);
-            const weekAgo = now - (7 * 86400);
-            const allRecent = [];
+    /* ── THE WEEK'S AIRING LIST, FETCHED ONCE AND KEPT FOR HALF AN HOUR ────────────────
+     * The check below runs after every star, after every finished episode and at launch,
+     * and each run used to fetch this list again: up to 20 requests. AniList allows this
+     * address 30 a minute (measured 2026-11-12), so starring two shows in a row was
+     * enough to have covers, descriptions and the schedule refused for the next minute.
+     * The list changes a few times an hour; what changes on a star is the FAVORITES,
+     * and matching those against a list already held costs nothing.
+     * A fetch that fails is not repeated for five minutes. */
+    const airing = { at: 0, list: null, loading: null, failedAt: 0 };
+    async function recentlyAired() {
+        const now = Date.now();
+        if (airing.list && now - airing.at < 30 * 60 * 1000) return airing.list;
+        if (airing.loading) return airing.loading;
+        if (now - airing.failedAt < 5 * 60 * 1000) return airing.list || [];
+        airing.loading = (async () => {
+            const nowSec = Math.floor(Date.now() / 1000);
+            const weekAgo = nowSec - (7 * 86400);
+            const all = [];
             let page = 1, hasNext = true;
             const gql = `query ($page: Int, $gt: Int, $lt: Int) {
                 Page(page: $page, perPage: 50) {
@@ -2121,24 +2583,42 @@
                 }
             }`;
             while (hasNext && page <= 20) {
-                const resp = await fetch('https://graphql.anilist.co', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                    body: JSON.stringify({ query: gql, variables: { page, gt: weekAgo, lt: now } }),
-                    signal: AbortSignal.timeout(8000)
-                });
-                const json = await resp.json();
+                /* Through the counted door, as a spare question. A refusal, or no room
+                 * to spare, is a failure and not an empty page: half a list kept as the
+                 * whole list would hide new episodes for half an hour. */
+                const json = await API.anilistPost(gql, { page, gt: weekAgo, lt: nowSec }, 8000, 'spare');
+                if (json === null) throw new Error('AniList has no room to spare');
                 const pg = json?.data?.Page;
-                if (pg?.airingSchedules) allRecent.push(...pg.airingSchedules);
+                if (pg?.airingSchedules) all.push(...pg.airingSchedules);
                 hasNext = pg?.pageInfo?.hasNextPage || false;
                 page++;
             }
+            return all;
+        })().then((list) => {
+            airing.list = list; airing.at = Date.now(); airing.loading = null;
+            return list;
+        }, (err) => {
+            airing.loading = null; airing.failedAt = Date.now();
+            throw err;
+        });
+        return airing.loading;
+    }
+
+    async function checkFavoritesUpdates() {
+        if (state.favorites.length === 0) {
+            const badge = document.querySelector('.fav-badge');
+            if (badge) badge.remove();
+            return;
+        }
+        try {
+            const allRecent = await recentlyAired();
 
             // Check which favorites match recently aired shows
-            const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+            const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
             const updates = [];
             for (const fav of state.favorites) {
                 const favNorm = norm(fav.name);
+                if (!favNorm) continue;
                 const match = allRecent.find(s => {
                     const romaji = norm(s.media?.title?.romaji);
                     const english = norm(s.media?.title?.english);
@@ -2202,8 +2682,15 @@
         setupTouchControls();
         setupBackButton();
 
-        // Default view
-        resultsContainer.innerHTML = '<div class="no-results">Search for anime above</div>';
+        /* The default view, unless a tab was tapped while the two lists above were still
+         * being read. This line used to be written over whatever was on screen: FAVS
+         * tapped in that moment said "No favorites yet" (it had been drawn from the
+         * empty list) and then went to the search prompt with its own tab still lit.
+         * Seen on an Android 16 emulator, 2026-11-14; 0.7.1 did the same. */
+        if (state.activeTab === 'favs') renderFavorites();
+        else if (state.activeTab === 'search' && !(state.results && state.results.length)) {
+            resultsContainer.innerHTML = '<div class="no-results">Search for anime above</div>';
+        }
 
         // Show changelog on version update
         showChangelog();
@@ -2243,18 +2730,90 @@
      * ⚠ state.favorites IS AN IN-MEMORY CACHE. Sync writes favorites.json directly, so
      * re-rendering without re-reading would paint the list from before the sync and
      * look exactly like a sync that did nothing. */
+
+    /* See the note where this is wired up, in showPlayer. */
+    let wtLast = 0;
+    const WT_MAX_GAP = 2;
+
+    /* Restart the clock instead of letting the first tick after a pause, a seek or the
+     * app coming back to the foreground bill the whole idle stretch. Without this the gap
+     * guard is the only defense, and a 1.9s pause slips straight through it. */
+    function watchClockResume() { wtLast = Date.now(); }
+
+    function watchClockTick() {
+        const video = document.getElementById('video-player');
+        const now = Date.now();
+        if (!video || video.paused || video.seeking || video.ended
+            || document.visibilityState !== 'visible') {
+            wtLast = now;
+            return;
+        }
+        const delta = (now - wtLast) / 1000;
+        wtLast = now;
+        if (delta <= 0 || delta > WT_MAX_GAP) return;
+        if (window.SYNC) window.SYNC.noteWatching(delta, currentGenres());
+    }
+
+    /* The genres of whatever is playing. They come from the client because they must:
+     * graphql.anilist.co answers every Cloudflare Worker IP with 403, so the edge cannot
+     * look a show up. The app already has them -- it is what the cards render. */
+    function currentGenres() {
+        const of = (state.playing && state.playing.anime) || state.selectedAnime;
+        const id = of && String(of.id || '');
+        if (!id) return [];
+        const pools = [state.results, state.favorites, state.dailyResults,
+                       state.releasesResults, state.continueResults, state.lookupResults];
+        for (const pool of pools) {
+            if (!Array.isArray(pool)) continue;
+            for (const it of pool) {
+                if (it && String(it.id) === id && Array.isArray(it.genres)) return it.genres;
+            }
+        }
+        return [];
+    }
+
     window.__animateRefreshAfterSync = async function () {
         try {
             state.favorites = await Storage.loadFavorites();
+            /* The history too: watched marks and resume points pulled from another
+             * device live there, and the grid's check marks are drawn from this copy. */
+            state.history = await Storage.loadHistory();
             updatePanelFavStar();
             if (state.activeTab === 'favs') renderFavorites();
-            else if (state.activeTab === 'continue') await loadContinue();
-            else if (state.activeTab === 'daily') renderDaily();
-            else if (state.activeTab === 'releases') renderReleases();
-            else if (state.activeTab === 'search' && state.results.length > 0) renderResults();
+            else if (state.activeTab === 'continue') {
+                /* Read first, draw after. loadContinue() blanks the list to a loading
+                 * line before it reads, which threw the list away and back on every
+                 * sync. */
+                state.continueResults = await Storage.getContinueList();
+                state.continueLoaded = true;
+                if (state.activeTab === 'continue') renderContinue();
+            }
+            /* ⛔ SEARCH, DAILY AND RELEASES GET THEIR STARS UPDATED, NOT A RE-DRAW. This
+             * called renderResults() on the search tab, and renderResults() cleared the
+             * open show: a sync that pulled one row, two minutes into an episode, took
+             * the selection out from under the player. */
+            else refreshStars();
+            if (state.selectedAnime && state.episodes.length) renderEpisodeGrid();
         } catch (err) {
             console.warn('[sync] refresh after sync: ' + err.message);
         }
+    };
+
+    /* ── A SETTING ARRIVED FROM ANOTHER DEVICE ────────────────────────────────────────
+     * ani-mate-sync-ui.js has written the key and ticked the box. The app itself reads
+     * the three switches from `state`, which only this file can reach. Sync has called
+     * this function since the day settings were added, and it was never defined: 18+
+     * turned off on the desktop showed as off here and every search still asked for it,
+     * until the app was restarted. */
+    window.__animateApplySettings = function () {
+        state.preferEnglish = localStorage.getItem('ani-mate-english-titles') !== 'false';
+        state.autoPlay = localStorage.getItem('ani-mate-autoplay') === 'true';
+        state.nsfw = localStorage.getItem('ani-mate-nsfw') === 'true';
+        const set = (id, on) => { const el = $(id); if (el) el.checked = on; };
+        set('english-title-toggle', state.preferEnglish);
+        set('autoplay-toggle', state.autoPlay);
+        set('nsfw-toggle', state.nsfw);
+        applyTitleLanguage();
     };
 
     init();

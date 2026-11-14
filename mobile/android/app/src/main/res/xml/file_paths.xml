@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- The update installer hands Android one file: cacheDir/updates/ani-mate-update.apk
+     (see ApkInstaller.java). This used to expose the whole of external storage and the
+     whole cache folder to anything the app granted a link to. -->
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <external-path name="my_images" path="." />
-    <cache-path name="my_cache_images" path="." />
+    <cache-path name="updates" path="updates/" />
 </paths>

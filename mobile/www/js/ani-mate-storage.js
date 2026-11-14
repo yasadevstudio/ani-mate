@@ -5,6 +5,8 @@
 const DATA_DIR = 'ani-mate-data';
 const HISTORY_FILE = 'history.json';
 const FAVORITES_FILE = 'favorites.json';
+const DELETED_FILE = 'deleted.json';
+const DELETED_KEEP = 2000;
 
 // Capacitor plugin references (loaded after Capacitor initializes)
 let Filesystem, Directory, Encoding;
@@ -52,6 +54,95 @@ async function writeJsonFile(filename, data) {
         // Fallback to localStorage
         localStorage.setItem(`animate_${filename}`, JSON.stringify(data));
     }
+}
+
+/* ── FOR SYNC ONLY: strict reads and writes ────────────────────────────────────────
+ * The readers above answer null for ANY failure and the callers turn that into an empty
+ * list. That is fine for drawing a screen. For sync it was not: an empty list was pushed
+ * to the account as "the user deleted everything". Here a missing file is an honest empty
+ * list, and a file that exists and will not read or parse THROWS, which stops the sync.
+ * The strict writer throws too, instead of quietly parking the data in localStorage where
+ * the next read would not look first. */
+async function readListStrict(filename) {
+    initStorage();
+    if (!Filesystem) {
+        const raw = localStorage.getItem(`animate_${filename}`);
+        const data = raw ? JSON.parse(raw) : [];
+        if (!Array.isArray(data)) throw new Error(filename + ' is not a list');
+        return data;
+    }
+    let result;
+    try {
+        result = await Filesystem.readFile({
+            path: `${DATA_DIR}/${filename}`, directory: Directory.Data, encoding: Encoding.UTF8
+        });
+    } catch (err) {
+        /* Missing is not the same as unreadable. Ask whether the file is there. */
+        let exists = true;
+        try { await Filesystem.stat({ path: `${DATA_DIR}/${filename}`, directory: Directory.Data }); }
+        catch { exists = false; }
+        if (exists) throw new Error('could not read ' + filename);
+        const raw = localStorage.getItem(`animate_${filename}`);
+        const data = raw ? JSON.parse(raw) : [];
+        return Array.isArray(data) ? data : [];
+    }
+    const data = JSON.parse(result.data);
+    if (!Array.isArray(data)) throw new Error(filename + ' is not a list');
+    return data;
+}
+
+async function writeListStrict(filename, data) {
+    initStorage();
+    if (!Filesystem) {
+        localStorage.setItem(`animate_${filename}`, JSON.stringify(data));
+        return;
+    }
+    await Filesystem.writeFile({
+        path: `${DATA_DIR}/${filename}`, directory: Directory.Data, encoding: Encoding.UTF8,
+        data: JSON.stringify(data, null, 2), recursive: true
+    });
+}
+
+/* ── THE DELETE JOURNAL ────────────────────────────────────────────────────────────
+ * ⛔ A DELETE IS RECORDED WHEN THE USER MAKES ONE. Sync used to infer deletes from
+ * absence, and a history list capped at 100 rows produces exactly that absence every
+ * time show 101 is watched. The two functions where a user removes something write the
+ * row's sync key here; the engine sends tombstones from this journal and nothing else,
+ * and clears each entry once it has been pushed.
+ * { favorites: { key: when }, watch: { key: when } }   Same shape as the desktop's. */
+async function loadDeleted() {
+    const j = await readJsonFile(DELETED_FILE);
+    let o = j;
+    if (!o) { try { o = JSON.parse(localStorage.getItem(`animate_${DELETED_FILE}`) || 'null'); } catch { o = null; } }
+    return { favorites: (o && o.favorites) || {}, watch: (o && o.watch) || {} };
+}
+
+async function saveDeleted(j) {
+    for (const kind of ['favorites', 'watch']) {
+        const keys = Object.keys(j[kind]);
+        if (keys.length > DELETED_KEEP) {
+            keys.sort((a, b) => j[kind][a] - j[kind][b]);
+            for (const k of keys.slice(0, keys.length - DELETED_KEEP)) delete j[kind][k];
+        }
+    }
+    await writeJsonFile(DELETED_FILE, j);
+}
+
+/** Call BEFORE removing the row: the key depends on the row still being in the list. */
+async function noteDeleted(kind, list, localId) {
+    try {
+        const shape = window.ANIMATE_SYNC && window.ANIMATE_SYNC.shape;
+        const key = shape ? shape.keyOfLocal(kind, list, localId) : String(localId);
+        const j = await loadDeleted();
+        j[kind][key] = Date.now();
+        await saveDeleted(j);
+    } catch (err) { /* the removal itself must still happen */ }
+}
+
+async function clearDeleted(kind, keys) {
+    const j = await loadDeleted();
+    for (const k of (keys || [])) delete j[kind][String(k)];
+    await saveDeleted(j);
 }
 
 // History operations
@@ -121,6 +212,7 @@ async function removeFromHistory(animeId) {
     const history = await loadHistory();
     const idx = history.findIndex(h => h.anime_id === animeId);
     if (idx >= 0) {
+        await noteDeleted('watch', history, animeId);
         history.splice(idx, 1);
         await saveHistory(history);
     }
@@ -190,6 +282,9 @@ async function addFavorite(item) {
         const entry = { id: item.id, name: item.name, episodes: item.episodes || 0, added: new Date().toISOString() };
         if (item.title_english) entry.title_english = item.title_english;
         if (item.franchise_id) entry.franchise_id = item.franchise_id;
+        /* The cover was passed in and dropped here, so every favorite was stored
+         * without one and synced to the desktop without one. */
+        if (item.cover) entry.cover = item.cover;
         favs.unshift(entry);
         await saveFavorites(favs);
     }
@@ -197,7 +292,9 @@ async function addFavorite(item) {
 }
 
 async function removeFavorite(id) {
-    const favs = (await loadFavorites()).filter(f => f.id !== id);
+    const before = await loadFavorites();
+    if (before.some(f => f.id === id)) await noteDeleted('favorites', before, id);
+    const favs = before.filter(f => f.id !== id);
     await saveFavorites(favs);
     return favs;
 }
@@ -214,5 +311,12 @@ window.Storage = {
     loadFavorites,
     saveFavorites,
     addFavorite,
-    removeFavorite
+    removeFavorite,
+    // for sync
+    loadHistoryStrict: () => readListStrict(HISTORY_FILE),
+    saveHistoryStrict: (list) => writeListStrict(HISTORY_FILE, list),
+    loadFavoritesStrict: () => readListStrict(FAVORITES_FILE),
+    saveFavoritesStrict: (list) => writeListStrict(FAVORITES_FILE, list),
+    loadDeleted,
+    clearDeleted
 };

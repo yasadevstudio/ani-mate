@@ -42,7 +42,12 @@ const REQ_TIMEOUT_MS = 20000;
 const CHALLENGE_TIMEOUT_MS = 30000;
 const CHALLENGE_SETTLE_MS = 4000;
 
-let solving = null;          // single-flight challenge solve
+const MAX_BODY_BYTES = 25 * 1024 * 1024;     // pages and playlists; nothing legitimate is near this
+
+/* Single-flight PER ORIGIN. This was one promise for everything, so a challenge from a
+ * second host that arrived while the first was being solved was handed the first one's
+ * result: "cleared", for a site that had never been loaded. */
+const solving = new Map();
 
 // The site's own calls carry `Origin: https://allmanga.to`; ANI-MATE only ever sent
 // `Referer`. Without Origin the edge answers 403 with a browser check; WITH it the same
@@ -59,8 +64,16 @@ let solving = null;          // single-flight challenge solve
 // rejected. They still travel Chromium's stack (which is what defeats the 403),
 // they just get no injected headers.
 const SOURCE_ORIGIN = 'https://allmanga.to';
-const CHROME_UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) ' +
-                  'Chrome/130.0.6723.191 Safari/537.36';
+/* Built from the Chromium that is doing the sending. It was a fixed "X11; Linux x86_64
+ * ... Chrome/130" string, which is wrong on Windows and wrong after any Electron update,
+ * and disagrees with the sec-ch-ua hints Chromium adds on its own. */
+const CHROME_UA = (() => {
+    const v = (process.versions && process.versions.chrome) || '130.0.0.0';
+    const os = process.platform === 'win32' ? 'Windows NT 10.0; Win64; x64'
+             : process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7'
+             : 'X11; Linux x86_64';
+    return `Mozilla/5.0 (${os}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${v} Safari/537.36`;
+})();
 let headerRulesInstalled = false;
 
 function installHeaderRules(ses) {
@@ -113,8 +126,17 @@ function netRequest({ url, method, headers, body }) {
             finish({ status: 0, body: '', error: 'request timeout' });
         }, REQ_TIMEOUT_MS);
 
+        let size = 0;
         req.on('response', (res) => {
-            res.on('data', (d) => chunks.push(d));
+            res.on('data', (d) => {
+                size += d.length;
+                if (size > MAX_BODY_BYTES) {
+                    try { req.abort(); } catch { }
+                    finish({ status: 0, body: '', error: 'response too large' });
+                    return;
+                }
+                chunks.push(d);
+            });
             res.on('end', () => finish({
                 status: res.statusCode,
                 body: Buffer.concat(chunks).toString('utf8')
@@ -142,8 +164,8 @@ function cookieFor(url, name) {
  * check a chance. Poll instead, and give up on a wall-clock deadline.
  */
 function solveChallenge(origin) {
-    if (solving) return solving;                     // single-flight
-    solving = new Promise((resolve) => {
+    if (solving.has(origin)) return solving.get(origin);     // single-flight, per origin
+    const flight = new Promise((resolve) => {
         let win = null, done = false, poll = null;
         const finish = (ok) => {
             if (done) return;
@@ -151,7 +173,7 @@ function solveChallenge(origin) {
             clearTimeout(bail);
             if (poll) clearInterval(poll);
             try { if (win && !win.isDestroyed()) win.destroy(); } catch { }
-            solving = null;
+            solving.delete(origin);
             resolve(ok);
         };
         const bail = setTimeout(() => finish(false), CHALLENGE_TIMEOUT_MS);
@@ -160,6 +182,11 @@ function solveChallenge(origin) {
                 show: false, width: 1280, height: 800,
                 webPreferences: { nodeIntegration: false, contextIsolation: true }
             });
+            /* This window loads somebody else's site so Chromium can pass its browser
+             * check. It is never shown, so it never needs to open another window or make
+             * a sound, and it gets no permissions (see main.js). */
+            win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+            win.webContents.setAudioMuted(true);
         } catch (e) {
             return finish(false);
         }
@@ -211,7 +238,12 @@ function solveChallenge(origin) {
             finish(false);
         }
     });
-    return solving;
+    solving.set(origin, flight);
+    /* finish() can run before the line above (a window that fails to open), so the entry
+     * is also cleared here; otherwise that origin would keep getting an old answer for
+     * the rest of the session. */
+    flight.then(() => { if (solving.get(origin) === flight) solving.delete(origin); });
+    return flight;
 }
 
 /** Wire the bridge to a forked server child process. */

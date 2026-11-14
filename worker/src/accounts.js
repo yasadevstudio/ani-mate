@@ -80,6 +80,101 @@ async function sha256(s) {
     return [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * A real calendar day, YYYY-MM-DD, or null.
+ *
+ * ⚠ THE SHAPE IS NOT THE VALIDATION. `/^\d{4}-\d{2}-\d{2}$/` happily accepts
+ * "2026-13-99", which was stored and then sat at the top of the stats screen forever
+ * (caught by the test, 2026-11-08). Date alone is not enough either: it parses
+ * "2026-02-30" and silently rolls it to March 2nd. The round-trip catches both --
+ * if formatting it back does not give the same string, it was never that day.
+ */
+function validDay(v) {
+    const str = String(v || '');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return null;
+    const d = new Date(str + 'T00:00:00Z');
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toISOString().slice(0, 10) === str ? str : null;
+}
+
+/* ── LIMITS ────────────────────────────────────────────────────────────────────────
+ * ⛔ AN ACCOUNT COSTS NOTHING TO CREATE, SO EVERYTHING AN ACCOUNT CAN STORE HAS A CEILING.
+ * Without these, one script could fill the database and sync would fail for everyone.
+ * The numbers are far above real use: history is capped at 100 rows by both apps and a
+ * large favorites list is a few hundred. */
+const MAX_BODY_BYTES = 1024 * 1024;
+const MAX_ROWS_PER_PUSH = 1000;          // per kind, per request
+const MAX_ROWS_PER_ACCOUNT = 5000;       // per kind
+const MAX_DEVICES = 25;
+const MAX_GENRES_PER_DEVICE = 200;
+const MAX_DAYS_PER_PUSH = 800;
+const SETTING_KEY = /^[a-z][a-z0-9_]{0,39}$/;
+const LAST_SEEN_EVERY_MS = 10 * 60 * 1000;
+
+/* Every value a client sends is forced into the type and size its column expects. An
+ * object or an array never reaches bind() (it used to throw and fail the whole push), and
+ * a string cannot be longer than anything a real title or cover address is. */
+const text = (v, max) => (v === null || v === undefined || typeof v === 'object')
+    ? null : (String(v).slice(0, max) || null);
+const whole = (v, min, max) => {
+    if (v !== null && typeof v === 'object') return null;      // [12] must not read as 12
+    const n = typeof v === 'number' ? v : (/^-?\d+(\.\d+)?$/.test(String(v || '')) ? Number(v) : NaN);
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.floor(n))) : null;
+};
+const real = (v, min, max) => {
+    const n = (v !== null && typeof v === 'object') ? NaN : Number(v);
+    return (v === null || v === undefined || v === '' || !Number.isFinite(n))
+        ? null : Math.min(max, Math.max(min, n));
+};
+const webAddress = (v) => {
+    const s = text(v, 600);
+    return s && /^https?:\/\//i.test(s) ? s : null;
+};
+/* The watched list crosses as a JSON string. Parse it and write it back out, so what is
+ * stored is always an array of short strings and never whatever happened to be sent. */
+function episodeList(v) {
+    let a = v;
+    if (typeof v === 'string') { try { a = JSON.parse(v); } catch (e) { a = []; } }
+    if (!Array.isArray(a)) a = [];
+    const out = [];
+    for (const x of a) {
+        if (x === null || x === undefined || typeof x === 'object') continue;
+        const e = String(x).slice(0, 12);
+        if (e) out.push(e);
+        if (out.length >= 5000) break;
+    }
+    return JSON.stringify(out);
+}
+const CLEAN = {
+    watch: {
+        title: (v) => text(v, 300),
+        title_english: (v) => text(v, 300),
+        episode: (v) => text(v, 20),
+        position: (v) => real(v, 0, 1e6) || 0,
+        duration: (v) => real(v, 0, 1e6),
+        mode: (v) => (v === 'dub' ? 'dub' : (v === 'sub' ? 'sub' : null)),
+        episodes_watched: (v) => episodeList(v),
+        total_episodes: (v) => { const n = whole(v, 1, 100000); return n && n > 0 ? n : null; },
+    },
+    favorites: {
+        title: (v) => text(v, 300),
+        title_english: (v) => text(v, 300),
+        episodes: (v) => whole(v, 0, 100000) || 0,
+        franchise_id: (v) => text(v, 200),
+        cover: (v) => webAddress(v),
+        added_at: (v) => whole(v, 0, 9e15),
+    },
+};
+const cleanId = (v) => {
+    if (v === null || v === undefined || typeof v === 'object') return null;
+    const s = String(v);
+    return s.length >= 1 && s.length <= 200 ? s : null;
+};
+const cleanPlatform = (v) => {
+    const s = String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 20);
+    return s || null;
+};
+
 function bearer(req) {
     const m = /^Bearer\s+(.+)$/i.exec((req.headers.get('authorization') || '').trim());
     return m ? m[1] : null;
@@ -124,7 +219,12 @@ export async function authenticate(db, req) {
         'SELECT id, account_id FROM devices WHERE token_hash = ?')
         .bind(await sha256(token)).first();
     if (!row) return null;
-    await db.prepare('UPDATE devices SET last_seen = ? WHERE id = ?').bind(now(), row.id).run();
+    /* A device syncs twice every two minutes. Stamping last_seen on each of those was a
+     * database write per request for a field shown to the minute at best. */
+    const t = now();
+    await db.prepare('UPDATE devices SET last_seen = ? WHERE id = ? ' +
+                     'AND (last_seen IS NULL OR last_seen < ?)')
+        .bind(t, row.id, t - LAST_SEEN_EVERY_MS).run();
     return { accountId: row.account_id, deviceId: row.id };
 }
 
@@ -139,6 +239,12 @@ export async function authenticate(db, req) {
 async function issueDevice(db, accountId, platform, hint, tokenHash = null) {
     const token = tokenHash ? null : newToken();
     const id = randomId(8);
+    platform = cleanPlatform(platform);
+    const have = await db.prepare('SELECT COUNT(*) AS n FROM devices WHERE account_id = ?')
+        .bind(accountId).first();
+    if (have && Number(have.n) >= MAX_DEVICES) {
+        const e = new Error('too many devices on this account'); e.tooMany = true; throw e;
+    }
     const label = await autoLabel(db, accountId, platform, hint);
     await db.prepare(
         'INSERT INTO devices (id, account_id, token_hash, label, platform, created_at, last_seen) ' +
@@ -162,11 +268,35 @@ const SYNCED = {
     },
 };
 
+/* ⛔ THE OLDEST SYNC ENGINE THIS SERVER LETS IN.
+ * Every engine since the rewrite of 2026-11-12 sends `v=<its protocol>` in the address of
+ * every request (SYNC_PROTOCOL in server/ani-mate-sync.js). The first engine sends
+ * nothing. It used these same routes with these same bodies, so until this check the
+ * server could not tell it from the current one, and it was not safe to let in:
+ * measured 2026-11-13, it made an account, synced, and after one failed read of its own
+ * favorites removed all three favorites from another device on the account.
+ * It still exists: in any window of the app left open since before the rewrite, and on
+ * `main` at d6a96e8. The answer is 426 with a sentence its own panel shows as it is. */
+const MIN_CLIENT = 2;
+
 export async function handleAccounts(req, env, p, q) {
     const db = env.DB;
     if (!db) return json({ error: 'sync is not configured on this deployment' }, 503);
-    const body = req.method === 'POST' || req.method === 'PATCH'
-        ? await req.json().catch(() => ({})) : {};
+    let spoken = 0;
+    try { spoken = Number(new URL(req.url).searchParams.get('v')) || 0; } catch (e) { spoken = 0; }
+    if (spoken < MIN_CLIENT) {
+        return json({ error: 'This copy of ANI-MATE is too old to sync. Close it, update or reopen ANI-MATE, and turn sync on again.',
+                      upgrade: true, needs: MIN_CLIENT }, 426);
+    }
+    let body = {};
+    if (req.method === 'POST' || req.method === 'PATCH') {
+        /* Read as text so the size is known before anything is parsed. */
+        const raw = await req.text().catch(() => '');
+        if (raw.length > MAX_BODY_BYTES) return json({ error: 'request too large' }, 413);
+        try { body = JSON.parse(raw || '{}'); } catch (e) { body = {}; }
+        /* JSON `null`, a number or an array is valid JSON and is not a request. */
+        if (!body || typeof body !== 'object' || Array.isArray(body)) body = {};
+    }
 
     // ── create ────────────────────────────────────────────────────────────────────
     if (p === '/api/account' && req.method === 'POST') {
@@ -214,7 +344,7 @@ export async function handleAccounts(req, env, p, q) {
             .bind(tokenHash).first();
         if (already) return json({ error: 'this device is already paired' }, 409);
 
-        await db.prepare('DELETE FROM pairing_codes WHERE token_hash = ? OR expires_at < ?')
+        await db.prepare('DELETE FROM pairing_claims WHERE token_hash = ? OR expires_at < ?')
             .bind(tokenHash, now()).run();
 
         /* Six digits across a handful of live claims collides essentially never, but
@@ -222,17 +352,17 @@ export async function handleAccounts(req, env, p, q) {
         let code = null;
         for (let i = 0; i < 8 && !code; i++) {
             const c = newPairCode();
-            const taken = await db.prepare('SELECT 1 FROM pairing_codes WHERE code_hash = ?')
+            const taken = await db.prepare('SELECT 1 FROM pairing_claims WHERE code_hash = ?')
                 .bind(await sha256(c)).first();
             if (!taken) code = c;
         }
         if (!code) return json({ error: 'could not allocate a code, try again' }, 503);
 
         await db.prepare(
-            'INSERT INTO pairing_codes (code_hash, token_hash, platform, label_hint, ' +
+            'INSERT INTO pairing_claims (code_hash, token_hash, platform, label_hint, ' +
             'created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
-            .bind(await sha256(code), tokenHash, body.platform || null,
-                  body.label ? String(body.label).slice(0, 40) : null,
+            .bind(await sha256(code), tokenHash, cleanPlatform(body.platform),
+                  text(body.label, 40),
                   now(), now() + PAIR_TTL_MS).run();
         return json({ code, expires_in: PAIR_TTL_MS / 1000 }, 201);
     }
@@ -248,7 +378,7 @@ export async function handleAccounts(req, env, p, q) {
         }
         const token = bearer(req);
         if (!token) return json({ error: 'unauthorized' }, 401);
-        const row = await db.prepare('SELECT expires_at FROM pairing_codes WHERE token_hash = ?')
+        const row = await db.prepare('SELECT expires_at FROM pairing_claims WHERE token_hash = ?')
             .bind(await sha256(token)).first();
         /* 404, not 401, so the client can tell "keep waiting" apart from "that code died,
          * show a fresh one" without parsing prose. */
@@ -263,15 +393,53 @@ export async function handleAccounts(req, env, p, q) {
         const code = String(body.code || '').replace(/\D/g, '');
         if (code.length !== 6) return json({ error: 'bad code' }, 400);
         const hash = await sha256(code);
-        const row = await db.prepare('SELECT * FROM pairing_codes WHERE code_hash = ?')
-            .bind(hash).first();
+
+        /* ⛔ CONSUME THE CLAIM BEFORE MINTING ANYTHING. THE DELETE IS THE LOCK.
+         *
+         * This used to read SELECT -> issueDevice -> DELETE across three un-transacted
+         * round trips. Two approvals of one code that interleave BOTH pass the SELECT,
+         * and both then call issueDevice with the same token_hash; devices.token_hash is
+         * UNIQUE, so the loser got a raw D1 constraint error as a bodyless 500. There was
+         * no try/catch either, so the failure was unreadable to the client.
+         *
+         * The existing test "the same code cannot be approved twice" ran the two calls
+         * SEQUENTIALLY. It passed, and said nothing at all about concurrency — a check
+         * that runs, passes, and does not test the thing it is believed to establish.
+         * tests/approve-race.test.js now fires them with Promise.all.
+         *
+         * `RETURNING` makes the delete atomic and hands back the row in one statement, so
+         * exactly one caller can be holding it. No row returned means someone else got
+         * there first, or the code never existed — the client cannot tell those apart and
+         * must not be able to. */
+        let row = null;
+        try {
+            const del = await db.prepare(
+                'DELETE FROM pairing_claims WHERE code_hash = ? RETURNING *')
+                .bind(hash).first();
+            row = del || null;
+        } catch (e) {
+            /* RETURNING needs SQLite 3.35+. D1 is well past it, but a thrown DELETE here
+             * must not read as "bad code" — that would tell a user their code expired
+             * when the database hiccuped. */
+            return json({ error: 'could not approve, try again' }, 503);
+        }
         if (!row || row.expires_at < now()) {
-            await db.prepare('DELETE FROM pairing_codes WHERE code_hash = ?').bind(hash).run();
             return json({ error: 'invalid or expired code' }, 404);
         }
-        const dev = await issueDevice(db, auth.accountId, row.platform, row.label_hint,
-                                     row.token_hash);
-        await db.prepare('DELETE FROM pairing_codes WHERE code_hash = ?').bind(hash).run();
+
+        let dev;
+        try {
+            dev = await issueDevice(db, auth.accountId, row.platform, row.label_hint,
+                                    row.token_hash);
+        } catch (e) {
+            /* The claim is already gone and cannot be put back safely, so say so plainly
+             * rather than 500ing. The new device's poll will report expired and it will
+             * show a fresh code — recoverable, and honest about what happened. */
+            return json({ error: e && e.tooMany
+                ? 'this account already has the most devices it can hold; remove one first'
+                : 'the code was consumed but the device could not be added, ask for a new code' },
+                409);
+        }
         /* Echo what joined. The one attack this flow cannot structurally prevent is being
          * talked into approving a stranger's device, and the only defense against that is
          * the user seeing WHAT they just let in. */
@@ -292,7 +460,14 @@ export async function handleAccounts(req, env, p, q) {
         }
         /* A NEW device token, never the existing ones. Holding the recovery key proves
          * you can get in; it does not entitle you to what the other devices carry. */
-        const dev = await issueDevice(db, row.id, body.platform, body.label);
+        let dev;
+        try { dev = await issueDevice(db, row.id, body.platform, body.label); }
+        catch (e) {
+            if (e && e.tooMany) {
+                return json({ error: 'this account already has the most devices it can hold' }, 409);
+            }
+            throw e;
+        }
         return json({ account_id: row.id, ...dev });
     }
 
@@ -349,6 +524,11 @@ export async function handleAccounts(req, env, p, q) {
             db.prepare('DELETE FROM watch WHERE account_id = ?').bind(auth.accountId),
             db.prepare('DELETE FROM favorites WHERE account_id = ?').bind(auth.accountId),
             db.prepare('DELETE FROM settings WHERE account_id = ?').bind(auth.accountId),
+            /* ⚠ ADDED WITH THE STATS TABLES. "Deletion is real" is a claim this file
+             * makes out loud, and a new table missing from this list makes it false
+             * without anything failing. Add a table, add it here. */
+            db.prepare('DELETE FROM watch_time WHERE account_id = ?').bind(auth.accountId),
+            db.prepare('DELETE FROM genre_time WHERE account_id = ?').bind(auth.accountId),
             db.prepare('DELETE FROM devices WHERE account_id = ?').bind(auth.accountId),
             db.prepare('DELETE FROM accounts WHERE id = ?').bind(auth.accountId),
         ]);
@@ -403,10 +583,36 @@ export async function handleAccounts(req, env, p, q) {
         const stmts = [];
         let count = 0;
 
+        /* ⛔ COUNT BEFORE WRITING. One request cannot carry more than MAX_ROWS_PER_PUSH
+         * rows of a kind, and an account cannot hold more than MAX_ROWS_PER_ACCOUNT. The
+         * second check is one query for the whole push, not one per row. It counts every
+         * pushed row as if it were new, which only matters to an account within one push
+         * of the ceiling, and no real library is. */
+        for (const table of Object.keys(SYNCED)) {
+            if (Array.isArray(body[table]) && body[table].length > MAX_ROWS_PER_PUSH) {
+                return json({ error: 'too many rows in one request', kind: table,
+                              limit: MAX_ROWS_PER_PUSH }, 413);
+            }
+        }
+        if ((Array.isArray(body.watch) && body.watch.length)
+            || (Array.isArray(body.favorites) && body.favorites.length)) {
+            const have = await db.prepare(
+                'SELECT (SELECT COUNT(*) FROM watch WHERE account_id = ?1) AS watch, ' +
+                '(SELECT COUNT(*) FROM favorites WHERE account_id = ?1) AS favorites')
+                .bind(auth.accountId).first();
+            for (const table of Object.keys(SYNCED)) {
+                const incoming = Array.isArray(body[table]) ? body[table].length : 0;
+                if (incoming && Number((have && have[table]) || 0) + incoming > MAX_ROWS_PER_ACCOUNT) {
+                    return json({ error: 'this account is full', kind: table,
+                                  limit: MAX_ROWS_PER_ACCOUNT }, 413);
+                }
+            }
+        }
+
         for (const [table, spec] of Object.entries(SYNCED)) {
             const rows = Array.isArray(body[table]) ? body[table] : [];
             for (const row of rows) {
-                const id = row && row[spec.key];
+                const id = row && typeof row === 'object' ? cleanId(row[spec.key]) : null;
                 if (!id) continue;
                 count++;
                 if (row.deleted) {
@@ -434,19 +640,65 @@ export async function handleAccounts(req, env, p, q) {
                         ` WHERE ${table}.deleted = 1 OR ` +
                         cols.map((c) => `${table}.${c} IS NOT excluded.${c}`).join(' OR '))
                         .bind(auth.accountId, String(id),
-                              ...cols.map((c) => (row[c] === undefined ? null : row[c])), stamp));
+                              ...cols.map((c) => CLEAN[table][c](row[c])), stamp));
                 }
             }
         }
-        for (const s of (Array.isArray(body.settings) ? body.settings : [])) {
-            if (!s || !s.key) continue;
+        for (const s of (Array.isArray(body.settings) ? body.settings : []).slice(0, 40)) {
+            if (!s || typeof s !== 'object' || !SETTING_KEY.test(String(s.key || ''))) continue;
             count++;
             stmts.push(db.prepare(
                 'INSERT INTO settings (account_id, key, value, updated_at) VALUES (?, ?, ?, ?) ' +
                 'ON CONFLICT(account_id, key) DO UPDATE SET value = excluded.value, ' +
                 'updated_at = excluded.updated_at WHERE settings.value IS NOT excluded.value')
                 .bind(auth.accountId, String(s.key),
-                      s.value === undefined || s.value === null ? null : String(s.value), stamp));
+                      text(s.value, 100), stamp));
+        }
+
+        /* ── THE COUNTERS ─────────────────────────────────────────────────────────
+         * ⛔ MAX, NOT ASSIGNMENT, AND KEYED BY DEVICE. Two reasons, both load-bearing:
+         *
+         *   the device is in the key   because last-write-wins on a running total
+         *                              DELETES TIME -- the phone has 400s for today, the
+         *                              desktop has 900s, the later push wins and the 400
+         *                              is gone. Per-device rows SUMmed at read is a
+         *                              G-Counter and needs no coordination.
+         *   MAX rather than assignment because a device whose localStorage is cleared
+         *                              restarts its own counter at zero, and assignment
+         *                              would let that erase what it had already
+         *                              contributed. A counter only ever goes up.
+         *
+         * updated_at moves only when the value actually rises -- the same no-churn rule
+         * as every other upsert in this file. */
+        for (const row of (Array.isArray(body.watch_time) ? body.watch_time : []).slice(-MAX_DAYS_PER_PUSH)) {
+            const day = row && typeof row === 'object' && validDay(row.day);
+            if (!day) continue;
+            const secs = whole(row.seconds, 0, 86400) || 0;
+            if (!secs) continue;
+            count++;
+            stmts.push(db.prepare(
+                'INSERT INTO watch_time (account_id, device_id, day, seconds, updated_at) ' +
+                'VALUES (?, ?, ?, ?, ?) ' +
+                'ON CONFLICT(account_id, device_id, day) DO UPDATE SET ' +
+                'seconds = MAX(watch_time.seconds, excluded.seconds), ' +
+                'updated_at = excluded.updated_at ' +
+                'WHERE excluded.seconds > watch_time.seconds')
+                .bind(auth.accountId, auth.deviceId, day, secs, stamp));
+        }
+        for (const row of (Array.isArray(body.genre_time) ? body.genre_time : []).slice(0, MAX_GENRES_PER_DEVICE)) {
+            const genre = row && typeof row === 'object' ? text(row.genre, 40) : null;
+            if (!genre) continue;
+            const secs = whole(row.seconds, 0, 4e9) || 0;
+            if (!secs) continue;
+            count++;
+            stmts.push(db.prepare(
+                'INSERT INTO genre_time (account_id, device_id, genre, seconds, updated_at) ' +
+                'VALUES (?, ?, ?, ?, ?) ' +
+                'ON CONFLICT(account_id, device_id, genre) DO UPDATE SET ' +
+                'seconds = MAX(genre_time.seconds, excluded.seconds), ' +
+                'updated_at = excluded.updated_at ' +
+                'WHERE excluded.seconds > genre_time.seconds')
+                .bind(auth.accountId, auth.deviceId, genre, secs, stamp));
         }
 
         /* Sweep expired tombstones here rather than on a cron: this is the only moment we
@@ -461,6 +713,59 @@ export async function handleAccounts(req, env, p, q) {
 
         if (stmts.length) await db.batch(stmts);
         return json({ status: 'ok', applied: count, now: stamp });
+    }
+
+    // ── stats: watch time and genre analysis ──────────────────────────────────────
+    if (p === '/api/stats' && req.method === 'GET') {
+        const auth = await authenticate(db, req);
+        if (!auth) return json({ error: 'unauthorized' }, 401);
+
+        /* SUMmed across devices, which is the entire point of the per-device rows.
+         * Capped at 365 days so the response cannot grow without bound. */
+        const { results: days } = await db.prepare(
+            'SELECT day, SUM(seconds) AS seconds FROM watch_time WHERE account_id = ? ' +
+            'GROUP BY day ORDER BY day DESC LIMIT 365').bind(auth.accountId).all();
+        const { results: genres } = await db.prepare(
+            'SELECT genre, SUM(seconds) AS seconds FROM genre_time WHERE account_id = ? ' +
+            'GROUP BY genre ORDER BY seconds DESC LIMIT 40').bind(auth.accountId).all();
+        const { results: shows } = await db.prepare(
+            'SELECT anime_id, title, title_english, episodes_watched, total_episodes ' +
+            'FROM watch WHERE account_id = ? AND deleted = 0').bind(auth.accountId).all();
+
+        /* Episode counts are DERIVED here rather than stored. What is stored is the LIST
+         * of episodes watched; a stored count beside it would be a second source of truth
+         * that can disagree with the first. */
+        let episodes = 0;
+        const ranked = [];
+        for (const r of (shows || [])) {
+            let n = 0;
+            try {
+                const a = JSON.parse(r.episodes_watched || '[]');
+                if (Array.isArray(a)) n = a.length;
+            } catch (e) { /* a malformed list counts as none */ }
+            episodes += n;
+            ranked.push({ anime_id: r.anime_id, title: r.title_english || r.title,
+                          episodes_watched: n, total_episodes: r.total_episodes });
+        }
+        ranked.sort((a, b) => b.episodes_watched - a.episodes_watched);
+
+        const dayRows = (days || []).map((d) => ({ day: d.day, seconds: d.seconds || 0 }));
+        const total = dayRows.reduce((n, d) => n + d.seconds, 0);
+        /* "Today" is the DEVICE's today, passed in, not the Worker's. The day boundary
+         * belongs to the person watching: a 1am session filed by a UTC edge lands on the
+         * wrong day and the stats screen looks wrong to the only person who can check. */
+        const today = String(q.get('today') || '');
+        const todayRow = dayRows.find((d) => d.day === today);
+
+        return json({
+            total_seconds: total,
+            today_seconds: todayRow ? todayRow.seconds : 0,
+            days: dayRows,
+            genres: (genres || []).map((g) => ({ genre: g.genre, seconds: g.seconds || 0 })),
+            episodes_watched: episodes,
+            shows_started: ranked.length,
+            top_shows: ranked.slice(0, 10),
+        });
     }
 
     return null;    // not an accounts route; the caller keeps looking

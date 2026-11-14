@@ -166,6 +166,13 @@ function makeChain(afetch, dataDir) {
                     console.error(`[subs] ${provider.name}: cached ${hit.file} (${cues} cues)`);
                     return [entry(provider, hit, token, cues, map)];
                 }
+                /* ⚠ NO MEASURED LENGTH, NO NEW FILE. The length check below is the only
+                 * identity test a subtitle file has, and it is skipped when the episode
+                 * could not be measured. A file accepted that way was then cached, and a
+                 * cached file is returned without any check at all, so one failed probe
+                 * could pin the wrong subtitles to an episode for good. A file already
+                 * in the cache passed the check when it was stored and is still used. */
+                if (!durationSec) continue;
                 let got = null;
                 try { got = await provider.fetchVtt(hit); }
                 catch (e) { console.error(`[subs] ${provider.name} fetch failed:`, e.message); }

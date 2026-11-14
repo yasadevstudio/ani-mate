@@ -99,10 +99,14 @@ async function post(path, payload, ms = 60000) {
     if (showId) {
         try {
             const r = await post('/play', {
-                anime_id: showId, episode: '1', mode: 'sub',
+                anime_id: showId, episode: '1', sub_or_dub: 'sub',
                 title: SHOW.title, title_english: SHOW.title,
             });
             const d = JSON.parse(r.body || '{}');
+            /* Kept for step 5, which needs the referer this answer carries. It was
+             * declared and never assigned, so step 5 always asked the proxy for the
+             * stream with no referer and measured a request the player never makes. */
+            playData = d;
             // /play answers with `stream_url`. Reading `url` returned HTTP 200 and then
             // reported a failure, which is the worst kind of test result: it looks like the
             // app is broken when the test is.

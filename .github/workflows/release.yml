@@ -9,7 +9,45 @@ permissions:
   contents: write
 
 jobs:
+  # Runs first. Nothing is built, and so nothing is published, unless this passes.
+  #
+  # Until 2026-11-12 a tag went straight to three builds and a release with no test of any
+  # kind in between, and the suites in this repo only ever ran on a developer machine.
+  # Everything here is offline: no network, no running app, no installed packages (the
+  # server and the Worker import only what ships with Node).
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # 22.13 or later: worker/tests use node:sqlite, which needed a flag before that.
+          node-version: 22
+
+      # The build jobs below rewrite package.json from the tag, which hides a missed bump
+      # there, and nothing rewrites the desktop page. This compares the tag with all four
+      # places the app states its version, as committed. See CLAUDE.md,
+      # "RELEASE = ONE ATOMIC COMMIT".
+      - name: The tag matches every version the app states
+        run: node scripts/check-release-version.js "${GITHUB_REF_NAME#v}"
+
+      # The one package the suites need: scripts/check-undefined-names.js uses the
+      # TypeScript compiler to find names that nothing defines. Pinned to the version in
+      # package-lock.json, and put in a folder of its own: installing it into the repo
+      # would install Electron and everything else along with it.
+      - name: Install the compiler the name check uses
+        run: npm install --prefix "$RUNNER_TEMP/names" --no-audit --no-fund typescript@5.9.3
+
+      # syntax + shared-file drift, undefined names, the Worker suites, the franchise
+      # rules, and the desktop server's network rules.
+      - name: Offline test suites
+        run: npm run test:offline
+        env:
+          ANIMATE_TYPESCRIPT: ${{ runner.temp }}/names/node_modules/typescript
+
   build-windows:
+    needs: test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +84,7 @@ jobs:
           retention-days: 1
 
   build-linux:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -81,6 +120,7 @@ jobs:
           retention-days: 1
 
   build-android:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

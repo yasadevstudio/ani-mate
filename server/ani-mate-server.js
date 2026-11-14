@@ -9,111 +9,11 @@ const url = require('url');
 const path = require('path');
 const fs = require('fs');
 
-// Fallback streaming providers (AnimePahe, HiAnime via consumet)
-let consumetAnimePahe = null;
-let consumetHiAnime = null;
-
-// ⛔ CONSUMET SHIPS DEAD DOMAINS AND CANNOT BE UPGRADED OUT OF IT.
-// Measured 2026-10-05: consumet pins AnimePahe at `animepahe.si`, which is NXDOMAIN —
-// `getaddrinfo ENOTFOUND animepahe.si` on every call. 1.8.8 IS the latest published
-// release (checked against the npm registry the same day), so there is no version to
-// upgrade to. The domain moved to animepahe.su; animepahe.ru 301s there.
-//
-// These hosts rotate on somebody else's schedule, so they are DATA, not code. Override
-// them here and the next rotation is a one-line edit instead of a dead fallback that
-// reports itself as "loaded".
-const SOURCE_HOSTS = {
-    // ⚠ CHECKED EVERY CANDIDATE 2026-10-05 BEFORE PICKING, because the obvious answer was
-    // wrong twice:
-    //   animepahe.si  NXDOMAIN, and this is what consumet 1.8.8 still pins
-    //   animepahe.ru  301s to animepahe.su, which is a PARKED "This domain is for sale" page
-    //   animepahe.ch  200 but a WordPress squatter page (gmpg.org/xfn/11 profile)
-    //   animepahe.ng  same squatter
-    //   animepahe.com 403 "Just a moment" <- THE REAL SITE, behind Cloudflare
-    // A 200 is not a signal here. Four of five hosts answer 200 and none of those is
-    // AnimePahe. The real one is the one that challenges you.
-    animepahe: process.env.ANI_MATE_ANIMEPAHE || 'https://animepahe.com',
-    hianime: process.env.ANI_MATE_HIANIME || null,   // null = leave consumet's default
-};
-
-// ⛔ AND CONSUMET BRINGS ITS OWN HTTP CLIENT, WHICH ROUTES AROUND THE BRIDGE.
-// This is the same architectural fault electron-net-bridge.js was written for, one layer
-// further down. consumet builds its own axios instance, so its requests leave as bare Node
-// HTTP with no Chromium fingerprint and no shared cookie jar — and AnimePahe answers them
-// with a DDoS-Guard interstitial. Measured 2026-10-05: after the domain fix the error moved
-// from `ENOTFOUND animepahe.si` to `Cannot read properties of undefined (reading 'map')`,
-// which is consumet trying to parse that HTML page as JSON.
-//
-// axios takes a custom adapter, so hand it one that forwards to afetch. Every consumet
-// provider then inherits Chromium's stack and its challenge-solving for free.
-function bridgeAdapter(config) {
-    const url = config.url.startsWith('http')
-        ? config.url
-        : (config.baseURL || '') + config.url;
-    // config.headers is an AxiosHeaders INSTANCE, not a plain object. Electron's net.request
-    // gets it over IPC and rejects it, which comes back as status 0 in about 3ms — fast
-    // enough to look like a config error rather than a network one. Flatten it first.
-    //
-    // AND CHROMIUM REFUSES MOST OF WHAT CONSUMET SENDS. Measured 2026-10-05: forwarding
-    // consumet's header set produced `net::ERR_INVALID_ARGUMENT` from Electron's net stack.
-    // consumet emits HTTP/2 pseudo-headers (`authority`) and other names Chromium owns and
-    // will not accept from a caller. So this is an ALLOWLIST, not a filter: anything not
-    // known-safe is dropped rather than guessed at, because one bad name kills the whole
-    // request rather than being ignored.
-    const SAFE = new Set(['user-agent', 'referer', 'accept', 'accept-language',
-                          'content-type', 'cookie', 'x-requested-with', 'origin-x']);
-    const headers = {};
-    try {
-        const h = config.headers;
-        const src = (h && typeof h.toJSON === 'function') ? h.toJSON() : (h || {});
-        for (const k of Object.keys(src)) {
-            const v = src[k];
-            if (v === undefined || v === null) continue;
-            if (!SAFE.has(String(k).toLowerCase())) continue;
-            headers[k] = String(v);
-        }
-    } catch { /* send none rather than send something unserializable */ }
-
-    return afetch(url, {
-        method: (config.method || 'get').toUpperCase(),
-        headers,
-        body: config.data || null,
-    }).then((r) => {
-        // afetch returns a real Response when headless, {status, body} over the bridge.
-        const read = typeof r.text === 'function' ? r.text() : Promise.resolve(r.body || '');
-        return read.then((body) => {
-            let data = body;
-            if (config.responseType !== 'text') {
-                try { data = JSON.parse(body); } catch { /* leave as text, like axios does */ }
-            }
-            const status = r.status || 0;
-            const res = { data, status, statusText: String(status), headers: {}, config };
-            // axios treats a non-2xx as a rejection, and consumet relies on that.
-            if (status < 200 || status >= 300) {
-                // Carry the bridge's own reason. Without it a Chromium-level failure is
-                // indistinguishable from an HTTP 0 and there is nothing to act on.
-                // afetch returns `sourceError`, NOT `error`. Reading the wrong field meant
-                // every bridge-level failure arrived as a bare "status code 0" with no
-                // reason attached, which is why this took three rounds to diagnose.
-                const why = (r.sourceError || r.error) ? ` (${r.sourceError || r.error})` : '';
-                const err = new Error(`Request failed with status code ${status}${why}`);
-                err.response = res; err.config = config; err.isAxiosError = true;
-                throw err;
-            }
-            return res;
-        });
-    });
-}
-
-try {
-    const { ANIME } = require('@consumet/extensions');
-    // adapter is the SECOND constructor argument (proxyConfig, adapter) — see
-    // @consumet/extensions/dist/models/proxy.js
-    consumetAnimePahe = new ANIME.AnimePahe(undefined, bridgeAdapter);
-    consumetHiAnime = new ANIME.Hianime(undefined, bridgeAdapter);
-    if (SOURCE_HOSTS.animepahe) consumetAnimePahe.baseUrl = SOURCE_HOSTS.animepahe;
-    if (SOURCE_HOSTS.hianime) consumetHiAnime.baseUrl = SOURCE_HOSTS.hianime;
-} catch { /* consumet not available — AllAnime only */ }
+/* @consumet/extensions used to be loaded here for AnimePahe and HiAnime. Neither has been
+ * in the stream chain since 0.6.0 (animepahe.com is behind Cloudflare, api.consumet.org
+ * answers 451), and the package brought axios, undici and adm-zip advisories with it.
+ * It is gone, together with the axios adapter that existed only to route it through the
+ * Electron bridge. The chain is in getEpisodeUrlWithFallbacks. */
 
 // HiAnime.at (2026-10-05) — THE ONLY SOURCE THAT ACTUALLY PRODUCES A STREAM TODAY.
 // Implemented from ani-cli 5.1.5's own script (base_api="https://hianime.at"), verified end
@@ -130,13 +30,23 @@ let hianimeAt = null;
 let anidbProvider = null;
 
 
-/* The sync engine, required for its SHAPE helpers only -- the desktop's favorites and
- * history live in this process, and the browser page cannot translate records it cannot
- * read. Same functions the phone calls in its WebView, so the two cannot disagree. */
+/* The sync engine, required for its SHAPE helpers only: the record translation, the
+ * apply loop and the sync keys. The desktop's favorites and history live in this
+ * process, and the browser page cannot translate records it cannot read. Same functions
+ * the phone calls in its WebView, so the two cannot disagree. */
 const syncShape = require('./ani-mate-sync.js').shape;
+/* How many questions AllAnime and AniList take, and who waits. Shared with the phone. */
+const Budget = require('./ani-mate-budget.js');
 
-const PKG_VERSION = (() => { try { return require('../package.json').version; } catch { return '0.4.0'; } })();
+/* In a packaged build this file runs from app.asar.unpacked/server/ and package.json is
+ * inside app.asar, so the require below fails and /status said 0.4.0 forever. main.js
+ * passes the real version in. */
+const PKG_VERSION = process.env.ANI_MATE_VERSION
+    || (() => { try { return require('../package.json').version; } catch { return 'unknown'; } })();
 const PORT = parseInt(process.env.ANI_MATE_PORT) || 7890;
+/* Exactly two modes exist. The value used to travel from the request into a RegExp in
+ * the HiAnime provider as received; see modeOf in hianime-at.js for what that allowed. */
+const modeOf = (m) => (m === 'dub' ? 'dub' : 'sub');
 // How many AniList-only titles get a secondary AllAnime lookup so they become
 // playable. Was hardcoded to 3.
 const SECONDARY_LOOKUP_CAP = 8;
@@ -155,7 +65,13 @@ const HIST_FILE = path.join(HIST_DIR, 'ani-hsts');
 try { fs.mkdirSync(HIST_DIR, { recursive: true }); } catch {}
 const AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0';
 const ALLANIME_REFR = 'https://allmanga.to';
-const ALLANIME_API = 'https://api.allanime.day/api';
+/* TEST HOOKS: where AllAnime and AniList are. The suites point these at stand-ins on
+ * this machine, so a test can make AllAnime refuse, fail or answer, and never depends
+ * on (or spends) the real services' request budgets. Same rule as ANI_MATE_TEST_STREAM
+ * further down: main.js removes every ANI_MATE_TEST_ name from the packaged app's
+ * server, so an installed copy cannot be pointed anywhere by its environment. */
+const ALLANIME_API = process.env.ANI_MATE_TEST_ALLANIME || 'https://api.allanime.day/api';
+const ANILIST_API = process.env.ANI_MATE_TEST_ANILIST || 'https://graphql.anilist.co';
 // Cowboy Bebop. A finished 26-episode series from 1998: it will never be unpublished, so a
 // failure here is always the SOURCE and never a missing episode.
 const HEALTH_PROBE_SHOW = 'PGcK4wGnqDoeihT6n';
@@ -252,6 +168,14 @@ function saveForgeHistory(history) {
     fs.renameSync(tmp, FORGE_HIST_FILE);
 }
 
+/** A real episode total, or null. The page used to send '?' for a show opened from the
+ *  history panel; it was stored, and CONTINUE then filtered the show out because no
+ *  number is less than '?'. */
+function wholeTotal(v) {
+    const n = typeof v === 'number' ? v : (/^\d+$/.test(String(v == null ? '' : v)) ? Number(v) : NaN);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
 function addToForgeHistory(entry) {
     const history = loadForgeHistory();
     const existing = history.findIndex(h => h.anime_id === entry.anime_id);
@@ -269,8 +193,9 @@ function addToForgeHistory(entry) {
         // Track all watched episodes (unless skip_watched — client handles marking)
         if (!Array.isArray(rec.episodes_watched)) rec.episodes_watched = [];
         if (!entry.skip_watched && !rec.episodes_watched.includes(ep)) rec.episodes_watched.push(ep);
-        // Update total episodes if provided
-        if (entry.total_episodes) rec.total_episodes = entry.total_episodes;
+        // Update total episodes if provided, and repair one that was stored as text
+        if (wholeTotal(entry.total_episodes)) rec.total_episodes = wholeTotal(entry.total_episodes);
+        else rec.total_episodes = wholeTotal(rec.total_episodes);
         // Track playback position for resume
         if (entry.playback_time !== undefined) {
             rec.playback_time = entry.playback_time;
@@ -288,7 +213,7 @@ function addToForgeHistory(entry) {
             mode: entry.mode || 'sub',
             timestamp: new Date().toISOString(),
             episodes_watched: entry.skip_watched ? [] : [ep],
-            total_episodes: entry.total_episodes || null,
+            total_episodes: wholeTotal(entry.total_episodes),
             playback_time: entry.playback_time || 0,
             playback_episode: ep
         };
@@ -336,13 +261,65 @@ function loadFavorites() {
     return [];
 }
 
+/* ⚠ THIS THROWS. It used to swallow every write error, so adding a favorite, removing
+ * one and applying a sync all answered "done" when nothing had reached the disk. The
+ * request handler turns the throw into a 500, which is the truth. */
 function saveFavorites(favs) {
+    if (!fs.existsSync(HIST_DIR)) fs.mkdirSync(HIST_DIR, { recursive: true });
+    const tmp = FAVORITES_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(favs, null, 2));
+    fs.renameSync(tmp, FAVORITES_FILE);
+}
+
+/* ── FOR SYNC ONLY: a file that exists and cannot be read is an ERROR ──────────────
+ * loadFavorites() and loadForgeHistory() answer [] when a file will not parse, which is
+ * right for drawing a screen and wrong for sync: an empty list was pushed to the account
+ * as "the user deleted everything". A missing file is still an honest empty list. */
+function readListStrict(file) {
+    if (!fs.existsSync(file)) return [];
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!Array.isArray(data)) throw new Error(path.basename(file) + ' is not a list');
+    return data;
+}
+
+/* ── THE DELETE JOURNAL ────────────────────────────────────────────────────────────
+ * ⛔ A DELETE IS RECORDED WHEN THE USER MAKES ONE. The sync engine used to infer deletes
+ * from absence ("it was here last sync and is not now"), and a history list capped at
+ * 100 rows produces exactly that absence every time show 101 is watched. So the three
+ * routes where a user removes something write the row's sync key here, the engine sends
+ * tombstones from this file and nothing else, and clears each entry once it is pushed.
+ * { favorites: { key: when }, watch: { key: when } } */
+const DELETED_FILE = path.join(HIST_DIR, 'ani-mate-deleted.json');
+const DELETED_KEEP = 2000;      // an install that never signs in must not grow this forever
+
+function loadDeleted() {
     try {
-        if (!fs.existsSync(HIST_DIR)) fs.mkdirSync(HIST_DIR, { recursive: true });
-        const tmp = FAVORITES_FILE + '.tmp';
-        fs.writeFileSync(tmp, JSON.stringify(favs, null, 2));
-        fs.renameSync(tmp, FAVORITES_FILE);
-    } catch { /* ignore */ }
+        const j = JSON.parse(fs.readFileSync(DELETED_FILE, 'utf8'));
+        return { favorites: (j && j.favorites) || {}, watch: (j && j.watch) || {} };
+    } catch { return { favorites: {}, watch: {} }; }
+}
+
+function saveDeleted(j) {
+    for (const kind of ['favorites', 'watch']) {
+        const keys = Object.keys(j[kind]);
+        if (keys.length > DELETED_KEEP) {
+            keys.sort((a, b) => j[kind][a] - j[kind][b]);
+            for (const k of keys.slice(0, keys.length - DELETED_KEEP)) delete j[kind][k];
+        }
+    }
+    fs.mkdirSync(HIST_DIR, { recursive: true });
+    const tmp = DELETED_FILE + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(j));
+    fs.renameSync(tmp, DELETED_FILE);
+}
+
+/** Call BEFORE removing the row: the key depends on the row still being in the list. */
+function noteDeleted(kind, list, localIds) {
+    const j = loadDeleted();
+    const keys = syncShape.keyMap(kind, list);
+    const now = Date.now();
+    for (const id of localIds) j[kind][keys.get(String(id)) || String(id)] = now;
+    saveDeleted(j);
 }
 
 // Daily popular/trending — hybrid AniList trending + AllAnime popular
@@ -383,13 +360,7 @@ async function getAniListTrending() {
     // Without them DAILY had no genre chips and no year, because the trending query
     // asked for a third of what /search already returns for the same shows.
     const gql = `query { Page(page: 1, perPage: 20) { media(type: ANIME, sort: [TRENDING_DESC]) { id title { romaji english } coverImage { large color } format episodes genres popularity startDate { year month day } seasonYear } } }`;
-    const resp = await fetch('https://graphql.anilist.co', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ query: gql }),
-        signal: AbortSignal.timeout(5000)
-    });
-    const json = await resp.json();
+    const json = await anilistPost(gql, undefined, 5000);
     return (json?.data?.Page?.media || []).map(m => {
         const name = m.title?.romaji || m.title?.english || 'Unknown';
         const eps = m.episodes || 0;
@@ -466,13 +437,17 @@ async function getAiringSchedule(dateStr, tzOffsetMin = 0) {
         }
     }`;
 
+    /* A page that was refused is not "no more pages". A day cut short that way used to
+     * be remembered for five minutes as the whole day. */
+    let complete = true;
     while (hasNext && page <= 10) {
-        const resp = await fetch('https://graphql.anilist.co', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({ query: gql, variables: { page, gt: dayStart, lt: dayEnd } })
-        });
-        const json = await resp.json();
+        let json = null;
+        try { json = await anilistPost(gql, { page, gt: dayStart, lt: dayEnd }, 8000); }
+        catch (e) {
+            if (!allSchedules.length) throw e;          // nothing at all: the route says so
+            complete = false;
+            break;
+        }
         const pg = json?.data?.Page;
         if (pg?.airingSchedules) allSchedules.push(...pg.airingSchedules);
         hasNext = pg?.pageInfo?.hasNextPage || false;
@@ -494,16 +469,66 @@ async function getAiringSchedule(dateStr, tzOffsetMin = 0) {
         totalEpisodes: s.media?.episodes
     }));
 
-    airingCache[cacheKey] = { data: results, at: Date.now() };
+    if (complete) airingCache[cacheKey] = { data: results, at: Date.now() };
     return results;
 }
+
+/* ── ANILIST, ASKED POLITELY ───────────────────────────────────────────────────────
+ * ⚠ 30 REQUESTS A MINUTE, for everything this address sends (read off the
+ * x-ratelimit-limit header, 2026-11-12). The callers below fired without looking at the
+ * status, so a refused request was parsed as "no data" and, for covers, cached that way
+ * for five minutes. Four call sites still did that after the first fix of 2026-11-12
+ * (the search, the trending row, a day's airing list, a show's description), and nothing
+ * counted before sending: six ordinary searches in a row spent 28 of the 30.
+ * The count, AniList's limits and the rules for who is asked are in ani-mate-budget.js. */
+const aniListBudget = Budget.create(Budget.ANILIST, { patienceMs: 5000 });
+
+/**
+ * ONE DOOR. Every AniList request this server makes goes through here.
+ *
+ *   need 'user'    what someone is waiting on: a search, a show's description, a tab.
+ *                  Asked unless the minute is used up; never waits more than 5 seconds.
+ *   need 'spare'   covers and details for cards, the airing crawl, the content index.
+ *                  Asked only while there is room to spare. Resolves NULL when it was
+ *                  not asked: write nothing down for it, and ask on a later call.
+ *
+ * Resolves the parsed body. Throws when AniList refused or did not answer; a caller that
+ * catches must not remember the throw as an empty answer.
+ */
+async function anilistPost(query, variables, timeoutMs = 8000, need = 'user') {
+    return aniListBudget.ask('anilist', async () => {
+        const resp = await fetch(ANILIST_API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ query, variables }),
+            signal: AbortSignal.timeout(timeoutMs)
+        });
+        /* AniList's own count includes what the page and the phone sent. */
+        aniListBudget.note('anilist', {
+            limit: parseInt(resp.headers.get('x-ratelimit-limit')) || 0,
+            remaining: resp.headers.get('x-ratelimit-remaining') === null
+                ? undefined : parseInt(resp.headers.get('x-ratelimit-remaining')),
+        });
+        if (resp.status === 429) {
+            const wait = Math.min(300, Math.max(5, parseInt(resp.headers.get('retry-after') || '60') || 60));
+            return { errors: [{ message: 'Too many requests, please try again in ' + wait + ' seconds.' }] };
+        }
+        if (!resp.ok) throw new Error('AniList answered HTTP ' + resp.status);
+        return resp.json();
+    }, { need });
+}
+
+/* The last complete crawl of the week's airing schedule, for /favorites/check. */
+const recentAiring = { at: 0, rows: null };
 
 // AniList cover image lookup with cache
 const coverCache = {};
 const COVER_CACHE_TTL = 60 * 60 * 1000; // 1 hour for successful lookups
 const COVER_CACHE_FAIL_TTL = 5 * 60 * 1000; // 5 minutes for failed lookups
 
-async function getAniListCovers(titles) {
+const ANILIST_DETAIL_BATCH = 25;
+
+async function getAniListCovers(titles, maxLookups = Infinity) {
     // Filter to titles not already cached (use shorter TTL for failed lookups)
     const needed = titles.filter(t => {
         if (!coverCache[t]) return true;
@@ -514,9 +539,17 @@ async function getAniListCovers(titles) {
         return titles.reduce((acc, t) => { acc[t] = { ...(coverCache[t] || {}), cover: coverCache[t]?.url || null, cover_color: coverCache[t]?.color || null }; return acc; }, {});
     }
 
-    // Batch query AniList (5 at a time to avoid rate limits, parameterized variables)
-    for (let i = 0; i < needed.length; i += 5) {
-        const batch = needed.slice(i, i + 5);
+    // Batch query AniList, 25 titles to a request (parameterized variables).
+    //
+    // It was 5 "to avoid rate limits", which did the opposite: AniList counts requests,
+    // not titles, so a 25-row search spent five of its thirty a minute here. Measured
+    // 2026-11-12: one request with 25 of these fragments answers in 0.3 s, HTTP 200, no
+    // complexity error, and counts as one.
+    // `maxLookups` bounds how many NEW titles one call may ask about; the rest are
+    // answered from the cache if they are there and tried on a later call.
+    const lookups = needed.slice(0, maxLookups);
+    for (let i = 0; i < lookups.length; i += ANILIST_DETAIL_BATCH) {
+        const batch = lookups.slice(i, i + ANILIST_DETAIL_BATCH);
         try {
             const varDefs = batch.map((_, idx) => `$s${idx}: String`).join(', ');
             const fragments = batch.map((_, idx) => {
@@ -535,13 +568,13 @@ async function getAniListCovers(titles) {
             batch.forEach((title, idx) => { variables[`s${idx}`] = title; });
 
             const gql = `query (${varDefs}) { ${fragments} }`;
-            const resp = await fetch('https://graphql.anilist.co', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                body: JSON.stringify({ query: gql, variables }),
-                signal: AbortSignal.timeout(5000)
-            });
-            const json = await resp.json();
+            const json = await anilistPost(gql, variables, 8000, 'spare');
+            /* Not asked: AniList has no room to spare this minute. Nothing is written
+             * down, so these titles are simply asked about on a later call. */
+            if (json === null) break;
+            /* An answer with no data block is an error body, not "these shows have no
+             * cover". Do not write it into the cache as one. */
+            if (!json || !json.data) throw new Error('AniList answered without data');
 
             batch.forEach((title, idx) => {
                 const media = json?.data?.[`q${idx}`]?.media?.[0];
@@ -550,6 +583,10 @@ async function getAniListCovers(titles) {
                 const desc = media?.description || null;
                 const titleEnglish = media?.title?.english || null;
                 coverCache[title] = { url: coverUrl, color: coverColor, description: desc, title_english: titleEnglish,
+                                      title_romaji: media?.title?.romaji || null,
+                                      /* answered: AniList was asked and replied, whether or
+                                       * not it knew the show. A failed request never sets it. */
+                                      answered: true,
                                       genres: media?.genres || [],
                                       anilist_id: media?.id || null,
                                       format: media?.format || null,
@@ -557,15 +594,59 @@ async function getAniListCovers(titles) {
                                       popularity: media?.popularity || 0,
                                       at: Date.now() };
             });
-        } catch {
-            // On failure, cache null so we don't retry immediately
-            batch.forEach(title => {
-                if (!coverCache[title]) coverCache[title] = { url: null, at: Date.now() };
-            });
+        } catch (e) {
+            /* A refusal is not "these shows have no cover", and the count already keeps
+             * the next call from asking too soon. Only a real failure (no network, a
+             * broken answer) is remembered, for five minutes, so it is not retried for
+             * every card. */
+            if (!(e && e.name === 'Refused')) {
+                batch.forEach(title => {
+                    if (!coverCache[title]) coverCache[title] = { url: null, at: Date.now() };
+                });
+            }
+            /* Rate limited or unreachable: the remaining batches would fail the same
+             * way and each one costs a request. */
+            break;
         }
     }
 
     return titles.reduce((acc, t) => { acc[t] = { ...(coverCache[t] || {}), cover: coverCache[t]?.url || null, cover_color: coverCache[t]?.color || null }; return acc; }, {});
+}
+
+/* English name and cover for a list of names, for POST /favorites/refresh.
+ *
+ * ⛔ THAT ROUTE SENT ONE REQUEST PER NAME, IN A ROW, EVERY TIME IT WAS CALLED, and it is
+ * called when the app starts. A name AniList has no English title for was asked about
+ * again on every start. Thirty such names were the whole minute's allowance.
+ * Now: 25 names to a request (measured 2026-11-12: HTTP 200, counted as one), each name
+ * asked at most once an hour, and as a spare question.
+ * Returns { name: [{ title_romaji, title_english, cover }, up to three] } for the names
+ * AniList answered about this time. */
+const titlesAsked = new Map();          // name -> when AniList last answered about it
+async function anilistTitles(names) {
+    const out = {};
+    const fresh = names.filter((n) => !(titlesAsked.has(n) && Date.now() - titlesAsked.get(n) < 60 * 60 * 1000));
+    for (let i = 0; i < fresh.length; i += ANILIST_DETAIL_BATCH) {
+        const batch = fresh.slice(i, i + ANILIST_DETAIL_BATCH);
+        const varDefs = batch.map((_, k) => `$s${k}: String`).join(', ');
+        const body = batch.map((_, k) =>
+            `q${k}: Page(perPage: 3) { media(search: $s${k}, type: ANIME) { title { english romaji } coverImage { large } } }`).join('\n');
+        const variables = {};
+        batch.forEach((n, k) => { variables[`s${k}`] = n; });
+        let json = null;
+        try { json = await anilistPost(`query (${varDefs}) { ${body} }`, variables, 8000, 'spare'); }
+        catch (e) { break; }
+        if (!json || !json.data) break;
+        batch.forEach((n, k) => {
+            titlesAsked.set(n, Date.now());
+            out[n] = ((json.data[`q${k}`] || {}).media || []).map((md) => ({
+                title_romaji: md.title?.romaji || null,
+                title_english: md.title?.english || null,
+                cover: md.coverImage?.large || null,
+            }));
+        });
+    }
+    return out;
 }
 
 // Anime info lookup (AniList primary, Jikan/MAL fallback)
@@ -623,13 +704,7 @@ async function getAnimeInfo(title) {
     // Try AniList first
     try {
         const gql = `query ($search: String) { Page(perPage: 3) { media(search: $search, type: ANIME) { description(asHtml: false) coverImage { extraLarge large color } bannerImage genres averageScore isAdult title { romaji english } } } }`;
-        const resp = await fetch('https://graphql.anilist.co', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({ query: gql, variables: { search: searchTitle } }),
-            signal: AbortSignal.timeout(5000)
-        });
-        const json = await resp.json();
+        const json = await anilistPost(gql, { search: searchTitle }, 5000);
         const mediaList = json?.data?.Page?.media || [];
         // Prefer non-adult result with matching name
         const infoNorm = (s) => (s || '').toLowerCase()
@@ -794,21 +869,54 @@ const ARCS = (() => {
     }
 })();
 
-const FRANCHISE_PATTERNS = [
-    'jujutsu kaisen', 'one piece', 'attack on titan', 'shingeki no kyojin',
-    'demon slayer', 'kimetsu no yaiba', 'my hero academia', 'boku no hero academia',
-    'sword art online', 'naruto', 'dragon ball', 'bleach', 'hunter x hunter',
-    'fullmetal alchemist', 'mob psycho', 're zero', 'overlord', 'konosuba',
-    'jojo', "jojo's bizarre adventure", 'spy x family', 'spy family',
-    'dr stone', 'dr. stone', 'solo leveling', 'ore dake level up',
-    'mushoku tensei', 'that time i got reincarnated as a slime', 'tensei shitara slime',
-    'danmachi', 'is it wrong to try to pick up girls in a dungeon',
-    'chainsaw man', 'vinland saga', 'mashle', 'blue lock', 'frieren',
-    'oshi no ko',
-];
+/* The named franchises live in the shared module, the same file this server hands to
+ * the page and the phone ships. This list used to be written out here and again in
+ * mobile/www/js/ani-mate-api.js, under a comment that said KEEP IN STEP. */
+const FRANCHISE_PATTERNS = require('./ani-mate-franchise.js').PATTERNS;
+
+/* ── ALLANIME KEEPS A COUNT, SO THIS DOES TOO ───────────────────────────────────────
+ * AllAnime takes ten searches and six episode lists in ten seconds, and one search here
+ * used to spend nine. The count, the measurements behind it and the rules for who waits
+ * and who is skipped are in server/ani-mate-budget.js, which the phone loads too. Every
+ * search and every episode list goes through allAnimeAsk(). */
+const allAnimeBudget = Budget.create(Budget.ALLANIME);
+/* What AllAnime answered to a search, for five minutes: searching for a show, opening
+ * it and opening its next season ask for the same titles again and again. */
+const allAnimeSearches = Budget.memo({ ttlMs: 5 * 60 * 1000, emptyTtlMs: 2 * 60 * 1000, keep: 400 });
+
+/**
+ * One question to AllAnime. `opts.need` is 'user' (waits for room) or 'spare' (asked only
+ * while there is room to spare; resolves null when it was not asked).
+ * Resolves the parsed answer. Throws when there was none.
+ */
+function allAnimeAsk(kind, variables, query, opts) {
+    return allAnimeBudget.ask(kind, async () => {
+        const response = await afetch(ALLANIME_API, {
+            method: 'POST',
+            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ variables, query }),
+            signal: AbortSignal.timeout(8000)
+        });
+        const text = await response.text();
+        try { return JSON.parse(text); } catch { throw new Error('AllAnime returned non-JSON'); }
+    }, opts);
+}
 
 // Direct API calls to AllAnime (same as ani-cli but from Node)
-async function searchAnime(query, mode = 'sub', allowAdult = false) {
+/**
+ * @param {string} query
+ * @param {string} [mode]
+ * @param {boolean} [allowAdult]
+ * @param {{ need?: string, catalogOnly?: boolean }} [opts]
+ *   need 'spare'        see allAnimeAsk. An empty list when it was not asked.
+ *   catalogOnly true    AllAnime or nothing. For a lookup whose whole purpose is the
+ *                       AllAnime row of a title already known. Another source's row
+ *                       for that title, under another id and another name, is the same
+ *                       show a second time: on 2026-11-12 a lookup that AllAnime refused
+ *                       brought back "The Apothecary Diaries Season 3" from HiAnime next
+ *                       to AllAnime's "Kusuriya no Hitorigoto 3rd Season".
+ */
+async function searchAnime(query, mode = 'sub', allowAdult = false, opts = {}) {
     const searchGql = `query($search: SearchInput $limit: Int $page: Int $translationType: VaildTranslationTypeEnumType $countryOrigin: VaildCountryOriginEnumType) { shows( search: $search limit: $limit page: $page translationType: $translationType countryOrigin: $countryOrigin ) { edges { _id name availableEpisodes __typename } } }`;
 
     const variables = {
@@ -819,35 +927,63 @@ async function searchAnime(query, mode = 'sub', allowAdult = false) {
         countryOrigin: 'ALL'
     };
 
-    const data = await withRetry(async () => {
-        const response = await afetch(ALLANIME_API, {
-            method: 'POST',
-            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ variables, query: searchGql }),
-            signal: AbortSignal.timeout(8000)
-        });
-        const text = await response.text();
-        try { return JSON.parse(text); } catch { throw new Error('AllAnime returned non-JSON'); }
-    });
+    /* ⚠ ALLANIME FAILING IS NOT THE SAME AS ALLANIME HAVING NOTHING, AND NEITHER IS
+     * ALLANIME REFUSING. A non-JSON answer (a Cloudflare page, an outage) used to throw,
+     * the route turned the throw into an empty list, and search showed nothing while
+     * HiAnime, which is what actually plays, was up. It has gone dark before: 2026-08-20
+     * and 2026-10-05. A refusal used to parse and read as an empty result. Only an
+     * answer that carries a result list is an answer, and only that is remembered. */
+    const cacheKey = mode + '|' + (allowAdult ? 1 : 0) + '|' + String(query).trim().toLowerCase();
+    let results = allAnimeSearches.recall(cacheKey);
+    if (results === null) {
+        results = [];
+        try {
+            const data = await allAnimeAsk('shows', variables, searchGql,
+                                           { need: opts.need === 'spare' ? 'spare' : 'user' });
+            if (data === null) return [];               // a spare lookup that was not asked
+            const edges = data && data.data && data.data.shows && data.data.shows.edges;
+            if (!Array.isArray(edges)) throw new Error('AllAnime answered without a result list');
+            for (const show of edges) {
+                const epCount = show.availableEpisodes?.[mode] || 0;
+                if (epCount > 0) {
+                    const type = epCount === 1 ? 'movie' : epCount <= 12 ? 'short' : 'series';
+                    results.push({
+                        id: show._id,
+                        name: show.name,
+                        episodes: epCount,
+                        type
+                    });
+                }
+            }
+            // Sort: series first (by ep count desc), then shorts, then movies
+            results.sort((a, b) => b.episodes - a.episodes);
+            allAnimeSearches.remember(cacheKey, results);
+        } catch (e) {
+            console.error('[search] AllAnime did not answer (' + e.message + ')'
+                          + (opts.catalogOnly ? '' : '; asking HiAnime'));
+        }
+    }
+    if (results.length || opts.catalogOnly) return results;
 
-    const results = [];
-    if (data?.data?.shows?.edges) {
-        for (const show of data.data.shows.edges) {
-            const epCount = show.availableEpisodes?.[mode] || 0;
-            if (epCount > 0) {
-                const type = epCount === 1 ? 'movie' : epCount <= 12 ? 'short' : 'series';
-                results.push({
-                    id: show._id,
-                    name: show.name,
-                    episodes: epCount,
-                    type
-                });
+    /* Nothing from AllAnime: ask the source that serves the video. Its listings carry
+     * no episode count (0 here), and the id is its own slug, which the episode and play
+     * routes resolve by title. */
+    {
+        const ha = getHiAnimeAt();
+        if (ha) {
+            try {
+                const hits = (await ha.search(query))
+                    .filter(h => allowAdult || !/\b(hentai|uncensored)\b/i.test(h.name || ''));
+                if (hits.length) {
+                    return hits.slice(0, 40).map(h => ({
+                        id: h.id, name: h.name, episodes: 0, type: 'series', provider: 'HiAnime'
+                    }));
+                }
+            } catch (e) {
+                console.error('[hianime.at] search failed:', e.message);
             }
         }
     }
-    // Sort: series first (by ep count desc), then shorts, then movies
-    results.sort((a, b) => b.episodes - a.episodes);
-    if (results.length) return results;
 
     // FALLBACK: AllAnime returned nothing (it currently 403s on every call). IDs are
     // tagged `anidb:<id>` so getEpisodeList/getEpisodeUrl route to the right provider —
@@ -1041,13 +1177,7 @@ async function searchAniList(query, limit = 15) {
                 }
             }
         }`;
-        const resp = await fetch('https://graphql.anilist.co', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({ query: gql, variables: { search: query, perPage: limit } }),
-            signal: AbortSignal.timeout(5000)
-        });
-        const json = await resp.json();
+        const json = await anilistPost(gql, { search: query, perPage: limit }, 5000);
         return (json?.data?.Page?.media || []).map(m => ({
             anilist_id: m.id,
             title_english: m.title?.english || null,
@@ -1096,6 +1226,11 @@ async function searchAniList(query, limit = 15) {
  * (Uncensored) listing. The source was never missing.
  */
 async function getEpisodeList(showId, mode = 'sub', title = '', opts = {}) {
+    /* Test hook, see TEST_STREAM: one named show has a canned episode list. */
+    if (TEST_STREAM && TEST_STREAM.show_id && String(showId) === String(TEST_STREAM.show_id)
+        && Array.isArray(TEST_STREAM.episodes)) {
+        return TEST_STREAM.episodes.map(String);
+    }
     // Route by provider tag. AniDB show ids are numeric and unrelated to AllAnime's,
     // so the tag applied at search time decides which source answers.
     if (String(showId).startsWith('anidb:')) {
@@ -1112,17 +1247,21 @@ async function getEpisodeList(showId, mode = 'sub', title = '', opts = {}) {
     const gql = `query ($showId: String!) { show( _id: $showId ) { _id availableEpisodesDetail } }`;
     const variables = { showId };
 
-    const data = await withRetry(async () => {
-        const response = await afetch(ALLANIME_API, {
-            method: 'POST',
-            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ variables, query: gql }),
-            signal: AbortSignal.timeout(8000)
-        });
-        const text = await response.text();
-        try { return JSON.parse(text); }
-        catch { throw new Error('AllAnime returned non-JSON response'); }
-    });
+    /* Only ask AllAnime about ids that can be AllAnime's. A row that came from the phone
+     * through sync carries a HiAnime slug or `al:<n>`, and sending those was a wasted
+     * request that could only miss. And when AllAnime does not answer, that is not the
+     * end: this used to throw before the HiAnime fallback below was ever reached. */
+    let data = null;
+    if (/^[A-Za-z0-9]{8,32}$/.test(String(showId))) {
+        try {
+            /* Through the counted door: AllAnime takes six of these in ten seconds, and
+             * a refusal used to read as "this show has no episodes". */
+            data = await allAnimeAsk('show', variables, gql, { need: 'user' });
+        } catch (e) {
+            console.error('[episodes] AllAnime did not answer (' + e.message + '); asking HiAnime');
+            if (!title) throw e;        // nothing else to ask with
+        }
+    }
 
     let episodes = [];
     try {
@@ -1379,12 +1518,13 @@ async function getFallbackStreamUrl(provider, providerName, title, titleEnglish,
 }
 
 // Master fallback chain: try each provider in order
-// Provenance of the last successful resolve. Surfaced by /play so a working stream and a
-// silently-substituted source are distinguishable, and so the next rotation is visible.
-let lastStreamSource = null;
-// Subtitles, referer and MAL id from whichever source answered. The old chain could only
-// return a bare URL, so a source that supplied subtitle tracks had nowhere to put them.
-let lastStreamMeta = null;
+/* ⚠ THE CHAIN RETURNS ONE OBJECT: { url, source, referer, subtitles, malId, subsQuality,
+ * subsCues, subsOrigin }, or null. It used to return a bare URL and leave the rest in two
+ * module-level variables (lastStreamSource, lastStreamMeta). Two things followed:
+ *   - /download read `.url` off the string and answered 500 for every episode, in every
+ *     release from 0.6.0 on. /play had been patched for this; /download had not.
+ *   - two requests resolving at the same time shared those variables, so one could be
+ *     answered with the other's referer and subtitles. */
 
 function getHiAnimeAt() {
     if (!hianimeAt) {
@@ -1494,11 +1634,30 @@ async function addExternalSubtitles(st, title, episodeNumber) {
  * the walk so a /play failure can name what was tried without a second list going stale. */
 const STREAM_CHAIN = ['HiAnime.at', 'AniDB', 'Gogoanime.by', 'AniDB (title match)'];
 
+/* ── TEST HOOK ────────────────────────────────────────────────────────────────────────
+ * The test suites set ANI_MATE_TEST_STREAM to a small JSON object and the stream chain
+ * answers with it instead of asking any source:
+ *
+ *     { url, referer, subtitles }      what /play and /download resolve to, for any show
+ *     { show_id, episodes }            and the episode list of that ONE show id
+ *
+ * That is the only way /play, /download and the player itself can be driven with no
+ * network; /download answered 500 in every release from 0.6.0 to 0.7.1 because nothing
+ * drove it. Set by tests/server-net.test.js and scripts/test-dom.js and by nothing
+ * else: main.js takes every ANI_MATE_TEST_ and ANI_MATE_PROXY_TEST_ variable out of the
+ * environment it starts this process with. */
+const TEST_STREAM = (() => {
+    try { return process.env.ANI_MATE_TEST_STREAM ? JSON.parse(process.env.ANI_MATE_TEST_STREAM) : null; }
+    catch (e) { return null; }
+})();
+
 async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, title, titleEnglish,
                                           opts = {}) {
-    lastStreamSource = null;
-    lastStreamMeta = null;
-
+    if (TEST_STREAM && TEST_STREAM.url) {
+        return { url: String(TEST_STREAM.url), source: 'test', referer: TEST_STREAM.referer || null,
+                 subtitles: Array.isArray(TEST_STREAM.subtitles) ? TEST_STREAM.subtitles : [],
+                 malId: null, subsQuality: null, subsCues: null, subsOrigin: null };
+    }
     // 0a. HIANIME.AT FIRST. It is the only source measured working on 2026-10-05, and putting
     // a dead source ahead of it just spends the user's first click on a timeout.
     {
@@ -1511,13 +1670,12 @@ async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, 
                         // Subtitles are a SEPARATE question from the stream. Only runs when
                         // this episode's own tracks turned out to be signs-only or absent.
                         st = await addExternalSubtitles(st, t, episodeString);
-                        lastStreamSource = 'HiAnime.at';
-                        lastStreamMeta = {
-                            referer: st.referer, subtitles: st.subtitles, malId: st.malId,
-                            subsQuality: st.subsQuality, subsCues: st.subsCues,
-                            subsOrigin: st.subsOrigin || null,
+                        return {
+                            url: st.url, source: 'HiAnime.at',
+                            referer: st.referer || null, subtitles: st.subtitles || [],
+                            malId: st.malId || null, subsQuality: st.subsQuality || null,
+                            subsCues: st.subsCues || null, subsOrigin: st.subsOrigin || null,
                         };
-                        return st.url;
                     }
                 } catch (e) { console.error('[hianime.at]', e.message); }
             }
@@ -1532,7 +1690,13 @@ async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, 
                 const hit = eps.find((e) => String(e.number) === String(episodeString));
                 if (hit) {
                     const st = await ad.getStream(hit.id, mode);
-                    if (st) { lastStreamSource = 'AniDB'; return st.url; }
+                    /* The referer travels with the url now. It used to be dropped, so
+                     * /play answered referer: null for a source whose CDN demands one. */
+                    if (st) {
+                        return { url: st.url, source: 'AniDB', referer: st.referer || null,
+                                 subtitles: [], malId: null, subsQuality: null, subsCues: null,
+                                 subsOrigin: null };
+                    }
                 }
             } catch (e) {
                 console.error('[anidb] stream failed:', e.message);
@@ -1568,12 +1732,11 @@ async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, 
                 try {
                     const st = await gg.streamByTitle(t, episodeString, opts);
                     if (st && st.url) {
-                        lastStreamSource = 'Gogoanime.by';
-                        lastStreamMeta = {
-                            referer: st.referer, subtitles: [], malId: null,
+                        return {
+                            url: st.url, source: 'Gogoanime.by',
+                            referer: st.referer || null, subtitles: [], malId: null,
                             subsQuality: 'hardsub', subsCues: 0, subsOrigin: null,
                         };
-                        return st.url;
                     }
                 } catch (e) { console.error('[gogoanime.by]', e.message); }
             }
@@ -1592,7 +1755,11 @@ async function getEpisodeUrlWithFallbacks(showId, episodeString, mode, quality, 
                 const hit = eps.find((e) => String(e.number) === String(episodeString));
                 if (!hit) continue;
                 const st = await ad4.getStream(hit.id, mode);
-                if (st) { lastStreamSource = 'AniDB (title match)'; return st.url; }
+                if (st) {
+                    return { url: st.url, source: 'AniDB (title match)', referer: st.referer || null,
+                             subtitles: [], malId: null, subsQuality: null, subsCues: null,
+                             subsOrigin: null };
+                }
             }
         } catch (e) {
             console.error('[anidb] title-match fallback failed:', e.message);
@@ -1634,9 +1801,10 @@ function getContinueList() {
     return history
         .filter(h => {
             // Only show anime where we haven't finished all episodes
-            if (!h.total_episodes) return true; // unknown total = always show
+            const total = wholeTotal(h.total_episodes);
+            if (!total) return true; // unknown total (or one stored as '?') = always show
             const watched = Array.isArray(h.episodes_watched) ? h.episodes_watched.length : 1;
-            return watched < h.total_episodes;
+            return watched < total;
         })
         .map(h => {
             const watched = Array.isArray(h.episodes_watched) ? h.episodes_watched : [h.episode];
@@ -1655,7 +1823,7 @@ function getContinueList() {
                 title: h.title,
                 episode: h.episode,
                 episodes_watched: watched,
-                total_episodes: h.total_episodes,
+                total_episodes: wholeTotal(h.total_episodes),
                 next_episode: nextEp,
                 resume_episode: resumeEpisode,
                 resume_time: resumeTime,
@@ -1689,12 +1857,19 @@ function safeJsonParse(str) {
 }
 
 // JSON response helper
+/* ⚠ NO CORS HEADERS, ANYWHERE IN THIS FILE. They used to be `*` on every answer. The page
+ * is served from this same origin and never needed them; what they did was let any web
+ * page the user had open read the library and the watch history through the browser.
+ *
+ * ⚠ AND IT NEVER WRITES HEADERS TWICE. A route that has already started its answer and
+ * then fails lands here from a catch block. writeHead would throw, the outer catch would
+ * call this again, that would throw too, and the unhandled rejection ended the process. */
 function jsonResponse(res, statusCode, data) {
+    if (res.headersSent) { try { res.end(); } catch { /* already closed */ } return; }
     res.writeHead(statusCode, {
         'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type'
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'no-store'
     });
     res.end(JSON.stringify(data));
 }
@@ -1704,7 +1879,7 @@ function serveStatic(res, filePath, contentType) {
         const content = fs.readFileSync(filePath);
         res.writeHead(200, {
             'Content-Type': contentType,
-            'Access-Control-Allow-Origin': '*',
+            'X-Content-Type-Options': 'nosniff',
             // NO-STORE ON THE UI, AND IT IS NOT AN OPTIMIZATION QUESTION. ADDED 2026-10-17.
             //
             // This handler sent no Cache-Control, no ETag and no Last-Modified. With none of
@@ -1729,19 +1904,104 @@ function serveStatic(res, filePath, contentType) {
     }
 }
 
-const server = http.createServer(async (req, res) => {
-    // CORS preflight
-    if (req.method === 'OPTIONS') {
-        res.writeHead(204, {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type'
-        });
-        res.end();
+/* ── WHO MAY ASK ───────────────────────────────────────────────────────────────────
+ * This server holds one person's library and can start downloads. It answers its own
+ * page and nothing else:
+ *   Host        must be this machine by a loopback name. A DNS name someone pointed at
+ *               127.0.0.1 arrives with THEIR name in Host and is refused.
+ *   Origin      if the browser sent one, it must be this server's own.
+ *   Sec-Fetch-Site  browsers label every request. `cross-site` and `same-site` (another
+ *               port on localhost counts as the same SITE) are refused; this covers an
+ *               <img> or a form on another page, which send no Origin on a GET.
+ * A request with none of those headers is a local program (curl, the test suites), which
+ * could read the files directly anyway. */
+function requestAllowed(req) {
+    const own = ['localhost:' + PORT, '127.0.0.1:' + PORT, '[::1]:' + PORT];
+    const host = String(req.headers.host || '').toLowerCase();
+    if (own.indexOf(host) < 0) return false;
+    const origin = req.headers.origin;
+    if (origin !== undefined && own.map(h => 'http://' + h).indexOf(String(origin).toLowerCase()) < 0) return false;
+    const site = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+    if (site === 'cross-site' || site === 'same-site') return false;
+    return true;
+}
+
+/* ── THE STREAM PROXY'S RULES ──────────────────────────────────────────────────────
+ * The page cannot set a Referer, and the CDNs refuse a request without the right one, so
+ * video and subtitles are fetched here and handed on. That makes this an HTTP client
+ * anyone who can reach the server can aim, so:
+ *   - only these hosts, and only http(s)
+ *   - EVERY redirect hop is checked against the same list. The first version checked the
+ *     first URL and then let fetch follow redirects wherever they led.
+ *   - sharepoint.com and dropbox.com were on the list from the AllAnime era. Anyone can
+ *     put a file on either, so they are gone.
+ *   - nothing that a browser would run is ever answered from this origin (see safeType). */
+const ALLOWED_PROXY_DOMAINS = [
+    'allanime.day', 'allanime.to', 'blog.allanime.pro',
+    'ep.allanime.pro', 'wb.allanime.pro',
+    'gogoanime.bid', 'anitaku.pe',
+    /* Gogoanime.by resolves to Blogger-hosted files on rr<N>---sn-<id>.googlevideo.com, a
+     * different host every request, so the bare domain covers every edge node. */
+    'googlevideo.com',
+    'biananset.net', 'gofcdn.com', 'vrv.co', 'crunchyroll.com',
+    'cdnfile.info', 'cdn.master-file.com',
+    'betterstream.cc', 'filemoon.sx',
+    'vidstreaming.io', 'vidplay.online',
+    'kwik.cx', 'kwik.si', 'owocdn.top',
+    'animepahe.si', 'animepahe.ru', 'animepahe.com',
+    'hianime.to', 'aniwatch.to',
+    'megacloud.tv', 'rapid-cloud.co',
+    'vidcloud9.com', 'vizcloud2.online',
+    // HiAnime.at chain: the API host, the embed (and the Referer its CDN demands), the
+    // playlists and subtitle vtt, and the segment CDN the variant points at.
+    'hianime.at', 'zokoanime.video', 'dramahot.top', 'drama1.cfd',
+    // HD-1 / megaplay: the embed, and where its subtitle vtt files live.
+    'megaplay.buzz', 'mysubsplay.com',
+    // AniDB. Its streams were in the chain and could not be played: the proxy refused
+    // its own source.
+    'anidb.app',
+];
+
+/* FOR THE TEST SUITE ONLY: exact host:port pairs that stand in for a CDN, so the rules
+ * above (redirect hops, Range, an empty body, the content type) can be exercised against
+ * a stub on this machine instead of against somebody's video host. Unset in every real
+ * launch; tests/server-net.test.js sets it for the server it starts. */
+const PROXY_TEST_HOSTS = String(process.env.ANI_MATE_PROXY_TEST_HOSTS || '')
+    .split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+
+function proxyAllowed(u) {
+    if (!u || (u.protocol !== 'https:' && u.protocol !== 'http:')) return false;
+    const host = String(u.hostname || '').toLowerCase();
+    if (PROXY_TEST_HOSTS.length && PROXY_TEST_HOSTS.indexOf(host + ':' + (u.port || '')) >= 0) return true;
+    return ALLOWED_PROXY_DOMAINS.some(d => host === d || host.endsWith('.' + d));
+}
+
+/* A page, a script or an SVG served from this origin would run WITH this origin: the
+ * local API and, once sync is on, the device token. Media and playlists only. */
+function safeType(contentType) {
+    const t = String(contentType || '').toLowerCase();
+    if (/html|javascript|ecmascript|svg|xml/.test(t)) return 'application/octet-stream';
+    return contentType || 'application/octet-stream';
+}
+
+const PROXY_FIRST_BYTE_MS = 15000;      // the CDN must START answering within this
+const PROXY_IDLE_MS = 30000;            // and must not go silent for longer than this
+const PROXY_MAX_HOPS = 5;
+
+const handleRequest = async (req, res) => {
+    if (!requestAllowed(req)) {
+        res.writeHead(403, { 'Content-Type': 'application/json', 'X-Content-Type-Options': 'nosniff' });
+        res.end('{"error":"forbidden"}');
         return;
     }
+    // No route here answers a preflight with permission, which is the point.
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-    const parsedUrl = url.parse(req.url, true);
+    /* url.parse throws on some malformed targets, and it used to sit outside the try:
+     * one bad request line was an unhandled rejection. */
+    let parsedUrl;
+    try { parsedUrl = url.parse(req.url, true); }
+    catch { jsonResponse(res, 400, { error: 'Bad request' }); return; }
     const pathname = parsedUrl.pathname;
     const query = parsedUrl.query;
 
@@ -1779,6 +2039,16 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
+        /* FRANCHISE IDENTITY, the same one-copy arrangement as the sync engine above.
+         * It decides what a franchise is, which season a row is, and what the season
+         * strip shows — and it used to exist three times (here in the page, again in
+         * mobile/www/js/ani-mate-ui.js, and as a Python port in the test harness), all
+         * three keyed on a franchise_id that most rows do not have. */
+        if (pathname === '/ani-mate-franchise.js') {
+            serveStatic(res, path.join(__dirname, 'ani-mate-franchise.js'), 'application/javascript');
+            return;
+        }
+
         /* ── SYNC: THE LOCAL SIDE ──────────────────────────────────────────────────
          * The engine runs in the browser page but the desktop's data lives HERE, in
          * two JSON files this process owns. So the page cannot read or write it
@@ -1790,8 +2060,9 @@ const server = http.createServer(async (req, res) => {
          * it again, differently, on the phone. */
         if (pathname === '/sync/local' && req.method === 'GET') {
             jsonResponse(res, 200, {
-                favorites: loadFavorites().map(syncShape.favToSync),
-                watch: loadForgeHistory().map(syncShape.watchToSync),
+                favorites: syncShape.favoritesOut(readListStrict(FAVORITES_FILE)),
+                watch: syncShape.watchOut(readListStrict(FORGE_HIST_FILE)),
+                deleted: loadDeleted(),
             });
             return;
         }
@@ -1800,43 +2071,38 @@ const server = http.createServer(async (req, res) => {
             const payload = safeJsonParse(await readBody(req)) || {};
             const applied = { favorites: 0, watch: 0 };
 
+            /* ⛔ MERGE ON WRITE, NEVER WRITE A SNAPSHOT THE CALLER BROUGHT. Re-read,
+             * apply row by row, write once. The rows have already been decided on by the
+             * engine (skip, merge or delete); the loop that writes them is the shared
+             * one, so the phone cannot apply the same pull differently. */
             if (Array.isArray(payload.favorites) && payload.favorites.length) {
-                /* ⛔ MERGE ON WRITE, NEVER WRITE A SNAPSHOT THE CALLER BROUGHT. A
-                 * /favorites/refresh that loaded a snapshot, did slow lookups and then
-                 * wrote the stale array back cost real favorites on 2026-11-07. The same
-                 * shape of bug is available here and the same answer applies: re-read,
-                 * apply row by row, write once. */
-                const favs = loadFavorites();
-                for (const row of payload.favorites) {
-                    const at = favs.findIndex((f) => String(f.id) === String(row.anime_id));
-                    if (row.deleted) {
-                        if (at >= 0) { favs.splice(at, 1); applied.favorites++; }
-                        continue;
-                    }
-                    const fav = syncShape.favFromSync(row, at >= 0 ? favs[at] : null);
-                    if (at >= 0) favs[at] = fav; else favs.unshift(fav);
-                    applied.favorites++;
-                }
-                saveFavorites(favs);
+                saveFavorites(syncShape.applyFavorites(readListStrict(FAVORITES_FILE), payload.favorites));
+                applied.favorites = payload.favorites.length;
+            }
+            if (Array.isArray(payload.watch) && payload.watch.length) {
+                saveForgeHistory(syncShape.applyWatch(readListStrict(FORGE_HIST_FILE), payload.watch));
+                applied.watch = payload.watch.length;
             }
 
-            if (Array.isArray(payload.watch) && payload.watch.length) {
-                const hist = loadForgeHistory();
-                for (const row of payload.watch) {
-                    const at = hist.findIndex((h) => String(h.anime_id) === String(row.anime_id));
-                    if (row.deleted) {
-                        if (at >= 0) { hist.splice(at, 1); applied.watch++; }
-                        continue;
-                    }
-                    const rec = syncShape.watchFromSync(row, at >= 0 ? hist[at] : null);
-                    if (at >= 0) hist[at] = rec; else hist.unshift(rec);
-                    applied.watch++;
+            /* The AniList id a row was matched to. This is what lets the phone's copy of
+             * a show and this one be the same row on the account. */
+            const ident = payload.identity || {};
+            if (Array.isArray(ident.favorites) && ident.favorites.length) {
+                saveFavorites(syncShape.setIdentity('favorites', readListStrict(FAVORITES_FILE), ident.favorites));
+            }
+            if (Array.isArray(ident.watch) && ident.watch.length) {
+                saveForgeHistory(syncShape.setIdentity('watch', readListStrict(FORGE_HIST_FILE), ident.watch));
+            }
+
+            /* Journal entries the engine has pushed (or found re-added). */
+            const done = payload.clear_deleted || {};
+            if ((Array.isArray(done.favorites) && done.favorites.length)
+                || (Array.isArray(done.watch) && done.watch.length)) {
+                const j = loadDeleted();
+                for (const kind of ['favorites', 'watch']) {
+                    for (const key of (Array.isArray(done[kind]) ? done[kind] : [])) delete j[kind][String(key)];
                 }
-                /* The same 100-record cap addToForgeHistory keeps, applied after a merge
-                 * so a sync cannot grow the file without bound. Newest first. */
-                hist.sort((a, b) => Date.parse(b.timestamp || 0) - Date.parse(a.timestamp || 0));
-                if (hist.length > 100) hist.length = 100;
-                saveForgeHistory(hist);
+                saveDeleted(j);
             }
 
             jsonResponse(res, 200, { status: 'applied', applied });
@@ -1943,10 +2209,8 @@ const server = http.createServer(async (req, res) => {
                                error: String(e.message || e).slice(0, 90), ms: Date.now() - t0g });
                 }
             }
-            for (const prov of [
-                { name: 'AnimePahe (dropped 0.6.0)', mod: consumetAnimePahe },
-                { name: 'HiAnime consumet (dropped 0.6.0)', mod: consumetHiAnime },
-            ]) {
+            /* The two consumet providers that were probed here are no longer loaded. */
+            for (const prov of []) {
                 const t = Date.now();
                 if (!prov.mod) { out.push({ name: prov.name, ok: false, note: 'not installed' }); continue; }
                 try {
@@ -1985,7 +2249,7 @@ const server = http.createServer(async (req, res) => {
                 jsonResponse(res, 400, { error: 'Missing search query parameter "q"' });
                 return;
             }
-            const mode = query.mode || 'sub';
+            const mode = modeOf(query.mode);
             const nsfw = query.nsfw === 'true';
 
             // Dual-source search: AllAnime (primary/streams) + AniList (fuzzy/romaji)
@@ -1996,7 +2260,7 @@ const server = http.createServer(async (req, res) => {
 
             // Everything AniList returned goes into the local content index, so the
             // corpus grows from ordinary use rather than needing a crawl.
-            try { SearchIndex.upsert(aniListResults); } catch { /* never block a search */ }
+            try { SearchIndex.upsert(aniListResults); SearchIndex.saveSoon(); } catch { /* never block a search */ }
 
             const results = allAnimeResults.map(r => fixDisplayName(r));
             const existingNames = new Set(results.map(r => r.name.toLowerCase()));
@@ -2137,9 +2401,18 @@ const server = http.createServer(async (req, res) => {
                 const searchName = aniResult.title_romaji || aniResult.title_english;
                 if (!searchName) return null;
                 try {
-                    const subResults = await searchAnime(searchName, mode, nsfw);
+                    /* A lookup, not the search: AllAnime or nothing, and only while
+                     * there is room to spare. See searchAnime. */
+                    const subResults = await searchAnime(searchName, mode, nsfw,
+                                                         { need: 'spare', catalogOnly: true });
                     if (subResults.length > 0) {
-                        const match = subResults[0];
+                        /* The list is sorted longest first, so [0] is the longest show
+                         * the fuzzy search returned, not the one that was asked for: a
+                         * 5-episode "X 2nd Season" came back as 24-episode "X". Take the
+                         * row with this name when there is one. */
+                        const want = searchName.toLowerCase();
+                        const match = subResults.find(r => String(r.name || '').toLowerCase() === want)
+                                   || subResults[0];
                         if (!existingNames.has(match.name.toLowerCase())) {
                             match.cover = aniResult.cover;
                             match.cover_color = aniResult.cover_color || null;
@@ -2341,7 +2614,8 @@ const server = http.createServer(async (req, res) => {
                     const lookups = hits.map(async (h) => {
                         const nm = h.entry.romaji || h.entry.english;
                         if (!nm || have.has(normName(nm))) return null;
-                        const sub = await searchAnime(nm, mode, nsfw).catch(() => []);
+                        const sub = await searchAnime(nm, mode, nsfw, { need: 'spare', catalogOnly: true })
+                            .catch(() => []);
                         if (!sub.length) return null;
                         const match = fixDisplayName(sub[0]);
                         if (have.has(normName(match.name))) return null;
@@ -2379,7 +2653,7 @@ const server = http.createServer(async (req, res) => {
                 jsonResponse(res, 400, { error: 'Missing anime ID parameter "id"' });
                 return;
             }
-            const mode = query.mode || 'sub';
+            const mode = modeOf(query.mode);
             let episodes = [];
             try {
                 episodes = await getEpisodeList(query.id, mode, query.title || '',
@@ -2409,7 +2683,7 @@ const server = http.createServer(async (req, res) => {
             }
 
             const quality = params.quality || 'best';
-            const mode = params.sub_or_dub || params.mode || 'sub';
+            const mode = modeOf(params.sub_or_dub || params.mode);
 
             // Get episode URL via AllAnime + fallback providers
             const epUrl = await getEpisodeUrlWithFallbacks(
@@ -2459,31 +2733,23 @@ const server = http.createServer(async (req, res) => {
             } catch { /* non-critical */ }
 
             const playTitle = `${params.title || 'Anime'} - Episode ${params.episode}`;
-            // epUrl is a STRING from some sources and an OBJECT from others. It was read as
-            // an object unconditionally, so any source returning a bare url produced
-            // stream_url: undefined and a player with nothing to play.
-            const asObj = (typeof epUrl === 'string') ? { url: epUrl } : (epUrl || {});
             jsonResponse(res, 200, {
-                status: 'playing', source: lastStreamSource,
-                stream_url: asObj.url,
-                resolution: asObj.resolution,
-                provider: asObj.provider,
-                all_links: asObj.all_links,
+                status: 'playing', source: epUrl.source,
+                stream_url: epUrl.url,
+                /* The chain resolves ONE stream. `provider` is its source; there is no
+                 * list of alternative links and no per-quality URL to report. */
+                provider: epUrl.source,
                 // From HiAnime.at: a real subtitle track, the referer its CDN requires, and
                 // the MAL id ani-skip needs. Null from sources that cannot supply them.
-                referer: (lastStreamMeta && lastStreamMeta.referer) || null,
-                subtitles: (lastStreamMeta && lastStreamMeta.subtitles) || [],
-                mal_id: (lastStreamMeta && lastStreamMeta.malId) || null,
-                /* WHERE THE SUBTITLES CAME FROM. The chain now has four tiers and they are
-                 * not equally trustworthy: a track off this episode's own servers cannot
-                 * drift, and an external file on a derived episode number has already been
-                 * measured getting an episode wrong. 'dialogue' | 'signs' | 'none' |
+                referer: epUrl.referer || null,
+                subtitles: epUrl.subtitles || [],
+                mal_id: epUrl.malId || null,
+                /* WHERE THE SUBTITLES CAME FROM: 'dialogue' | 'signs' | 'none' |
                  * 'hardsub' | 'external'. Reported so a silent episode and a substituted
-                 * track are distinguishable from the outside instead of both just looking
-                 * like the app being broken. */
-                subs_quality: (lastStreamMeta && lastStreamMeta.subsQuality) || null,
-                subs_cues: (lastStreamMeta && lastStreamMeta.subsCues) || null,
-                subs_origin: (lastStreamMeta && lastStreamMeta.subsOrigin) || null,
+                 * track are distinguishable from the outside. */
+                subs_quality: epUrl.subsQuality || null,
+                subs_cues: epUrl.subsCues || null,
+                subs_origin: epUrl.subsOrigin || null,
                 title: playTitle
             });
             return;
@@ -2496,12 +2762,17 @@ const server = http.createServer(async (req, res) => {
                 jsonResponse(res, 400, { error: 'Missing anime_id or episode' });
                 return;
             }
+            /* The episode label is drawn in the history panel. It is a short label and
+             * nothing else, so it is stored as one. */
+            const epLabel = String(params.episode).replace(/[^A-Za-z0-9._-]/g, '').slice(0, 12);
+            const seconds = Number(params.playback_time);
+            if (!epLabel) { jsonResponse(res, 400, { error: 'Bad episode' }); return; }
             // Update playback position in history
             const history = loadForgeHistory();
             const idx = history.findIndex(h => h.anime_id === params.anime_id);
             if (idx >= 0) {
-                history[idx].playback_time = params.playback_time || 0;
-                history[idx].playback_episode = String(params.episode);
+                history[idx].playback_time = Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds) : 0;
+                history[idx].playback_episode = epLabel;
                 saveForgeHistory(history);
             }
             jsonResponse(res, 200, { status: 'saved' });
@@ -2517,8 +2788,8 @@ const server = http.createServer(async (req, res) => {
             }
             const history = loadForgeHistory();
             const idx = history.findIndex(h => h.anime_id === params.anime_id);
-            if (idx >= 0) {
-                const ep = String(params.episode);
+            const ep = String(params.episode).replace(/[^A-Za-z0-9._-]/g, '').slice(0, 12);
+            if (idx >= 0 && ep) {
                 if (!Array.isArray(history[idx].episodes_watched)) history[idx].episodes_watched = [];
                 if (!history[idx].episodes_watched.includes(ep)) {
                     history[idx].episodes_watched.push(ep);
@@ -2538,7 +2809,9 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        if (pathname === '/history/remove') {
+        /* POST. As a GET, `<img src=".../history/clear">` on any web page emptied the
+         * history. */
+        if (pathname === '/history/remove' && req.method === 'POST') {
             const animeId = query.id;
             if (!animeId) {
                 jsonResponse(res, 400, { error: 'Missing id parameter' });
@@ -2547,6 +2820,7 @@ const server = http.createServer(async (req, res) => {
             const history = loadForgeHistory();
             const idx = history.findIndex(h => h.anime_id === animeId);
             if (idx >= 0) {
+                noteDeleted('watch', history, [animeId]);
                 history.splice(idx, 1);
                 saveForgeHistory(history);
                 jsonResponse(res, 200, { status: 'removed', anime_id: animeId });
@@ -2556,7 +2830,9 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        if (pathname === '/history/clear') {
+        if (pathname === '/history/clear' && req.method === 'POST') {
+            const all = loadForgeHistory();
+            noteDeleted('watch', all, all.map(h => h.anime_id));
             saveForgeHistory([]);
             jsonResponse(res, 200, { status: 'cleared' });
             return;
@@ -2592,9 +2868,11 @@ const server = http.createServer(async (req, res) => {
         .replace(/[\u201C\u201D\u2033]/g, '"')
         .replace(/[:\-\u2010\u2011\u2012\u2013\u2014\u2015.,'"!?()\uFF08\uFF09\u300C\u300D\u300E\u300F\/\\~\uFF5E\u30FB]/g, ' ')
         .replace(/\s+/g, ' ').trim();
+                    const found = await anilistTitles([...needsEnrich.keys()]);
                     for (const [name, entries] of needsEnrich) {
                         try {
-                            const results = await searchAniList(name, 3);
+                            const results = found[name];
+                            if (!results) continue;
                             const nameNorm = normName(name);
                             const match = results.find(r =>
                                 (r.title_romaji && normName(r.title_romaji) === nameNorm) ||
@@ -2691,7 +2969,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (pathname === '/daily') {
-            const mode = query.mode || 'sub';
+            const mode = modeOf(query.mode);
             const results = await getDailyPopular(mode);
 
             // Resolve AllAnime IDs for AniList-sourced results (parallel, max 5, 10s total timeout)
@@ -2701,7 +2979,10 @@ const server = http.createServer(async (req, res) => {
                     await Promise.race([
                         Promise.all(needsId.map(async (r) => {
                             try {
-                                const found = await searchAnime(r.name, mode);
+                                /* The AllAnime id of a title AniList named: AllAnime
+                                 * or nothing. */
+                                const found = await searchAnime(r.name, mode, false,
+                                                                { need: 'spare', catalogOnly: true });
                                 if (found.length > 0) {
                                     r.id = found[0].id;
                                     r.episodes = r.episodes || found[0].episodes;
@@ -2775,25 +3056,47 @@ const server = http.createServer(async (req, res) => {
                 if (!rawFavs[i].franchise_id || !favPat[i]) continue;
                 if (!patToId[favPat[i]]) patToId[favPat[i]] = rawFavs[i].franchise_id;
             }
-            /* FOURTH PASS: the metadata the browse grid needs. A stored favorite is
-             * {id,name,episodes,cover} and nothing else, so on the FAVS tab every card
-             * had no genres, no year and no format -- the rail showed zero genre chips
-             * and the cards were bare next to the identical cards on DAILY. This reads
-             * from the SAME cached AniList lookup the search backfill uses, so it is
-             * one round trip the first time and free afterwards. */
+            /* FOURTH PASS: the metadata the browse grid needs (genres, year, format).
+             *
+             * ⛔ IT IS WRITTEN DOWN NOW. A stored favorite used to be {id,name,episodes,cover}
+             * and nothing else, this pass filled the rest in memory for the first 25 rows
+             * that needed it, and the file never changed, so it was the SAME 25 on every
+             * call. Measured 2026-11-12 with 30 favorites: rows 26 to 30 got no genres and
+             * no year, twice. Each call now looks up at most 25 rows that have never been
+             * looked up, stores what AniList said on the row, and so reaches every
+             * favorite after a few calls and never asks about the same one twice.
+             * `meta_at` marks a row AniList has answered for, found or not. */
             try {
-                const needy = rawFavs.filter(f => !f.genres || !f.start_key).map(f => f.name);
+                const needy = rawFavs.filter(f => f && typeof f.name === 'string' && !f.meta_at);
                 if (needy.length) {
-                    const info = await getAniListCovers(needy.slice(0, 25));
-                    for (const f of rawFavs) {
+                    const info = await getAniListCovers(needy.map(f => f.name), 25);
+                    const learned = new Map();
+                    for (const f of needy) {
                         const d = info[f.name];
-                        if (!d) continue;
-                        if (!f.genres) f.genres = d.genres || [];
-                        if (!f.start_key) f.start_key = d.start_key || 0;
-                        if (!f.anilist_format) f.anilist_format = d.format || null;
-                        if (!f.popularity) f.popularity = d.popularity || 0;
-                        if (!f.cover) f.cover = d.cover || null;
-                        if (!f.cover_color) f.cover_color = d.cover_color || null;
+                        if (!d || !d.answered) continue;
+                        const m = { meta_at: Date.now() };
+                        if (!f.genres) m.genres = d.genres || [];
+                        if (!f.start_key) m.start_key = d.start_key || 0;
+                        if (!f.anilist_format) m.anilist_format = d.format || null;
+                        if (!f.popularity) m.popularity = d.popularity || 0;
+                        if (!f.cover && d.cover) m.cover = d.cover;
+                        if (!f.cover_color && d.cover_color) m.cover_color = d.cover_color;
+                        Object.assign(f, m);
+                        learned.set(String(f.id), m);
+                    }
+                    if (learned.size) {
+                        /* Re-read, apply by id, write once. The lookups above took time,
+                         * and writing back the list this request started with is the
+                         * mistake that lost real favorites on 2026-11-07. */
+                        try {
+                            const fresh = loadFavorites();
+                            let touched = false;
+                            for (const f of fresh) {
+                                const m = f && learned.get(String(f.id));
+                                if (m) { Object.assign(f, m); touched = true; }
+                            }
+                            if (touched) saveFavorites(fresh);
+                        } catch (e) { console.error('[favorites] could not store metadata:', e.message); }
                     }
                 }
             } catch { /* the list still renders without it */ }
@@ -2812,16 +3115,27 @@ const server = http.createServer(async (req, res) => {
 
         if (pathname === '/favorites' && req.method === 'POST') {
             const item = safeJsonParse(await readBody(req));
-            if (!item || !item.id || !item.name) {
+            /* ⚠ TEXT IS TEXT. This tested only that id and name were truthy, so
+             * {"id":"x","name":5} was stored, and GET /favorites then threw on
+             * (5).toLowerCase() and answered 500 until the file was edited by hand. */
+            const okText = (v, max) => (typeof v === 'string' || typeof v === 'number')
+                && String(v).length > 0 && String(v).length <= max;
+            if (!item || typeof item !== 'object' || !okText(item.id, 200) || !okText(item.name, 300)) {
                 jsonResponse(res, 400, { error: 'Missing id or name' });
                 return;
             }
+            item.id = String(item.id);
+            item.name = String(item.name);
             const favs = loadFavorites();
-            if (!favs.some(f => f.id === item.id)) {
-                const fav = { id: item.id, name: item.name, episodes: item.episodes || 0, added: new Date().toISOString() };
-                if (item.title_english) fav.title_english = item.title_english;
-                if (item.franchise_id) fav.franchise_id = item.franchise_id;
-                if (item.cover) fav.cover = item.cover;
+            if (!favs.some(f => String(f.id) === item.id)) {
+                const fav = { id: item.id, name: item.name, episodes: wholeTotal(item.episodes) || 0, added: new Date().toISOString() };
+                if (okText(item.title_english, 300)) fav.title_english = String(item.title_english);
+                /* A bare 'fp:' is what the page produced while the franchise module was
+                 * missing. Stored, it later glued every such favorite into one group. */
+                if (okText(item.franchise_id, 200) && !/^fp:\s*$/.test(String(item.franchise_id))) {
+                    fav.franchise_id = String(item.franchise_id);
+                }
+                if (okText(item.cover, 600) && /^https?:\/\//i.test(String(item.cover))) fav.cover = String(item.cover);
                 favs.unshift(fav);
                 saveFavorites(favs);
             }
@@ -2830,8 +3144,14 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (pathname.startsWith('/favorites/') && req.method === 'DELETE') {
-            const deleteId = pathname.split('/favorites/')[1];
-            const favs = loadFavorites().filter(f => f.id !== deleteId);
+            /* The page sends encodeURIComponent(id). Compared undecoded, an id with a
+             * ':' in it (anidb:123, al:456) never matched and the route still said
+             * "removed". */
+            let deleteId = pathname.split('/favorites/')[1] || '';
+            try { deleteId = decodeURIComponent(deleteId); } catch { /* keep it as sent */ }
+            const before = loadFavorites();
+            if (before.some(f => String(f.id) === deleteId)) noteDeleted('favorites', before, [deleteId]);
+            const favs = before.filter(f => String(f.id) !== deleteId);
             saveFavorites(favs);
             jsonResponse(res, 200, { status: 'removed', favorites: favs });
             return;
@@ -2856,20 +3176,27 @@ const server = http.createServer(async (req, res) => {
                     }
                 }
             }`;
-            try {
-                while (hasNext && page <= 20) {
-                    const resp = await fetch('https://graphql.anilist.co', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-                        body: JSON.stringify({ query: gql, variables: { page, gt: weekAgo, lt: nowSec } })
-                    });
-                    const json = await resp.json();
-                    const pg = json?.data?.Page;
-                    if (pg?.airingSchedules) allRecent.push(...pg.airingSchedules);
-                    hasNext = pg?.pageInfo?.hasNextPage || false;
-                    page++;
-                }
-            } catch { /* AniList down — return empty */ }
+            /* ⚠ ONE CRAWL PER HALF HOUR. The page calls this after every star tap and
+             * every finished episode, and each call paged through a week of schedules:
+             * up to 20 requests against a budget of 30 a minute. A week of airings does
+             * not change between two taps. A crawl that fails is not cached. */
+            if (recentAiring.rows && (Date.now() - recentAiring.at) < 30 * 60 * 1000) {
+                allRecent.push(...recentAiring.rows);
+            } else {
+                let complete = false;
+                try {
+                    while (hasNext && page <= 20) {
+                        const json = await anilistPost(gql, { page, gt: weekAgo, lt: nowSec }, 8000, 'spare');
+                        if (json === null) throw new Error('AniList has no room to spare');
+                        const pg = json?.data?.Page;
+                        if (pg?.airingSchedules) allRecent.push(...pg.airingSchedules);
+                        hasNext = pg?.pageInfo?.hasNextPage || false;
+                        page++;
+                    }
+                    complete = true;
+                } catch { /* AniList down or rate limited: answer from what arrived */ }
+                if (complete) { recentAiring.rows = allRecent.slice(); recentAiring.at = Date.now(); }
+            }
 
             // Normalize for matching
             const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -2899,28 +3226,34 @@ const server = http.createServer(async (req, res) => {
                 return;
             }
 
-            const mode = params.sub_or_dub || params.mode || 'sub';
+            const mode = modeOf(params.sub_or_dub || params.mode);
             const quality = params.quality || 'best';
-            const dlId = `${params.anime_id}-${params.episode}-${Date.now()}`;
 
-            // Get stream URL first (with fallback providers)
-            const epUrl = await getEpisodeUrlWithFallbacks(
-                params.anime_id, params.episode.toString(), mode, quality,
+            // Resolve the stream (same chain as /play)
+            const st = await getEpisodeUrlWithFallbacks(
+                params.anime_id, String(params.episode), mode, quality,
                 params.title || '', params.title_english || '',
-                // the user's own 18+ switch. On, an (Uncensored) listing is the one that
-                // was asked for; off, it stays disqualified exactly as before.
                 { allowUncensored: params.nsfw === true || params.nsfw === 'true' }
             );
-            if (!epUrl) {
+            if (!st || !st.url) {
                 jsonResponse(res, 404, { error: 'No streams available for download. Try again later.', retryable: true });
                 return;
             }
 
-            // Set up download tracking
-            const safeTitle = (params.title || 'anime').replace(/[^a-zA-Z0-9\-_ ]/g, '').slice(0, 60);
-            const ext = epUrl.url.includes('.m3u8') ? 'mp4' : 'mp4';
-            const filename = `${safeTitle} - EP${params.episode} [${epUrl.resolution || quality}].${ext}`;
+            /* ⚠ EVERY PART OF THE FILE NAME IS CLEANED. The title was; the episode and the
+             * quality went in as received, so `x]/../../../../tmp/y[` in either one put
+             * the file wherever the caller liked, with ffmpeg's -y to overwrite. The
+             * resolved path is checked as well, because one check is one mistake away
+             * from none. */
+            const clean = (v, max) => String(v == null ? '' : v).replace(/[^a-zA-Z0-9._-]/g, '').slice(0, max);
+            const safeTitle = String(params.title || 'anime').replace(/[^a-zA-Z0-9\-_ ]/g, '').trim().slice(0, 60) || 'anime';
+            const filename = `${safeTitle} - EP${clean(params.episode, 12) || '0'} [${clean(quality, 12) || 'best'}].mp4`;
             const filePath = path.join(DOWNLOAD_DIR, filename);
+            if (path.dirname(path.resolve(filePath)) !== path.resolve(DOWNLOAD_DIR)) {
+                jsonResponse(res, 400, { error: 'Bad file name' });
+                return;
+            }
+            const dlId = `${clean(params.anime_id, 40)}-${clean(params.episode, 12)}-${Date.now()}`;
 
             downloadQueue.set(dlId, {
                 status: 'downloading',
@@ -2934,14 +3267,22 @@ const server = http.createServer(async (req, res) => {
             // Ensure output directory exists
             fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
+            /* The CDN refuses a request without the stream's own Referer. The download
+             * sent none (ffmpeg) or AllAnime's (fetch), so even with the 500 fixed it
+             * would have been refused by the only source that plays. */
+            const referer = st.referer || ALLANIME_REFR;
+
             // Start async download
             (async () => {
                 const dl = downloadQueue.get(dlId);
                 try {
-                    if (epUrl.url.includes('.m3u8')) {
-                        // HLS → use ffmpeg to download
+                    if (st.url.includes('.m3u8')) {
+                        // HLS: ffmpeg fetches the playlist and every segment
                         const ffmpeg = spawn('ffmpeg', [
-                            '-i', epUrl.url,
+                            '-user_agent', AGENT,
+                            '-referer', referer,
+                            '-headers', `Referer: ${String(referer).replace(/[\r\n]/g, '')}\r\n`,
+                            '-i', st.url,
                             '-c', 'copy',
                             '-bsf:a', 'aac_adtstoasc',
                             '-y', filePath
@@ -2959,35 +3300,41 @@ const server = http.createServer(async (req, res) => {
 
                         await new Promise((resolve, reject) => {
                             ffmpeg.on('close', code => code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}`)));
-                            ffmpeg.on('error', reject);
+                            ffmpeg.on('error', (e) => reject(e && e.code === 'ENOENT'
+                                ? new Error('ffmpeg is not installed. Install it and add it to PATH.') : e));
                         });
 
                         dl.status = 'complete';
                         dl.progress = 100;
                     } else {
                         // Direct MP4 download with progress
-                        const resp = await fetch(epUrl.url, {
-                            headers: { 'User-Agent': AGENT, 'Referer': ALLANIME_REFR },
-                            signal: AbortSignal.timeout(300000) // 5 minute timeout
+                        const resp = await fetch(st.url, {
+                            headers: { 'User-Agent': AGENT, 'Referer': referer },
+                            signal: AbortSignal.timeout(30 * 60 * 1000)
                         });
+                        if (!resp.ok || !resp.body) throw new Error('the stream host answered HTTP ' + resp.status);
                         const totalSize = parseInt(resp.headers.get('content-length') || '0');
                         let downloaded = 0;
 
                         const writer = fs.createWriteStream(filePath);
+                        /* A full disk or a folder that cannot be written is an 'error'
+                         * event. With no listener it was an uncaught exception. */
+                        const failed = new Promise((_, reject) => writer.on('error', reject));
                         const reader = resp.body.getReader();
 
-                        while (true) {
-                            const { done, value } = await reader.read();
-                            if (done) break;
-                            writer.write(value);
-                            downloaded += value.length;
-                            if (totalSize > 0) {
-                                dl.progress = Math.round((downloaded / totalSize) * 100);
+                        await Promise.race([failed, (async () => {
+                            while (true) {
+                                const { done, value } = await reader.read();
+                                if (done) break;
+                                if (!writer.write(value)) await new Promise(r => writer.once('drain', r));
+                                downloaded += value.length;
+                                if (totalSize > 0) {
+                                    dl.progress = Math.min(99, Math.round((downloaded / totalSize) * 100));
+                                }
                             }
-                        }
-
-                        writer.end();
-                        await new Promise(resolve => writer.on('finish', resolve));
+                            writer.end();
+                            await new Promise(resolve => writer.on('finish', resolve));
+                        })()]);
                         dl.status = 'complete';
                         dl.progress = 100;
                     }
@@ -3042,148 +3389,144 @@ const server = http.createServer(async (req, res) => {
             }
             res.writeHead(200, {
                 'Content-Type': 'text/vtt; charset=utf-8',
-                'Access-Control-Allow-Origin': '*',
+                'X-Content-Type-Options': 'nosniff',
                 'Cache-Control': 'public, max-age=86400',
             });
             res.end(vtt);
             return;
         }
 
-        // Proxy stream for CORS-restricted CDNs (required for in-app player)
+        // Proxy stream for referer-gated CDNs (required for the in-app player).
         if (pathname === '/proxy-stream') {
-            const streamUrl = query.url;
-            if (!streamUrl) {
+            if (!query.url) {
                 jsonResponse(res, 400, { error: 'Missing url parameter' });
                 return;
             }
-
-            // SSRF protection: only allow known streaming CDN domains
-            try {
-                const proxyHost = new URL(streamUrl).hostname;
-                const ALLOWED_PROXY_DOMAINS = [
-                    'allanime.day', 'allanime.to', 'blog.allanime.pro',
-                    'ep.allanime.pro', 'wb.allanime.pro',
-                    'gogoanime.bid', 'anitaku.pe',
-                    'cache.googlevideo.com',
-                    /* Gogoanime.by resolves to Blogger-hosted files on rr<N>---sn-<id>.
-                     * googlevideo.com, a different host every request. The entry above only
-                     * ever matched the single `cache.` subdomain, so the one stream source
-                     * that is NOT part of the hianime monoculture was blocked by our own
-                     * proxy. Matching is `host === d || host.endsWith('.' + d)`, so the bare
-                     * domain covers every edge node. Added 2026-11-07. */
-                    'googlevideo.com',
-                    'biananset.net', 'gofcdn.com', 'vrv.co', 'crunchyroll.com',
-                    'sharepoint.com', 'dropbox.com',
-                    'cdnfile.info', 'cdn.master-file.com',
-                    'betterstream.cc', 'filemoon.sx',
-                    'vidstreaming.io', 'vidplay.online',
-                    // Fallback provider CDNs (AnimePahe/kwik, HiAnime)
-                    'kwik.cx', 'kwik.si', 'owocdn.top',
-                    'animepahe.si', 'animepahe.ru', 'animepahe.com',
-                    'hianime.to', 'aniwatch.to',
-                    'megacloud.tv', 'rapid-cloud.co',
-                    'vidcloud9.com', 'vizcloud2.online',
-                    // HiAnime.at chain, added 2026-10-05. Without these the only source that
-                    // works is blocked by our OWN proxy: /play hands back a url the player
-                    // then cannot fetch, which reads as "the stream is broken".
-                    'hianime.at',        // the API host
-                    'zokoanime.video',   // the embed, and the Referer its CDN demands
-                    'dramahot.top',      // master + variant playlists and the subtitle vtt
-                    'drama1.cfd',        // the segment CDN the variant points at
-                    // HD-1 / megaplay, added 2026-11-07. hianime lists a SECOND server per
-                    // episode and it carries far more subtitle tracks than ZokoAnime -- 36 vs
-                    // 3 on Beastars S2 ep2. Its .vtt files live on mysubsplay.com and are
-                    // referer-gated on megaplay.buzz. Without both hosts here the player gets
-                    // a 403 on every one of those tracks, which looks exactly like the source
-                    // having no subtitles.
-                    'megaplay.buzz',     // the HD-1 embed, and the Referer its CDN demands
-                    'mysubsplay.com'     // where HD-1's subtitle vtt files actually live
-                ];
-                const allowed = ALLOWED_PROXY_DOMAINS.some(d => proxyHost === d || proxyHost.endsWith('.' + d));
-                if (!allowed) {
-                    console.warn(`[ANI-MATE] Blocked proxy domain: ${proxyHost}`);
-                    jsonResponse(res, 403, { error: 'Domain not allowed for proxy' });
-                    return;
-                }
-            } catch {
-                jsonResponse(res, 400, { error: 'Invalid URL' });
+            let target;
+            try { target = new URL(String(query.url)); }
+            catch { jsonResponse(res, 400, { error: 'Invalid URL' }); return; }
+            if (!proxyAllowed(target)) {
+                console.warn(`[ANI-MATE] Blocked proxy domain: ${target.hostname}`);
+                jsonResponse(res, 403, { error: 'Domain not allowed for proxy' });
                 return;
             }
 
-            try {
-                // THE REFERER IS PER-SOURCE AND WAS HARDCODED TO ALLANIME'S.
-                // HiAnime.at's CDN (dramahot.top / drama1.cfd) 403s unless the referer is
-                // https://zokoanime.video/. Sending allmanga.to to every host meant the only
-                // working stream could not be proxied, which is what "it almost works but
-                // nothing plays" actually was. /play returns the right one; pass it through.
-                const refr = query.referer || ALLANIME_REFR;
-                const streamResp = await fetch(streamUrl, {
-                    headers: { 'User-Agent': AGENT, 'Referer': refr },
-                    signal: AbortSignal.timeout(15000)
-                });
+            /* THE REFERER IS PER-SOURCE. HiAnime.at's CDN 403s unless it is
+             * https://zokoanime.video/, and /play returns the right one for each stream. */
+            const refr = (typeof query.referer === 'string' && query.referer) ? query.referer : ALLANIME_REFR;
+            const wrap = (u) => `/proxy-stream?url=${encodeURIComponent(u)}`
+                              + (query.referer ? `&referer=${encodeURIComponent(query.referer)}` : '');
 
-                const contentType = streamResp.headers.get('content-type') || 'application/octet-stream';
-                const isM3u8 = streamUrl.includes('.m3u8') || contentType.includes('mpegurl') || contentType.includes('x-mpegURL');
+            /* ⚠ THE DEADLINE IS ON THE FIRST BYTE AND ON SILENCE, NOT ON THE TRANSFER.
+             * It was AbortSignal.timeout(15000) over the whole body, which cut every
+             * transfer longer than 15 seconds: an MP4 through the proxy could not finish.
+             * And when the viewer leaves, stop pulling from the CDN. */
+            const ctl = new AbortController();
+            let timer = setTimeout(() => ctl.abort(), PROXY_FIRST_BYTE_MS);
+            const stop = () => { clearTimeout(timer); ctl.abort(); };
+            res.on('close', stop);
+
+            try {
+                /* ⚠ RANGE IS FORWARDED. Without it a seek in an MP4 asked for bytes
+                 * N onward and was sent the file from byte 0 with a 200, so the player
+                 * could only ever play from the start. */
+                const headers = { 'User-Agent': AGENT, 'Referer': refr };
+                if (req.headers.range) headers.Range = String(req.headers.range);
+
+                /* ⚠ REDIRECTS BY HAND, EVERY HOP CHECKED. */
+                let current = target, resp = null;
+                for (let hop = 0; hop <= PROXY_MAX_HOPS; hop++) {
+                    resp = await fetch(current, { headers, redirect: 'manual', signal: ctl.signal });
+                    const loc = resp.status >= 300 && resp.status < 400 ? resp.headers.get('location') : null;
+                    if (!loc) break;
+                    let next;
+                    try { next = new URL(loc, current); } catch { next = null; }
+                    try { if (resp.body) await resp.body.cancel(); } catch { /* nothing to drain */ }
+                    if (!next || !proxyAllowed(next) || hop === PROXY_MAX_HOPS) {
+                        clearTimeout(timer);
+                        console.warn(`[ANI-MATE] Blocked proxy redirect to: ${next ? next.hostname : loc}`);
+                        jsonResponse(res, 403, { error: 'Redirect to a domain that is not allowed' });
+                        return;
+                    }
+                    current = next;
+                }
+                clearTimeout(timer);
+
+                const contentType = resp.headers.get('content-type') || 'application/octet-stream';
+                const isM3u8 = /\.m3u8($|\?)/i.test(current.pathname + current.search)
+                            || /mpegurl/i.test(contentType);
 
                 if (isM3u8) {
-                    // Rewrite m3u8 manifest: make segment URLs absolute and route through proxy
-                    let manifest = await streamResp.text();
-                    const baseUrl = streamUrl.substring(0, streamUrl.lastIndexOf('/') + 1);
-
-                    manifest = manifest.split('\n').map(line => {
+                    /* A playlist the CDN refused is an error. It used to be rewritten
+                     * line by line, error page and all, and served as a 200 playlist. */
+                    if (!resp.ok) {
+                        try { if (resp.body) await resp.body.cancel(); } catch { /* ignore */ }
+                        jsonResponse(res, resp.status === 404 ? 404 : 502,
+                                     { error: 'The stream host refused the playlist', status: resp.status });
+                        return;
+                    }
+                    // Make every URI absolute against where the playlist actually came
+                    // from, and route it back through here with the same referer.
+                    const abs = (u) => { try { return new URL(u, current).toString(); } catch { return null; } };
+                    const manifest = (await resp.text()).split('\n').map(line => {
                         line = line.trim();
                         if (line && !line.startsWith('#')) {
-                            // This is a segment URL or sub-playlist
-                            const absUrl = line.startsWith('http') ? line : baseUrl + line;
-                            // Carry the referer down. The variant playlist and every segment
-                            // are separate proxy calls, and each one is checked by the CDN.
-                            return `/proxy-stream?url=${encodeURIComponent(absUrl)}`
-                                 + (query.referer ? `&referer=${encodeURIComponent(query.referer)}` : '');
+                            const a = abs(line);
+                            return a ? wrap(a) : line;
                         }
-                        // Rewrite URI= in EXT-X-KEY and similar tags
                         if (line.includes('URI="')) {
-                            line = line.replace(/URI="([^"]+)"/g, (match, uri) => {
-                                const absUri = uri.startsWith('http') ? uri : baseUrl + uri;
-                                return `URI="/proxy-stream?url=${encodeURIComponent(absUri)}`
-                                     + (query.referer ? `&referer=${encodeURIComponent(query.referer)}` : '') + `"`;
+                            line = line.replace(/URI="([^"]+)"/g, (m, uri) => {
+                                const a = abs(uri);
+                                return a ? `URI="${wrap(a)}"` : m;
                             });
                         }
                         return line;
                     }).join('\n');
-
                     res.writeHead(200, {
                         'Content-Type': 'application/vnd.apple.mpegurl',
-                        'Access-Control-Allow-Origin': '*',
-                        'Access-Control-Allow-Methods': 'GET, OPTIONS',
-                        'Access-Control-Allow-Headers': 'Content-Type, Range'
+                        'X-Content-Type-Options': 'nosniff',
+                        'Cache-Control': 'no-store'
                     });
                     res.end(manifest);
-                } else {
-                    // Binary stream (ts segments, mp4, etc.) — pipe through
-                    const headers = {
-                        'Content-Type': contentType,
-                        'Access-Control-Allow-Origin': '*',
-                        'Access-Control-Allow-Methods': 'GET, OPTIONS',
-                        'Access-Control-Allow-Headers': 'Content-Type, Range',
-                        'Access-Control-Expose-Headers': 'Content-Length, Content-Range'
-                    };
-                    if (streamResp.headers.get('content-length')) {
-                        headers['Content-Length'] = streamResp.headers.get('content-length');
-                    }
-                    res.writeHead(streamResp.status, headers);
-
-                    // Stream the body through
-                    const reader = streamResp.body.getReader();
-                    const pump = async () => {
-                        while (true) {
-                            const { done, value } = await reader.read();
-                            if (done) { res.end(); return; }
-                            res.write(value);
-                        }
-                    };
-                    pump().catch(() => res.end());
+                    return;
                 }
+
+                // Segments, MP4, subtitle files: pass the bytes through.
+                const out = {
+                    'Content-Type': safeType(contentType),
+                    'X-Content-Type-Options': 'nosniff',
+                    'Accept-Ranges': 'bytes'
+                };
+                /* fetch has already decompressed the body, so an upstream length for a
+                 * compressed answer would be the wrong number and truncate it. */
+                if (!resp.headers.get('content-encoding') && resp.headers.get('content-length')) {
+                    out['Content-Length'] = resp.headers.get('content-length');
+                }
+                if (resp.headers.get('content-range')) out['Content-Range'] = resp.headers.get('content-range');
+                res.writeHead(resp.status, out);
+
+                /* ⛔ A 204 OR A 304 HAS NO BODY AND resp.body IS null. Reading it threw
+                 * AFTER the headers were written, which is the request that used to end
+                 * the process. */
+                if (!resp.body) { res.end(); return; }
+
+                const reader = resp.body.getReader();
+                try {
+                    for (;;) {
+                        timer = setTimeout(() => ctl.abort(), PROXY_IDLE_MS);
+                        const { done, value } = await reader.read();
+                        clearTimeout(timer);
+                        if (done) break;
+                        // Wait for the viewer to take what was sent before pulling more.
+                        if (!res.write(value)) {
+                            await new Promise(r => { res.once('drain', r); res.once('close', r); });
+                        }
+                    }
+                } catch { /* the CDN went quiet, or the viewer left */ }
+                clearTimeout(timer);
+                try { res.end(); } catch { /* already closed */ }
             } catch (err) {
+                clearTimeout(timer);
                 jsonResponse(res, 502, { error: 'Stream proxy failed' });
             }
             return;
@@ -3208,7 +3551,34 @@ const server = http.createServer(async (req, res) => {
         console.error(`[ANI-MATE] Error: ${err.message}`);
         jsonResponse(res, 500, { error: 'Internal server error' });
     }
+};
+
+/* Nothing restarts this process if it dies (main.js now does, but it should not have
+ * to). One stray rejection is a line in the log, not the end of the backend. */
+process.on('unhandledRejection', (e) => {
+    console.error('[ANI-MATE] unhandled rejection: ' + (e && e.stack || e));
 });
+process.on('uncaughtException', (e) => {
+    console.error('[ANI-MATE] uncaught exception: ' + (e && e.stack || e));
+});
+
+const server = http.createServer(handleRequest);
+
+/* ⛔ DO NOT OUTLIVE THE APP. main.js forks this process with a channel between the two.
+ * When the app's main process died without stopping it (a crash: /var/crash on the
+ * developer's machine holds one for the installed app from 2026-11-08; or kill -9)
+ * nothing ended this server. It kept the port and the data files, and the next launch
+ * found its port busy and started on another one, where the settings and the sync
+ * sign-in look empty. Measured 2026-11-12: three test launches whose app crashed left
+ * three servers running.
+ * The channel closing is the one thing a dead parent cannot fail to do. */
+if (process.send) {
+    process.on('disconnect', () => {
+        console.error('[ANI-MATE] the app is gone; the server is stopping');
+        try { SearchIndex.save(); } catch (e) { /* the index refills from use */ }
+        process.exit(0);
+    });
+}
 
 // Fill the content index in the background on a fresh install, so a query that
 // describes a show instead of naming it has a corpus to search from the first run.
@@ -3216,15 +3586,29 @@ const server = http.createServer(async (req, res) => {
 function seedIndexIfEmpty() {
     setTimeout(() => {
         try {
+            if (process.env.ANI_MATE_TEST_NO_SEED) return;       // test hook, see ALLANIME_API
             if (SearchIndex.stats().entries >= 200) return;
-            SearchIndex.seed(12, 50, () => {})
+            /* Through the counted door, as a spare question: twelve pages are twelve of
+             * AniList's thirty a minute, and whatever the user asks meanwhile comes first. */
+            SearchIndex.seed(12, 50, () => {}, (q, v) => anilistPost(q, v, 15000, 'spare'))
                 .then(n => { if (n) console.log(`[ANI-MATE] content index seeded: ${n} entries`); })
                 .catch(() => {});
         } catch { /* search still works on titles */ }
     }, 5000);
 }
 
-server.listen(PORT, () => {
+/* ⛔ LOOPBACK ONLY. This was server.listen(PORT) with no host, which binds every address
+ * the machine has. Measured 2026-11-12 on the developer's own box: it answered on the
+ * LAN address, the tailnet address and the Docker bridge. Nothing outside this machine
+ * has any business here.
+ * The page is loaded as http://localhost:PORT, and `localhost` can be either loopback
+ * family, so both are bound. ::1 is allowed to fail (IPv6 can be switched off). */
+const server6 = http.createServer(handleRequest);
+server6.on('error', (err) => {
+    console.error(`[ANI-MATE] not listening on [::1]:${PORT}: ${err.code || err.message}`);
+});
+server.listen(PORT, '127.0.0.1', () => {
+    server6.listen(PORT, '::1');
     console.log(`[ANI-MATE] Server online at http://localhost:${PORT}`);
     console.log(`[ANI-MATE] UI available at http://localhost:${PORT}/`);
     console.log(`[ANI-MATE] API endpoints: /search, /episodes, /play, /history, /continue, /download, /status`);

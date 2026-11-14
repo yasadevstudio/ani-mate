@@ -1,6 +1,6 @@
 {
   "name": "ani-mate",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "ANI-MATE - Free Anime For All",
   "main": "main.js",
   "author": "YASA Development Studio",
@@ -9,15 +9,27 @@
     "start": "electron .",
     "build:win": "electron-builder --win --x64",
     "build:linux": "electron-builder --linux --x64",
-    "sync:shared": "cp server/ani-mate-sync.js mobile/www/js/ani-mate-sync.js && mkdir -p mobile/android/app/src/main/assets/public/js && cp mobile/www/js/*.js mobile/android/app/src/main/assets/public/js/ && cp mobile/www/css/*.css mobile/android/app/src/main/assets/public/css/ 2>/dev/null || true",
-    "sync:verify": "cmp -s server/ani-mate-sync.js mobile/www/js/ani-mate-sync.js && echo \"sync engine: identical\" || (echo \"DRIFT: server/ani-mate-sync.js != mobile/www/js/ani-mate-sync.js -- run npm run sync:shared\" && exit 1)"
+    "sync:shared": "node scripts/sync-shared.js",
+    "sync:verify": "node scripts/verify-shared.js",
+    "test": "npm run test:offline && npm run test:live",
+    "test:ui": "node tests/franchise-module.test.js && node scripts/local-suite.js tests/franchise-ui.test.js && node tests/page-playback.test.js && node tests/budget.test.js",
+    "test:live": "node scripts/test-live.js",
+    "test:worker": "node worker/tests/run.mjs",
+    "test:syntax": "node tests/ui-syntax.test.js && node scripts/verify-shared.js",
+    "test:dom": "node scripts/test-dom.js",
+    "test:offline": "npm run test:syntax && npm run test:names && npm run test:worker && npm run test:ui && npm run test:server",
+    "test:server": "node tests/server-net.test.js && node tests/server-search.test.js",
+    "smoke": "node scripts/smoke-stream.js",
+    "smoke:electron": "node scripts/smoke-electron.js",
+    "test:names": "node scripts/check-undefined-names.js",
+    "test:sync": "node scripts/test-sync.js",
+    "test:phone": "node scripts/test-phone.js"
   },
   "dependencies": {
-    "@consumet/extensions": "^1.8.8",
     "electron-updater": "^6.3.0"
   },
   "devDependencies": {
-    "electron": "^33.0.0",
+    "electron": "^45.3.1",
     "electron-builder": "^25.0.0"
   },
   "build": {

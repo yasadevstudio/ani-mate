@@ -9,10 +9,13 @@ FRANCHISE_PATTERNS or the season strip.
     python3 tests/franchise-regression.py --save X   # write results to X.json
     python3 tests/franchise-regression.py --diff A B # compare two saved runs
 """
-import json, re, sys, time, urllib.parse, urllib.request
+import json, os, re, subprocess, sys, time, urllib.parse, urllib.request
 
-API = "http://localhost:7890"
-RANK = {"TV": 0, "TV_SHORT": 1, "ONA": 2, "MOVIE": 3, "OVA": 4, "SPECIAL": 5, "MUSIC": 6}
+# The same variable the two JS live suites read, so one setting moves all three. It was
+# fixed at port 7890 here, which is the app the user is running.
+API = os.environ.get("ANIMATE_API", "http://localhost:7890").rstrip("/")
+# No RANK table here any more: the member ordering is groupByFranchise's, and this
+# harness calls it rather than restating it.
 
 
 class Empty(Exception):
@@ -53,28 +56,44 @@ def need(rows, *names):
     return {n: next(r for r in rows if r["name"] == n) for n in names}
 
 
-def card_opens(rows):
-    """Port of groupByFranchise. Returns {fid: (whatTheCardOpens, membersInOrder)}.
+class NoGrouping(Exception):
+    """The JS could not be lifted or returned nothing. NEVER let this pass as a result."""
 
-    The card no longer opens members[0]. It opens the highest search_score member,
-    so a search lands on what was searched for; members stays chronological because
-    it is the expanded list and the season strip. Kept in step with the JS
-    deliberately — an earlier version of this harness still ported the old sort and
-    reported a working fix as a failure.
-    """
-    fr = {}
-    for r in rows:
+
+def card_opens(rows, parent_mode="score"):
+    """Returns {fid: (whatTheCardOpens, membersInOrder)} by calling THE SHIPPED JS.
+
+    ⛔ THIS WAS A PYTHON PORT OF groupByFranchise AND THE PORT IS WHY IT LIED.
+    Its docstring already recorded drifting once ("reported a working fix as a
+    failure"). By 2026-11-09 it had drifted again: it still began
+
         if r.get("franchise_id"):
-            fr.setdefault(str(r["franchise_id"]), []).append(r)
+
+    long after the JS stopped requiring a franchise_id to group. So every franchise the
+    server had not tagged was absent from the return value, and the three cases below
+    that call this were evaluating `all(... for ... in {}.values())` — vacuously true.
+    Three green rows asserting nothing.
+
+    tests/lift-js.js extracts groupByFranchise out of ui/ani-mate-ui.html and runs it.
+    One implementation, and the test exercises the one that ships.
+    """
+    if not rows:
+        raise NoGrouping("no rows to group")
+    lifter = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lift-js.js")
+    p = subprocess.run(["node", lifter, "group", parent_mode],
+                       input=json.dumps(rows), capture_output=True, text=True, timeout=120)
+    if p.returncode != 0:
+        raise NoGrouping("lift-js.js failed: " + (p.stderr.strip() or "rc=%d" % p.returncode))
+    try:
+        data = json.loads(p.stdout)
+    except ValueError:
+        raise NoGrouping("lift-js.js produced no JSON: " + p.stdout[:200])
     out = {}
-    for fid, m in fr.items():
-        if len(m) < 2:
-            continue
-        members = sorted(m, key=lambda a: (RANK.get(a.get("anilist_format"), 99),
-                                           a.get("start_key") or 0,
-                                           -(a.get("episodes") or 0)))
-        parent = max(m, key=lambda x: x.get("search_score") if x.get("search_score") is not None else -1)
-        out[fid] = (parent, members)
+    for g in data.get("groups", []):
+        out[str(g["franchise_id"])] = (g["parent"], g["members"])
+    if not out:
+        # Absent data must fail loudly, the same rule the search() wrapper follows.
+        raise NoGrouping("%d rows produced zero franchise groups" % len(rows))
     return out
 
 
@@ -116,10 +135,27 @@ CASES = [
              [r for r in rs if re.search(r"(Season\s*[23]|[23](?:nd|rd)\s+Season)", r["name"], re.I)],
              next((r for r in rs if r["name"] in ("The Apothecary Diaries",
                                                   "Kusuriya no Hitorigoto")), None))),
-    dict(id="v051-apothecary-card", q="apothecary diaries",
+    dict(id="v051-apothecary-card", q="apothecary diaries", minrows=3,
          want="card still opens season 1 when no season is named",
-         check=lambda rs: all("Season 2" not in parent["name"] and "Season 3" not in parent["name"]
-                              for parent, _ in card_opens(rs).values())),
+         # `all(...)` over an empty dict is TRUE. card_opens now raises NoGrouping on an
+         # empty result rather than handing this assertion nothing to be true of.
+         check=lambda rs: (lambda g: bool(g) and all(
+             "Season 2" not in p["name"] and "Season 3" not in p["name"]
+             and "2nd Season" not in p["name"] and "3rd Season" not in p["name"]
+             for p, _ in g.values()))(card_opens(rs))),
+    dict(id="untagged-still-groups", q="beastars", minrows=2,
+         want="seasons group even when the server tags none of them with a franchise_id",
+         # The 2026-11-09 report: "no navigation on the Beastars Final season part 2
+         # page, and franchise grouping is still not perfect". Grouping must not depend
+         # on franchise_id, so strip it from the rows and require the group to survive.
+         check=lambda rs: (lambda g: bool(g) and max(len(m) for _, m in g.values()) >= 2)(
+             card_opens([{k: v for k, v in r.items() if k != "franchise_id"} for r in rs]))),
+    dict(id="fav-card-is-season-1", q="apothecary diaries", minrows=3,
+         want="on FAVS the card is season 1, not whichever season ranks best",
+         check=lambda rs: (lambda g: bool(g) and all(
+             not re.search(r"(Season\s*[2-9]|[2-9](?:nd|rd|th)\s+Season|Final Season)",
+                           p["name"], re.I)
+             for p, _ in g.values()))(card_opens(rs, "first"))),
     dict(id="v051-frieren-grouped", q="frieren",
          want="the curly-apostrophe English title groups with the romaji one",
          check=lambda rs: (lambda g: len(g) <= 1)(
@@ -145,6 +181,8 @@ def run():
             err = "" if ok else "assertion false"
         except Empty as e:
             ok, err = False, f"NO DATA — {e}"
+        except NoGrouping as e:
+            ok, err = False, f"NO GROUPING — {e}"
         except Exception as e:
             ok, err = False, f"{type(e).__name__}: {e}"
         npass += ok

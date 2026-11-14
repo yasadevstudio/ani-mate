@@ -15,7 +15,8 @@ Get the latest version from [Releases](../../releases).
 | Platform | File | Notes |
 |----------|------|-------|
 | **Windows** | `ANI-MATE-Setup-x.x.x.exe` | Installer with auto-updates |
-| **Android** | `ANI-MATE-x.x.x.apk` | Sideload — enable "Install unknown apps" in settings |
+| **Linux** | `ANI-MATE-x.x.x.AppImage` or `ani-mate_x.x.x_amd64.deb` | AppImage runs as is; the .deb installs with your package manager |
+| **Android** | `ANI-MATE-x.x.x-mobile.apk` | Sideload — enable "Install unknown apps" in settings |
 
 ## Features
 
@@ -88,7 +89,7 @@ Requires: JDK 21, Android SDK (API 36, build-tools 36.0.0)
 | HTTP/CORS | Node.js proxy server | CapacitorHttp (native HTTP) |
 | Video | hls.js | hls.js + custom loader |
 | Storage | Local filesystem | Capacitor Filesystem |
-| Anime data | AllAnime GraphQL API | AllAnime GraphQL API |
+| Anime data | HiAnime, AniDB, Gogoanime and AllAnime, resolved by the local server | The shared edge API (HiAnime, Gogoanime), with the on-device resolver as fallback |
 | Metadata | AniList + Jikan/MAL | AniList + Jikan/MAL |
 
 ## File Locations

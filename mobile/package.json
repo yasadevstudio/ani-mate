@@ -11,10 +11,10 @@
   },
   "dependencies": {
     "@capacitor-community/keep-awake": "^8.0.0",
-    "@capacitor/android": "^8.0.2",
+    "@capacitor/android": "^8.6.2",
     "@capacitor/app": "^8.0.0",
-    "@capacitor/cli": "^8.0.2",
-    "@capacitor/core": "^8.0.2",
+    "@capacitor/cli": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
     "@capacitor/filesystem": "^8.1.0",
     "@capacitor/preferences": "^8.0.0",
     "@capacitor/screen-orientation": "^8.0.0",
