@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.7.2';
+    const APP_VERSION = '0.7.3';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -2516,6 +2516,7 @@
     const CHANGELOG_NOTE = "Scrolling is fixed -- the browse grid was growing instead of scrolling, so anything past the first screenful could not be reached. Cards are a uniform size now. And sync is here: one optional account keeps your list, your history and your place in every episode the same on your computer and your phone, with no email and no password.";
 
     const CHANGELOG = [
+        "Subtitles: when an episode's first English track is only on-screen signs, ANI-MATE now shows the full English subtitles the same servers list. It was falling back to a transcript of the English dub, which on some episodes put nothing on screen for the first two minutes",
         "Scrolling works again. Favorites, search, daily, releases and continue all share one container, and it was growing to fit its contents instead of scrolling -- so everything past the first screenful was simply unreachable",
         "Cards are all the same size. They were four different heights depending on whether a title ran to two lines and whether the show had a separate English name",
         "The bar above the grid no longer bunches up. The quality and audio controls stay together, and SYNC, PLAY and DL move as one block instead of scattering across a second row",
