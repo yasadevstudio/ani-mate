@@ -18,7 +18,7 @@
     "test:syntax": "node tests/ui-syntax.test.js && node scripts/verify-shared.js",
     "test:dom": "node scripts/test-dom.js",
     "test:offline": "npm run test:syntax && npm run test:names && npm run test:worker && npm run test:ui && npm run test:server",
-    "test:server": "node tests/server-net.test.js && node tests/server-search.test.js",
+    "test:server": "node tests/server-net.test.js && node tests/server-search.test.js && node tests/hianime-tracks.test.js",
     "smoke": "node scripts/smoke-stream.js",
     "smoke:electron": "node scripts/smoke-electron.js",
     "test:names": "node scripts/check-undefined-names.js",

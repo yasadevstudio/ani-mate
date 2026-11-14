@@ -323,6 +323,47 @@ function makeProvider(afetch) {
         } catch { return -1; }   // unreadable; treat as unknown, not as signs-only
     }
 
+    /* ── THE REST OF THIS EPISODE'S OWN ENGLISH TRACKS. Added 2026-11-14. ─────────────
+     *
+     * The walk below counted ONE track, the one a ranking by label puts first, and when
+     * that one was signs only it went straight to the other mode's servers. But the list
+     * it had just been handed is pooled from every server of THIS mode (since 2026-11-07),
+     * and the same label can be on several of them.
+     *
+     * Measured 2026-11-14, BEASTARS FINAL SEASON Part 2 episode 6, sub, 38 tracks:
+     *
+     *   [1]  English     ZokoAnime   13 cues   signs only           <- ranked first, counted
+     *   [9]  English     HD-1       329 cues   1:42.0 to 23:41.9    the subtitles for the
+     *                                                               Japanese audio
+     *   [10] English 2   HD-1       382 cues   the dub's script
+     *   [11] English 3   HD-1       442 cues   the dub's script, with [sighs] and speakers
+     *   [12] English 4   HD-1        13 cues   signs only
+     *   and from the DUB servers: English (AI), 372 cues, 1:54.3 to 23:28.9
+     *
+     * The app showed the last one: a machine transcript of the English dub, with no signs
+     * and nothing before 1:54, while the title card (1:42), the club sign (1:47) and the
+     * first two spoken lines (1:49 "See ya.", 1:50 "Thanks for finishing up, Bill!") went
+     * by untranslated. To the person watching, that is "the subtitles are gone", and the
+     * real ones were item 9 of the list in hand. 0.7.1 and 0.7.2 both did it.
+     *
+     * So: before the other mode is asked, the other English tracks of this one are
+     * counted, in the order the host lists them (a plain "English" before "English 2"),
+     * and the first that is a script and not a handful of signs is the one shown. They are
+     * tracks of the stream that is playing, so they are in step with it by construction.
+     * It costs requests only for an episode whose first English track is signs only. */
+    const MAX_SIBLINGS = 6;
+    async function ownReadable(got, tried) {
+        const english = (got.subtitles || []).filter((t) => t && t.src && t.src !== (tried && tried.src) &&
+            (/^en/i.test(t.lang || '') || /^english/i.test(t.label || '')) && !/forced/i.test(t.label || ''));
+        const rank = (t) => (/dubtitle/i.test(t.label || '') ? -50 : 0) + (/sdh/i.test(t.label || '') ? -10 : 0);
+        const ordered = english.map((t, i) => ({ t, i })).sort((a, b) => (rank(b.t) - rank(a.t)) || (a.i - b.i)).map((x) => x.t);
+        for (const t of ordered.slice(0, MAX_SIBLINGS)) {
+            const n = await cueCount(t.src, t.referer || got.referer);
+            if (n >= MIN_CUES) return { track: t, n };
+        }
+        return null;
+    }
+
     /* Episode counts for a set of listings, so the caller can work out what episode number a
      * subtitle database would use. Kept SEPARATE from streamByTitle and called only when an
      * episode turns out to have no readable track: it costs one request per listing, and the
@@ -477,6 +518,18 @@ function makeProvider(afetch) {
                                       `(${n} cues) over "${signsFrom || silentFrom}"`);
                     }
                     return decorate(got, 'dialogue', n, hit.name, allListings);
+                }
+                /* Signs only. Its own servers may list a full one under the same label. */
+                const own = await ownReadable(got, best);
+                if (own) {
+                    /* The one shown is the one flagged: the player ranks English tracks
+                     * equal and breaks the tie on `default`, so it goes first with the flag
+                     * and every other track loses it (see crossMode for what that cost). */
+                    got.subtitles = [Object.assign({}, own.track, { default: true })].concat(
+                        got.subtitles.filter((x) => x.src !== own.track.src).map((x) => Object.assign({}, x, { default: false })));
+                    console.error(`[hianime.at] ep ${episodeNumber}: "${hit.name}" first English track is signs only ` +
+                                  `(${n} cues); another of its own English tracks has ${own.n} -- using "${own.track.label || 'English'}"`);
+                    return decorate(got, 'dialogue', own.n, hit.name, allListings);
                 }
                 console.error(`[hianime.at] ep ${episodeNumber}: "${hit.name}" track is signs only ` +
                               `(${n} cues), trying the ${mode === 'sub' ? 'dub' : 'sub'} servers ` +
