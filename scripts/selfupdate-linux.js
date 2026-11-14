@@ -99,6 +99,17 @@ function freePort() { return new Promise((res, rej) => { const s = net.createSer
     const oldFile = DEB ? OLD : path.join(appDir, path.basename(OLD));
     if (!DEB) { fs.copyFileSync(OLD, oldFile); fs.chmodSync(oldFile, 0o755); }
     const packageWas = DEB ? packageVersion() : '';
+    /* The updater gives the new AppImage the new version's file name when the old name
+     * had a version in it, and KEEPS the old name when it had none (someone renamed it).
+     * Either is a replacement; which one happened is said. */
+    const sumOf = (f) => crypto.createHash('sha512').update(fs.readFileSync(f)).digest('base64');
+    const oldSum = DEB ? '' : sumOf(oldFile);
+    const fileNow = () => {
+        const renamed = fs.readdirSync(appDir).map((f) => path.join(appDir, f)).find((f) => f !== oldFile && f.includes(WANT));
+        if (renamed && !fs.existsSync(oldFile)) return { file: renamed, how: 'the old file is gone and ' + path.basename(renamed) + ' is in its folder' };
+        if (fs.existsSync(oldFile) && fs.statSync(oldFile).size > 1e6 && sumOf(oldFile) !== oldSum) return { file: oldFile, how: 'the file was replaced under its own name, ' + path.basename(oldFile) };
+        return null;
+    };
 
     let display = 0;
     for (let n = 130; n < 150 && !display; n++) if (!fs.existsSync('/tmp/.X11-unix/X' + n)) display = n;
@@ -202,7 +213,7 @@ function freePort() { return new Promise((res, rej) => { const s = net.createSer
          * 7890, the user's. (The old version does not read it.) */
         fs.writeFileSync(path.join(userData, 'port.json'), JSON.stringify({ port: newPort }));
         how = await press('Update Ready');
-        const replaced = () => (DEB ? packageVersion() === WANT : fs.readdirSync(appDir).some((f) => f.includes(WANT)) && !fs.existsSync(oldFile));
+        const replaced = () => (DEB ? packageVersion() === WANT : !!fileNow());
         const swapped = await until('the new version to take the old one\'s place', replaced, DEB ? 120000 : 40000).catch(() => false);
         if (!swapped) {
             console.log('        (' + how + '; nothing was replaced, so the same function its button calls is called from outside)');
@@ -217,7 +228,7 @@ function freePort() { return new Promise((res, rej) => { const s = net.createSer
         await until('the new version', replaced, DEB ? 120000 : 60000).catch(() => false);
         const files = fs.readdirSync(appDir);
         if (DEB) ok(packageVersion() === WANT, 'the installed package is now version ' + packageVersion() + ', it was ' + packageWas + ' (' + how + ')');
-        else ok(files.some((f) => f.includes(WANT)) && !fs.existsSync(oldFile), 'the old file is gone and the new one is in its folder (' + how + '): ' + files.join(', '));
+        else { const now = fileNow(); ok(!!now, (now ? now.how : 'the file was NOT replaced: ' + files.join(', ')) + ' (' + how + ')'); }
 
         section('what comes up in its place');
         const st = await until('the new version\'s server', () => status(newPort), 90000).catch(() => null);
@@ -226,7 +237,7 @@ function freePort() { return new Promise((res, rej) => { const s = net.createSer
         ok(oldExited, 'the old version has exited');
         const after = st ? rowsOf(await get(newPort, '/favorites')) : [];
         ok(seed.FAVORITES.every((f) => after.some((r) => r.id === f.id)), 'the three favorites the old version held are still there: ' + after.map((r) => r.name).join(', '));
-        let newFile = files.map((f) => path.join(appDir, f)).find((f) => f.includes(WANT));
+        let newFile = (fileNow() || {}).file;
         if (DEB) {
             /* What its updater downloaded and handed to dpkg is still in its cache. */
             const pending = path.join(tmp, 'cache', 'ani-mate-updater', 'pending');

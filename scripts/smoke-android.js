@@ -353,10 +353,25 @@ function nodeDevice(label) {
             section('what is installed afterwards');
             const now = await until('the new version', () => (versionNow() === want ? want : null), 120000, 2000).catch(() => versionNow());
             ok(now === want, 'Android now has version ' + now + ' (it had ' + was + ')');
-            const open = screen().find((n) => /^Open$/i.test(n.label));
-            if (open) tapOn(open); else adb('shell', 'am', 'start', '-n', APP + '/.MainActivity');
-            await sleep(15000);
-            ok(!!sh('pidof ' + APP), 'the new version starts and stays up');
+            /* Android stops the app while it replaces it, and for a moment afterwards a
+             * start is refused. A person taps Open on the installer's last screen, or the
+             * app's icon, when that screen says it is done: so does this, and it tries
+             * again if the first start came too early. */
+            let up = '';
+            let started = '';
+            for (let attempt = 1; attempt <= 4 && !up; attempt++) {
+                await sleep(attempt === 1 ? 6000 : 4000);
+                const open = screen().find((n) => /^Open$/i.test(n.label));
+                if (open) { tapOn(open); started = 'Open tapped'; }
+                else {
+                    const r2 = adb('shell', 'am', 'start', '-W', '-n', APP + '/.MainActivity');
+                    started = /Status: ok/.test((r2.stdout || '') + (r2.stderr || '')) ? 'started from outside' : 'a start was refused: ' + ((r2.stdout || '') + (r2.stderr || '')).replace(/\s+/g, ' ').slice(0, 120);
+                }
+                up = await until('its process', () => (sh('pidof ' + APP).split(/\s+/)[0] || null), 20000).catch(() => '');
+                if (!up) console.log('        (attempt ' + attempt + ': ' + started + ', and it is not running)');
+            }
+            await sleep(12000);
+            ok(!!up && !!sh('pidof ' + APP), 'the new version starts and stays up (' + started + ')');
             const crashed = sh('logcat -d -b crash').split('\n').filter((l) => l.includes(APP));
             ok(crashed.length === 0, 'with nothing of the app\'s in the crash log' + (crashed.length ? ': ' + crashed.slice(0, 2).join(' | ').slice(0, 200) : ''));
             const shown = screen().filter((n) => n.label && n.pkg === APP).map((n) => n.label);

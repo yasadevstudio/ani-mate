@@ -98,7 +98,9 @@ jobs:
           echo "NEW=${NEW#v}" >> "$GITHUB_ENV"
           gh release download "$NEW" --pattern 'latest-linux.yml' --output latest-linux.yml
           if [ "${{ matrix.kind }}" = "AppImage" ]; then
-            gh release download "$OLD" --pattern '*.AppImage' --output old.AppImage
+            # Under the name it was published with, which is the name people have it under.
+            mkdir -p old && gh release download "$OLD" --pattern '*.AppImage' --dir old
+            echo "OLD_APPIMAGE=$(ls old/*.AppImage)" >> "$GITHUB_ENV"
           else
             gh release download "$OLD" --pattern '*.deb' --output old.deb
             sudo apt-get install -y -qq ./old.deb
@@ -113,7 +115,7 @@ jobs:
       - name: It updates itself
         run: |
           if [ "${{ matrix.kind }}" = "AppImage" ]; then
-            node scripts/selfupdate-linux.js old.AppImage "$NEW" latest-linux.yml
+            node scripts/selfupdate-linux.js "$OLD_APPIMAGE" "$NEW" latest-linux.yml
           else
             node scripts/selfupdate-linux.js --deb "$NEW" latest-linux.yml
           fi
