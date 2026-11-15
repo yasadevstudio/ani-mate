@@ -6,7 +6,7 @@
     'use strict';
 
     // === VERSION (updated by CI on release builds) ===
-    const APP_VERSION = '0.7.3';
+    const APP_VERSION = '0.7.4';
     const GITHUB_REPO = 'YASADevStudio/ani-mate';
 
     // === STATE ===
@@ -2555,6 +2555,10 @@
     const CHANGELOG_NOTE = "Scrolling is fixed -- the browse grid was growing instead of scrolling, so anything past the first screenful could not be reached. Cards are a uniform size now. And sync is here: one optional account keeps your list, your history and your place in every episode the same on your computer and your phone, with no email and no password.";
 
     const CHANGELOG = [
+        "One panel at a time when the app starts. The sync question no longer sits on top of the update box or the what's-new list, where it could hide the UPDATE NOW button",
+        "When an update cannot be installed, the update box now says why, with the buttons to try again right under it. It used to say only that the update failed",
+        "The update box shows what is new in plain sentences. It was showing the release page's formatting marks and stopping in the middle of a sentence",
+        "The app no longer waits on its splash screen before it reads your library. On a stuck phone that wait could leave FAVS saying No favorites yet while your favorites were safe on the phone",
         "Subtitles: when an episode's first English track is only on-screen signs, ANI-MATE now shows the full English subtitles the same servers list. It was falling back to a transcript of the English dub, which on some episodes put nothing on screen for the first two minutes",
         "Scrolling works again. Favorites, search, daily, releases and continue all share one container, and it was growing to fit its contents instead of scrolling -- so everything past the first screenful was simply unreachable",
         "Cards are all the same size. They were four different heights depending on whether a title ran to two lines and whether the show had a separate English name",
