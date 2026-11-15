@@ -493,7 +493,14 @@ function nodeDevice(label) {
                 const splash = await page.evalJs(`const t0 = Date.now(); const r = await Promise.race([
                     Capacitor.Plugins.SplashScreen.hide().then(() => 'answered', (e) => 'refused (' + (e && e.message || e) + ')'),
                     new Promise((res) => setTimeout(() => res('no answer'), 4000))]); return r + ' in ' + (Date.now() - t0) + ' ms';`).catch((e) => 'could not be asked (' + e.message + ')');
-                console.log('        (not started after 20 s. Android has in front: ' + focus + ' | the splash screen, asked to go away: ' + splash + ')');
+                /* How far the start got. Its first line asks for the splash screen to go
+                 * away; the next lights the network dot; then it reads the two lists.
+                 * It no longer waits on that first call (it did until 2026-11-14, and the
+                 * answer to a page's first call is the one Capacitor can lose after a
+                 * reload), so a dot still dark here means the start never ran at all. */
+                const got = await page.evalJs(`const d = document.getElementById('status-dot');
+                    return 'network dot ' + (d && d.classList.contains('online') ? 'lit' : 'dark') + ' (online: ' + navigator.onLine + ')';`).catch((e) => 'could not be read (' + e.message + ')');
+                console.log('        (not started after 20 s. Android has in front: ' + focus + ' | the splash screen, asked to go away: ' + splash + ' | how far the start got: ' + got + ')');
                 if (hung) {
                     const wait = onScreen.find((n) => /^Wait$/i.test(n.label));
                     if (wait) tapOn(wait);

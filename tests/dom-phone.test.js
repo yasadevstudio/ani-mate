@@ -29,8 +29,9 @@
  *   - THE START-UP PANELS TAKE TURNS (added 2026-11-14, after a phone on 0.7.2 showed the
  *     first-run sync question drawn over the update box): on a slow start the question
  *     waits for what's new; an update found while the question is up waits for the
- *     answer; a release's notes are shown without their "##" and "**"; and an update
- *     that fails says why in the box, with its two buttons back
+ *     answer; a release's notes are shown without their "##" and "**"; an update
+ *     that fails says why in the box, with its two buttons back; and a start whose
+ *     first native call is never answered still reads and shows the library
  *   - TWO PHONES SYNC, through the phone's own storage adapter and its own panel, against
  *     the real Worker run locally: an account made on one, joined from the other with
  *     the recovery key, one row per show on each though they knew it under different
@@ -203,23 +204,41 @@ const MINIMAL_CAPACITOR = `(() => {
         Plugins: { CapacitorHttp: { get: (o) => call('GET', o), post: (o) => call('POST', o), request: (o) => call((o && o.method) || 'GET', o) } } };
 })();`;
 
-/* As much of a phone as the update box and a slow start need: a splash screen that takes
- * its time going away (the page waits for it before it does anything else), and an
- * installer that does what this suite tells it. No storage and no HTTP plugin, so the
- * page keeps using what a browser has for those. How slow the splash is comes from the
- * page's own storage, which the suite fills before it loads the page. */
+/* As much of a phone as the update box and a start need. What it does comes from the
+ * page's own storage, which the suite fills before it loads the page:
+ *
+ *   the splash screen call   answered at once, or (__suite_splash = never) not at all,
+ *                            which is what a lost answer to a page's first native call
+ *                            looks like from inside the page
+ *   the file store           absent, so the page uses what a browser has; or
+ *                            (__suite_storage_ms) a phone's store on a first start:
+ *                            nothing in it yet, and every read takes that long to say so
+ *   the installer            does what this suite tells it
+ */
 const PHONE_FOR_THE_UPDATE_BOX = `(() => {
-    let splashMs = 0;
-    try { splashMs = Number(localStorage.getItem('__suite_splash_ms') || 0); } catch (e) {}
-    window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'android', Plugins: {
-        SplashScreen: { hide: () => new Promise((r) => setTimeout(r, splashMs)) },
+    const kept = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+    const neverAnswers = kept('__suite_splash') === 'never';
+    const storageMs = Number(kept('__suite_storage_ms') || 0);
+    const Plugins = {
+        SplashScreen: { hide: () => (neverAnswers ? new Promise(() => {}) : Promise.resolve()) },
         ApkInstaller: {
             addListener: async (name, fn) => { window.__apkProgress = fn; return { remove: () => { window.__apkProgress = null; } }; },
             downloadAndInstall: (o) => new Promise((res, rej) => {
                 window.__apkAsked = (window.__apkAsked || 0) + 1;
                 window.__apk = { url: o && o.url, done: () => res({ installed: true }), fail: (m) => rej(new Error(m)) };
             }),
-        } } };
+        } };
+    if (storageMs > 0) {
+        const files = {};
+        const later = (fn) => new Promise((res, rej) => setTimeout(() => { try { res(fn()); } catch (e) { rej(e); } }, storageMs));
+        const held = (o) => { if (!(o.path in files)) throw new Error('File does not exist'); return files[o.path]; };
+        Plugins.Filesystem = {
+            readFile: (o) => later(() => ({ data: held(o) })),
+            stat: (o) => later(() => ({ type: 'file', size: held(o).length })),
+            writeFile: async (o) => { files[o.path] = o.data; return { uri: o.path }; },
+        };
+    }
+    window.Capacitor = { isNativePlatform: () => true, getPlatform: () => 'android', Plugins };
 })();`;
 
 /* What Android gives Capacitor's real script before it runs: the bridge object it posts
@@ -537,7 +556,10 @@ const ANDROID_FOR_THE_BRIDGE = `
                 const LATER_TODAY = JSON.stringify({ version: '9.9.9', at: Date.now() });
 
                 section('a slow start: the first-run sync question waits for what\'s new');
-                await start({ '__suite_splash_ms': '2500', 'ani-mate-update-dismissed': LATER_TODAY });
+                /* Slow where a phone is slow: the two lists the page reads before it puts
+                 * what's new up. 1.3 s each, so the panel comes after the question's
+                 * first look. */
+                await start({ '__suite_storage_ms': '1300', 'ani-mate-update-dismissed': LATER_TODAY });
                 await pu.until(`return !!document.querySelector('.changelog-overlay');`, 12000);
                 let p = await panels();
                 ok(p.whatsNew && !p.sheet, 'the what\'s-new panel comes up with nothing on top of it (sync sheet there: ' + p.sheet + ')');
@@ -549,6 +571,15 @@ const ANDROID_FOR_THE_BRIDGE = `
                 p = await panels();
                 ok(!!askedAfter && !p.whatsNew, 'GOT IT, and then it is asked, on its own');
                 const seenVersion = await pu.evalJs(`return localStorage.getItem('ani-mate-last-version') || '';`);
+
+                section('a start whose first native call is never answered');
+                await start({ '__suite_splash': 'never', 'ani-mate-last-version': seenVersion, 'ani-mate-update-dismissed': LATER_TODAY,
+                              'animate_favorites.json': JSON.stringify([{ id: 'suiteUnanswered01', name: 'Mushishi', title_english: 'Mushishi', episodes: 26, added: new Date().toISOString() }]) });
+                const startedAnyway = await pu.until(`return window.__animateStarted === true;`, 6000);
+                ok(startedAnyway === true, 'the page starts all the same: reading the library does not wait on the splash screen call');
+                await click('[data-tab="favs"]');
+                const cards = await pu.until(`return document.querySelectorAll('#results-container .result-card').length;`, 8000);
+                ok(cards === 1, 'and FAVS shows what is stored, not "No favorites yet" (' + cards + ' card)');
 
                 section('an update found while the sync question is up');
                 world.releaseBody = NOTES_AS_WRITTEN;

@@ -2708,8 +2708,21 @@
     }, true);
 
     async function init() {
-        // Hide Capacitor splash screen
-        try { await SplashScreen?.hide(); } catch (e) {}
+        /* Take the splash screen down. ⚠ ASKED, NOT WAITED FOR. Nothing below needs the
+         * answer, and this is the page's FIRST native call, the one whose answer can go
+         * missing. This line used to wait for it. On 2026-11-14, twice, on an Android 16
+         * emulator whose own System UI had stopped responding, the page never got past
+         * here after the smoke run reloaded it: the two lists below were never read and
+         * FAVS said "No favorites yet" for 90 s with three favorites on disk, while the
+         * same call made by hand a minute later was answered in 4 ms.
+         *
+         * Read in Capacitor's Android bridge (MessageHandler.java, 8.6.2), not caught in
+         * the act: it hands a call to its plugin thread and only THEN stores the channel
+         * replies go back on. For the first call of a page loaded again in the same
+         * WebView, a quick reply can leave on the channel of the page that was there
+         * before. Every later call is handed over after that store, so only the first
+         * answer is at risk, and nobody waits for it now. */
+        try { Promise.resolve(SplashScreen?.hide()).catch(() => {}); } catch (e) {}
 
         // Network status
         updateNetworkStatus();
