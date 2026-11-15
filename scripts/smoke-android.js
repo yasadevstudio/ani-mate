@@ -469,22 +469,46 @@ function nodeDevice(label) {
          * question. Whatever is up stays up until it is answered, so a look now, with
          * nothing answered yet, sees it. They are answered at the very end of the run.
          * Counted for the build under test only: an older build is what it is. */
-        let firstRun = null;
+        const panels = () => page.evalJs(`return { n: !!document.querySelector('.changelog-overlay'), u: !!document.getElementById('update-dialog-overlay'),
+            q: !!document.querySelector('.sync-sheet'), due: !!(window.SYNC && window.SYNC.needsIntro && window.SYNC.needsIntro()) };`);
         if (!has('--seed')) {
             section('the first-run panels');
             const notes = await page.evalJs(`try { return window.AniMateNotes.plain('## Fixed\\n\\n- **Subtitles** are back', 300); } catch (e) { return 'threw: ' + (e && e.message || e); }`);
             ok(notes === 'Fixed\n\n• Subtitles are back', 'the notes file is in the app, and takes a release\'s marks off in this WebView: ' + JSON.stringify(notes));
-            const started = await until('the page to say it has started', () => page.evalJs(`return window.__animateStarted === true;`), 20000).catch(() => false);
-            ok(started === true, 'the page says its own start-up panel has had its turn');
+            const hasStarted = () => page.evalJs(`return window.__animateStarted === true;`);
+            let started = await until('the page to say it has started', hasStarted, 20000).catch(() => false);
+            if (started === true) ok(true, 'the page says its own start-up panel has had its turn');
+            else {
+                /* ⚠ NOT STARTED AFTER TWENTY SECONDS: IS ANDROID ANSWERING? Seen 2026-11-14
+                 * on the Android 16 emulator: its own "System UI isn't responding" box was
+                 * up, the page had not reached its what's-new step 25 s after the start,
+                 * and by the end of the run it had. What Android has in front and whether
+                 * the page's first native call (the splash screen going away) answers are
+                 * read and printed. If it is Android's own interface that hung, its Wait
+                 * is tapped, the start is given the time again, and the result is said
+                 * and not counted: that is a reading of the emulator, not of the app. */
+                const focus = sh('dumpsys window | grep mCurrentFocus').slice(0, 170);
+                const onScreen = screen().filter((n) => n.label);
+                const hung = /Application Not Responding: com\.android\.systemui/.test(focus) || onScreen.some((n) => /System UI isn.t responding/i.test(n.label));
+                const splash = await page.evalJs(`const t0 = Date.now(); const r = await Promise.race([
+                    Capacitor.Plugins.SplashScreen.hide().then(() => 'answered', (e) => 'refused (' + (e && e.message || e) + ')'),
+                    new Promise((res) => setTimeout(() => res('no answer'), 4000))]); return r + ' in ' + (Date.now() - t0) + ' ms';`).catch((e) => 'could not be asked (' + e.message + ')');
+                console.log('        (not started after 20 s. Android has in front: ' + focus + ' | the splash screen, asked to go away: ' + splash + ')');
+                if (hung) {
+                    const wait = onScreen.find((n) => /^Wait$/i.test(n.label));
+                    if (wait) tapOn(wait);
+                    started = await until('the page to say it has started', hasStarted, 40000).catch(() => false);
+                    note(started === true, 'the page says its own start-up panel has had its turn (this emulator\'s System UI was not responding; '
+                        + (started === true ? 'the page started once Android was told to wait' : 'the page had still not started 40 s after Android was told to wait') + ')');
+                } else ok(false, 'the page says its own start-up panel has had its turn');
+            }
             const looks = [];
             for (let i = 0; i < 5; i++) {
-                looks.push(await page.evalJs(`return { n: !!document.querySelector('.changelog-overlay'), u: !!document.getElementById('update-dialog-overlay'),
-                    q: !!document.querySelector('.sync-sheet'), due: !!(window.SYNC && window.SYNC.needsIntro && window.SYNC.needsIntro()) };`));
+                looks.push(await panels());
                 await sleep(1000);
             }
             const drawn = looks.map((l) => [l.n && 'what\'s new', l.u && 'the update box', l.q && 'the sync question'].filter(Boolean).join(' under ') || 'nothing');
             ok(!looks.some((l) => l.q && (l.n || l.u)), 'the sync question is never up over what\'s new or the update box (five looks a second apart: ' + [...new Set(drawn)].join('; ') + ')');
-            firstRun = looks[looks.length - 1];
         }
 
         // ── --seed: an older build, given a library ────────────────────────────────
@@ -713,7 +737,12 @@ function nodeDevice(label) {
         if (SHOT) takePicture(SHOT.replace(/\.png$/, '-as-opened.png'));
         const press = (re) => page.evalJs(`for (const b of document.querySelectorAll('button')) {
             if (${re}.test(b.textContent.trim()) && b.getClientRects().length) { b.click(); return true; } } return false;`);
-        if (firstRun && firstRun.n && firstRun.due && !firstRun.q) {
+        /* ⚠ READ NOW, NOT AT THE START. Whether the sync question is still due changes
+         * during the run: the sync part above turns sync on, and then there is nothing
+         * left to ask. A reading from the start made this expect a question that the
+         * app, rightly, never put up (run 43655819927). */
+        const atEnd = has('--seed') ? null : await panels().catch(() => null);
+        if (atEnd && atEnd.n && atEnd.due && !atEnd.q) {
             /* In the app's order: what's new, and only then the sync question, which
              * was waiting for it. */
             section('the first-run panels, answered');
