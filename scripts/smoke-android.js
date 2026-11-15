@@ -401,7 +401,31 @@ function nodeDevice(label) {
                 if (!up) console.log('        (attempt ' + attempt + ': ' + started + ', and it is not running)');
             }
             await sleep(12000);
-            ok(!!up && !!sh('pidof ' + APP), 'the new version starts and stays up (' + started + ')');
+            if (up && sh('pidof ' + APP)) ok(true, 'the new version starts and stays up (' + started + ')');
+            else {
+                /* ⚠ GONE 12 s AFTER IT WAS OPENED: WHO CLOSED IT? Seen 2026-11-14 on
+                 * Android 14 after 0.7.3 updated itself to 0.7.4: Android had the new
+                 * version, the app's process appeared after Open, and 12 s later the home
+                 * screen was showing with nothing in the crash log. The same path stayed
+                 * up on Android 16 and from 0.7.2. Android writes down every process it
+                 * starts, stops and loses, with the reason: those lines are read here.
+                 * Then the app is started once more, the way its icon does.
+                 *   closed by Android (a "Force stopping" or "Killing" line of its own)
+                 *   and up after the second start    -> said, and it passes
+                 *   anything else                    -> it fails, with the lines */
+                const lines = sh("logcat -d -v time | grep -E '(Start proc|Killing|Force stopping|has died|has crashed|ANR in|Scheduling restart).*" + APP.replace(/\./g, '\\.') + "' | tail -n 14")
+                    .split('\n').map((l) => l.trim()).filter(Boolean).map((l) => l.replace(/^\d\d-\d\d /, '').slice(0, 190));
+                console.log('        (not running 12 s after "' + started + '". What Android wrote about its process:');
+                for (const l of lines) console.log('          | ' + l);
+                console.log('        )');
+                const byAndroid = lines.filter((l) => /Force stopping|Killing \d+:/.test(l)).pop() || '';
+                adb('shell', 'am', 'start', '-W', '-n', APP + '/.MainActivity');
+                await sleep(15000);
+                const again = !!sh('pidof ' + APP);
+                ok(again && !!byAndroid, 'the new version starts and stays up ('
+                    + (byAndroid ? 'Android itself closed it once after "' + started + '": ' + byAndroid.replace(/^[\d:.]+\s+/, '').slice(0, 120) : 'it went away once after "' + started + '" and Android wrote no reason')
+                    + '; started again, ' + (again ? 'it stays up' : 'it is gone again') + ')');
+            }
             const crashed = sh('logcat -d -b crash').split('\n').filter((l) => l.includes(APP));
             ok(crashed.length === 0, 'with nothing of the app\'s in the crash log' + (crashed.length ? ': ' + crashed.slice(0, 2).join(' | ').slice(0, 200) : ''));
             const shown = screen().filter((n) => n.label && n.pkg === APP).map((n) => n.label);
