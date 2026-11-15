@@ -341,25 +341,54 @@ function nodeDevice(label) {
             const words = [];
             const read = () => { const nodes = screen().filter((n) => n.label); for (const n of nodes) if (!words.includes(n.label)) words.push(n.label); return nodes; };
             const has1 = (nodes, re) => nodes.find((n) => re.test(n.label));
-            const until1 = Date.now() + 200000;
-            while (Date.now() < until1 && !tapped && did.length < 14) {
-                const nodes = read();
-                const syncPanel = has1(nodes, /^NOT NOW$/i);
-                if (syncPanel) { tapOn(syncPanel); did.push('NOT NOW'); await sleep(1800); continue; }
-                const go = has1(nodes, /^UPDATE NOW$/i);
-                if (go) {
-                    tapOn(go); did.push('UPDATE NOW');
-                    for (let i = 0; i < 6 && !tapped; i++) {
-                        await sleep(1500);
-                        const after = read();
-                        tapped = after.some((n) => /^(Downloading|Installing)/i.test(n.label) || /packageinstaller/.test(n.pkg))
-                            || versionNow() === want || !has1(after, /^UPDATE NOW$/i);
+            const offered = () => words.some((w) => /UPDATE AVAILABLE/i.test(w) || (/→|->/.test(w) && /\d+\.\d+\.\d+/.test(w)));
+            /* ⚠ GOT IT IS TAPPED ONCE, NOT UNTIL IT GOES. On 0.7.2 the what's-new list is
+             * longer than the screen and its GOT IT is below the fold: Android reports
+             * the button, a tap at its place lands on nothing, and it is still there on
+             * the next look. Run 43663230965 spent thirteen of its fourteen taps that
+             * way and gave up after about forty seconds. Nothing needs that panel gone:
+             * the update box is drawn over it. */
+            let gotIt = 0;
+            const waitForOffer = async (ms) => {
+                const stop = Date.now() + ms;
+                while (Date.now() < stop && !tapped && did.length < 14) {
+                    const nodes = read();
+                    const syncPanel = has1(nodes, /^NOT NOW$/i);
+                    if (syncPanel) { tapOn(syncPanel); did.push('NOT NOW'); await sleep(1800); continue; }
+                    const go = has1(nodes, /^UPDATE NOW$/i);
+                    if (go) {
+                        tapOn(go); did.push('UPDATE NOW');
+                        for (let i = 0; i < 6 && !tapped; i++) {
+                            await sleep(1500);
+                            const after = read();
+                            tapped = after.some((n) => /^(Downloading|Installing)/i.test(n.label) || /packageinstaller/.test(n.pkg))
+                                || versionNow() === want || !has1(after, /^UPDATE NOW$/i);
+                        }
+                        if (tapped) break;
                     }
-                    if (tapped) break;
+                    const whatsNew = has1(nodes, /^GOT IT$/i);
+                    if (whatsNew && gotIt < 1) { tapOn(whatsNew); gotIt++; did.push('GOT IT'); await sleep(1800); continue; }
+                    await sleep(2500);
                 }
-                const whatsNew = has1(nodes, /^GOT IT$/i);
-                if (whatsNew) { tapOn(whatsNew); did.push('GOT IT'); await sleep(1800); continue; }
-                await sleep(2500);
+            };
+            await waitForOffer(120000);
+            /* ⚠ NO OFFER: DID GITHUB ANSWER? The app asks api.github.com once at a cold
+             * start, with no account, and says nothing when the answer is not a 200.
+             * GitHub allows an address 60 such questions an hour, and this machine shares
+             * its address with other people's jobs. So GitHub is asked the same question
+             * from here, what it says is printed, and the app is closed and started
+             * again, which makes it ask again. Twice at most. */
+            for (let again = 1; again <= 2 && !tapped && !offered(); again++) {
+                const github = await fetch('https://api.github.com/repos/YASADevStudio/ani-mate/releases/latest',
+                    { headers: { Accept: 'application/vnd.github.v3+json', 'User-Agent': 'ani-mate-selfupdate-check' }, signal: AbortSignal.timeout(15000) })
+                    .then((r) => 'HTTP ' + r.status + ', ' + r.headers.get('x-ratelimit-remaining') + ' of ' + r.headers.get('x-ratelimit-limit') + ' questions left for this address this hour',
+                          (e) => 'no answer (' + e.message + ')');
+                console.log('        (no offer after ' + (again === 1 ? '2 minutes' : 'another 90 s') + '. GitHub, asked the same question from this machine: ' + github + '. The app is closed and started again.)');
+                adb('shell', 'am', 'force-stop', APP);
+                await sleep(again * 20000);
+                adb('shell', 'am', 'start', '-W', '-n', APP + '/.MainActivity');
+                did.push('(restarted)');
+                await waitForOffer(90000);
             }
             const offer = words.find((w) => /→|->/.test(w) && /\d+\.\d+\.\d+/.test(w)) || words.find((w) => /UPDATE AVAILABLE/i.test(w)) || '';
             ok(tapped, 'the app offers the update by itself (' + (offer || 'no offer seen') + ') and UPDATE NOW is tapped (taps, in order: ' + did.join(', ') + ')');
